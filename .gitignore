@@ -1,0 +1,18 @@
+/build
+/.vs
+/.vscode
+
+# sample PSDs for testing (see README for sourcing)
+*.psd
+
+# tools/psd_export.py outputs
+/_export_*/
+
+# Python cache and build artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+*.pyd
+
+# install output
+/install/
