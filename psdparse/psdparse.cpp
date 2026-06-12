@@ -1,8 +1,9 @@
-#include "stdafx.h"
-
 #include "psdparse.h"
 #include "psdlayer.h"
 #include "psdresource.h"
+
+#include <iostream>
+#include <stack>
 
 namespace psd {
 

@@ -1,4 +1,3 @@
-#include "stdafx.h"
 
 #include "psdparse.h"
 #include "psdfile.h"

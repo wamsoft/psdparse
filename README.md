@@ -107,4 +107,4 @@ Outputs `layers.json` (full layer metadata), `merged.png` (composite), and per-l
 
 ## License
 
-(TBD — inherits whatever the parent psdfile project chose; check the repo root for `LICENSE` once added.)
+MIT — see [LICENSE](LICENSE).

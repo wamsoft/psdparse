@@ -22,7 +22,6 @@ add_library(${PROJECT_NAME} STATIC
 	psdparse.cpp
 	psdresource.cpp
 	psdwrite.cpp
-	stdafx.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)

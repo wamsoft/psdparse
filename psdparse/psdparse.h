@@ -1,11 +1,10 @@
 #ifndef __psdparse_h__
 #define __psdparse_h__
 
-#include "stdafx.h"
 #include "psddata.h"
 
 #include <cstring>
-#include <algorithm>
+#include <memory>
 
 namespace psd {
 

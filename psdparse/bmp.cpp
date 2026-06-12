@@ -1,6 +1,7 @@
-#include "stdafx.h"
-
 #include "psdbase.h"
+
+#include <fstream>
+#include <iostream>
 
 namespace psd {
 
