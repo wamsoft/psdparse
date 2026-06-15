@@ -28,13 +28,28 @@ WriterBase (psdwrite.h, pure virtual — symmetric to IteratorBase)
 
 All public path arguments are **UTF-8** (`char *`). On Win32, conversion to UTF-16 happens internally via `psd::utf8ToWide` (inline in psdbase.h).
 
-## Build
+## Install (Python)
 
-Requires CMake 3.16+, MSVC (Windows), and [vcpkg](https://vcpkg.io/) with `VCPKG_ROOT` set.
+```bash
+pip install psdparse          # once published to PyPI
+```
+
+Build from source — needs only a C++17 compiler + CMake 3.16+, **no vcpkg**:
+
+```bash
+pip install .                 # or:  pip wheel . -w dist
+```
+
+`zlib` is taken from the system if present, otherwise fetched from source by
+CMake (`FetchContent`), so no package manager is required. Packaging uses
+[scikit-build-core](https://scikit-build-core.readthedocs.io/); cross-platform
+wheels are built in CI (`.github/workflows/wheels.yml`, cibuildwheel).
+
+## Build (C++ library / CLI)
+
+Requires CMake 3.16+ and a C++17 compiler. **vcpkg is no longer needed.**
 
 ```powershell
-$env:VCPKG_ROOT = 'd:\vcpkg'
-
 # C++ library + CLI (static CRT)
 cmake --preset x64-windows
 cmake --build --preset x64-windows --config Release
@@ -55,7 +70,7 @@ Build artifacts:
 - `build/x64-windows/psdparse/Release/psdparse_cli.exe`
 - `build/x64-windows-python/python/Release/psdparse.cp312-win_amd64.pyd`
 
-Dependencies: vcpkg installs `zlib` only.
+Only dependency: `zlib` (system, or auto-fetched from source).
 
 ## Python API
 

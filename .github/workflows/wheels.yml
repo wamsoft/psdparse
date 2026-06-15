@@ -1,0 +1,88 @@
+name: wheels
+
+# Build cross-platform binary wheels + sdist with cibuildwheel.
+# No vcpkg: zlib is taken from the system if present, else fetched from source
+# by CMake (see psdparse/CMakeLists.txt), so the matrix needs no extra setup.
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_wheels:
+    name: wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21
+        env:
+          # pybind11 needs no PyPy; trim 32-bit and musl to keep the matrix lean.
+          CIBW_SKIP: "pp* *_i686 *-musllinux_*"
+          CIBW_ARCHS_MACOS: auto
+          # c++17 needs a modern deployment target on macOS x86_64.
+          MACOSX_DEPLOYMENT_TARGET: "10.13"
+          # smoke-test the built wheel imports and exposes the API.
+          CIBW_TEST_COMMAND: >-
+            python -c "import psdparse; assert hasattr(psdparse, 'PSDFile'); print('psdparse import OK')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  make_sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish-testpypi:
+    name: publish to TestPyPI (dry run)
+    needs: [build_wheels, make_sdist]
+    runs-on: ubuntu-latest
+    # manual trigger only — a dry run before the real release.
+    if: github.event_name == 'workflow_dispatch'
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish:
+    name: publish to PyPI
+    needs: [build_wheels, make_sdist]
+    runs-on: ubuntu-latest
+    # only on a version tag; uses PyPI Trusted Publishing (no API token needed).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

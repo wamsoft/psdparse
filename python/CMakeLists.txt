@@ -34,3 +34,10 @@ endif()
 pybind11_add_module(psdparse_py MODULE psdparse_module.cpp)
 set_target_properties(psdparse_py PROPERTIES OUTPUT_NAME "psdparse")
 target_link_libraries(psdparse_py PRIVATE psdparse)
+
+# Install as the top-level `psdparse` extension module (scikit-build-core packs
+# whatever is installed into the wheel root). A normal CMake build ignores this
+# unless `cmake --install` is invoked.
+install(TARGETS psdparse_py
+        LIBRARY DESTINATION "."
+        RUNTIME DESTINATION ".")

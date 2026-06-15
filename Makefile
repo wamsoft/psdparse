@@ -1,8 +1,6 @@
 SHELL = /bin/bash
 
-ifeq ($(VCPKG_ROOT),)
-$(error Variables VCPKG_ROOT not set correctly.)
-endif
+# vcpkg-free: zlib comes from the system or is fetched from source by CMake.
 
 ifeq ($(shell type cygpath >& /dev/null && echo true),true)
 FIXPATH = cygpath -ma

@@ -16,3 +16,9 @@ __pycache__/
 
 # install output
 /install/
+
+# Python build / packaging artifacts (scikit-build-core, wheels, sdists)
+/dist/
+*.egg-info/
+_wt/
+_skbuild/
