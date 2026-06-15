@@ -30,11 +30,8 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21
         env:
-          # DEBUG: build a single Python version for fast iteration.
-          # Remove this line for a real release to build cp39–cp313.
-          CIBW_BUILD: "cp312-*"
-          # pybind11 needs no PyPy; trim 32-bit and musl to keep the matrix lean.
-          CIBW_SKIP: "pp* *_i686 *-musllinux_*"
+          # pybind11 needs no PyPy; trim 32-bit (Linux i686 / Windows win32) and musl.
+          CIBW_SKIP: "pp* *_i686 *-musllinux_* *-win32"
           # build both Mac archs on the arm64 runner (x86_64 is cross-built;
           # its import test is auto-skipped by cibuildwheel).
           CIBW_ARCHS_MACOS: "x86_64 arm64"
