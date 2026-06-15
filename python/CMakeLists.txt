@@ -12,7 +12,11 @@ if(NOT TARGET pybind11::module)
         find_program(_psd_python NAMES python python3 REQUIRED)
         set(Python3_EXECUTABLE "${_psd_python}" CACHE FILEPATH "")
     endif()
-    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+    # 拡張モジュールのビルドに必要なのは Development.Module のみ。full Development
+    # (= Development.Embed, libpython 埋め込み) を要求すると manylinux など
+    # 埋め込み用 libpython の無い環境で `Could NOT find Python3 ... Development.Embed`
+    # で失敗するため、Module だけに絞る。
+    find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 
     # pybind11 cmakedir を pip 経由で問い合わせる
     if(NOT pybind11_DIR)
