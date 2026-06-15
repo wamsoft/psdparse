@@ -1,5 +1,6 @@
 #include "psdbase.h"
 
+#include <cstring>
 #include <fstream>
 #include <iostream>
 

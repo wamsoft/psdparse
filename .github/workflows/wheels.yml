@@ -21,16 +21,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+        # macos-13 (Intel) ランナーは縮小されキュー待ちが長い。macos-14 (arm64)
+        # 上で x86_64/arm64 を両方クロスビルドするので Intel ランナーは使わない。
+        os: [ubuntu-latest, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v4
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21
         env:
+          # DEBUG: build a single Python version for fast iteration.
+          # Remove this line for a real release to build cp39–cp313.
+          CIBW_BUILD: "cp312-*"
           # pybind11 needs no PyPy; trim 32-bit and musl to keep the matrix lean.
           CIBW_SKIP: "pp* *_i686 *-musllinux_*"
-          CIBW_ARCHS_MACOS: auto
+          # build both Mac archs on the arm64 runner (x86_64 is cross-built;
+          # its import test is auto-skipped by cibuildwheel).
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
           # c++17 needs a modern deployment target on macOS x86_64.
           MACOSX_DEPLOYMENT_TARGET: "10.13"
           # smoke-test the built wheel imports and exposes the API.

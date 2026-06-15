@@ -2,6 +2,7 @@
 #include "psdlayer.h"
 #include "psdresource.h"
 
+#include <cstring>
 #include <iostream>
 #include <stack>
 

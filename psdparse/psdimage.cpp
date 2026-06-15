@@ -1,5 +1,6 @@
 
 #include "psdfile.h"
+#include <cstring>
 
 #define USE_ZLIB
 #ifdef USE_ZLIB

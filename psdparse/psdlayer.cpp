@@ -1,6 +1,7 @@
 
 #include "psddata.h"
 #include "psddesc.h"
+#include <cstring>
 
 namespace psd {
   bool loadLayerSectionDivider(LayerInfo &layer, AdditionalLayerInfo &additional)
