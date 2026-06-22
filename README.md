@@ -94,23 +94,12 @@ Full API reference: [docs/PYTHON_API.md](docs/PYTHON_API.md).
 
 ## Tests
 
-Tests live under `tests/` and use [pytest](https://docs.pytest.org/). They need two sample PSDs at the repo root (not in git — see below).
+Tests live under `tests/` and use [pytest](https://docs.pytest.org/). They need sample PSDs placed at the repo root or `tests/data/` (not committed — listed in `.gitignore`); without them the tests skip rather than fail.
 
 ```powershell
-# After building with x64-windows-python preset:
+# after building the Python module (pip install . / preset x64-windows-python):
 python -m pytest -v
 ```
-
-### Sample PSDs
-
-The 27 pytest tests use these files:
-
-| File | Size | Description |
-|---|---|---|
-| `UI-PSDサンプル.psd` | 800×600, 50 layers, ~2 MB | UI button mock-up. Folder groups, transparent overlays. |
-| `園部由夏_a.psd` | 2500×3500, 28 layers, ~21 MB | Illustration. PASS_THROUGH groups, Unicode layer names (luni records). |
-
-Place them at the repo root (the conftest.py also checks `tests/data/` first). They are listed in `.gitignore`. If you can't source them, the tests will skip rather than fail.
 
 ## tools/psd_export.py
 
