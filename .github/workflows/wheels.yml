@@ -33,6 +33,8 @@ jobs:
         env:
           # pybind11 needs no PyPy; trim 32-bit (Linux i686 / Windows win32) and musl.
           CIBW_SKIP: "pp* *_i686 *-musllinux_* *-win32"
+          # also build free-threaded CPython wheels (cp313t / cp314t).
+          CIBW_ENABLE: "cpython-freethreading"
           # build both Mac archs on the arm64 runner (x86_64 is cross-built;
           # its import test is auto-skipped by cibuildwheel).
           CIBW_ARCHS_MACOS: "x86_64 arm64"
