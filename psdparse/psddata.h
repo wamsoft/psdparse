@@ -5,6 +5,7 @@
 #include "psddesc.h"
 
 #include <vector>
+#include <cstring>
 
 namespace psd {
   // レイヤタイプ

@@ -11,6 +11,7 @@
 #define NOMINMAX
 #include <zlib.h>
 #endif
+#include <cstring>
 
 // #define ENABLE_BMP_OUTPUT
 #ifdef ENABLE_BMP_OUTPUT
