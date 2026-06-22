@@ -28,7 +28,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21
+        # v3.2.1+ supports CPython 3.14 (cp314); v2.21 stopped at cp313.
+        uses: pypa/cibuildwheel@v3.2.1
         env:
           # pybind11 needs no PyPy; trim 32-bit (Linux i686 / Windows win32) and musl.
           CIBW_SKIP: "pp* *_i686 *-musllinux_* *-win32"
