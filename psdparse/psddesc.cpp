@@ -39,11 +39,7 @@ namespace psd {
     case 'type':
     case 'GlbC': item = new DescriptorClass(type);   break;
     case 'alis': item = new DescriptorAlias();       break;
-    case 'tdta':
-      // undocumented なうえ、サイズ情報もなくスキップできないので
-      // これが出てきたらこれ以上はパースできない
-      // item = new DescriptorRawData(data);
-      break;
+    case 'tdta': item = new DescriptorRawData();     break;
     default:
       break;
     }
@@ -184,6 +180,21 @@ namespace psd {
   {
     data->getUnicodeString(name);
     readId(data, classId);
+    return true;
+  }
+
+  bool
+  DescriptorRawData::load(IteratorBase *data)
+  {
+    int size = data->getInt32();
+    if (size < 0 || size > data->rest()) {
+      isValid = false;
+      return false;
+    }
+    bytes.resize((size_t)size);
+    if (size > 0) {
+      data->getData(&bytes[0], size);
+    }
     return true;
   }
 

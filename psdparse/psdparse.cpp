@@ -224,7 +224,10 @@ Data::processParsed()
       case 'iOpa': // fill opacity
         success = loadLayerFillOpacity(layer, additional);
         break;
-        
+      case 'TySh': // Type tool object setting (Photoshop 6.0) — テキストレイヤ
+        success = loadLayerTypeTool(layer, additional);
+        break;
+
       // --- 未対応 ---
       case 'lrFX': // Effects Layer (Photoshop 5.0)
       case 'tySh': // Type Tool Info (Photoshop 5.0 and 5.5 only)
@@ -242,7 +245,6 @@ Data::processParsed()
       case 'brst': // Channel blending restrictions setting (Photoshop 6.0)
       case 'vmsk': // Vector mask setting (Photoshop 6.0)
       case 'vsms':
-      case 'TySh': // Type tool object setting (Photoshop 6.0)
       case 'ffxi': // Foreign effect ID (Photoshop 6.0)
       case 'lnsr': // Layer name source setting (Photoshop 6.0)
       case 'shpa': // Pattern data (Photoshop 6.0)

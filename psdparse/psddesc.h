@@ -361,13 +361,17 @@ namespace psd {
     std::string alias;
   };
 
-  // Raw は値の解釈がデータ次第でサイズがわからないので失敗扱いにしている
+  // Raw data ('tdta'): 4-byte length prefix followed by that many bytes.
+  // Used by the type-tool 'TySh' descriptor to carry the EngineData blob
+  // (Adobe's text-engine mini-language, parsed separately by psdengine).
   struct DescriptorRawData : DescriptorItem {
-    DescriptorRawData(IteratorBase *data) : DescriptorItem(TYPE_RAW_DATA) {}
-    virtual bool load(IteratorBase *data) { return false; }
+    DescriptorRawData() : DescriptorItem(TYPE_RAW_DATA) {}
+    virtual bool load(IteratorBase *data);
     virtual void dump(int indent) {
-      dprint("%s\n", typeName());
+      dprint("%s (size:%zd)\n", typeName(), bytes.size());
     }
+
+    std::string bytes;
   };
 
   // --------------------------------------------------------------------------

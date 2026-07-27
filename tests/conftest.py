@@ -53,10 +53,22 @@ def sample_large_psd():
     return _find_sample("園部由夏_a.psd", "large.psd")
 
 
+@pytest.fixture(scope="session")
+def sample_text_psd():
+    return _find_sample("fontsample.psd")
+
+
 @pytest.fixture
 def psd_ui(sample_ui_psd):
     p = psdparse.PSDFile()
     assert p.load(str(sample_ui_psd))
+    return p
+
+
+@pytest.fixture
+def psd_text(sample_text_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_text_psd))
     return p
 
 

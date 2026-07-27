@@ -36,6 +36,36 @@ py::bytes mergedImage(psd::PSDFile &self) {
   return py::bytes(buf);
 }
 
+// Text-layer info ('TySh') as a dict, or None for non-text layers.
+py::object layerText(const psd::LayerInfo &l) {
+  if (!l.textData.present) return py::none();
+  const psd::TextLayerData &t = l.textData;
+  py::dict d;
+  d["text"] = py::cast(t.text);            // str (\r line breaks, as authored)
+  d["orientation"] = t.orientation;        // "horizontal" / "vertical"
+  d["justification"] = t.justification;    // 0=left 1=right 2=center (first paragraph)
+  py::list tf;
+  for (int i = 0; i < 6; i++) tf.append(t.transform[i]);
+  d["transform"] = tf;                     // affine xx,xy,yx,yy,tx,ty
+  py::list runs;
+  for (const auto &r : t.runs) {
+    py::dict rd;
+    rd["length"]       = r.length;         // UTF-16 code units covered by this run
+    rd["font"]         = py::cast(r.font); // resolved font-set name
+    rd["size_px"]      = r.fontSize;       // pt
+    rd["tracking"]     = r.tracking;       // 1/1000 em
+    rd["kerning"]      = r.kerning;        // manual kerning
+    rd["auto_kerning"] = r.autoKerning;    // metrics/optical kerning on
+    if (r.hasColor)
+      rd["color"] = py::make_tuple(r.color[0], r.color[1], r.color[2], r.color[3]); // RGBA 0..1
+    else
+      rd["color"] = py::none();
+    runs.append(rd);
+  }
+  d["runs"] = runs;
+  return std::move(d);
+}
+
 py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
   if (!self.isLoaded) throw std::runtime_error("PSD not loaded");
   if (index < 0 || index >= (int)self.layerList.size())
@@ -132,6 +162,9 @@ PYBIND11_MODULE(psdparse, m) {
     .def_property_readonly("name_unicode", [](const psd::LayerInfo &l) {
         return u16ToStr(l.layerNameUnicode);
     })
+    .def_property_readonly("text", &layerText,
+        "Text-layer content/style as a dict (keys: text, orientation, "
+        "justification, transform, runs[]), or None for non-text layers.")
     .def_property_readonly("visible",                [](const psd::LayerInfo &l){ return l.isVisible(); })
     .def_property_readonly("transparency_protected", [](const psd::LayerInfo &l){ return l.isTransparencyProtected(); })
     .def_property_readonly("obsolete",               [](const psd::LayerInfo &l){ return l.isObsolete(); })

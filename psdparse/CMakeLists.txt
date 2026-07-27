@@ -37,6 +37,7 @@ endif()
 add_library(${PROJECT_NAME} STATIC
 	bmp.cpp
 	psddesc.cpp
+	psdengine.cpp
 	psdfile.cpp
 	psdimage.cpp
 	psdlayer.cpp

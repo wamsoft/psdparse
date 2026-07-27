@@ -101,12 +101,59 @@ Read-only view of one layer.
 | `channels` | `list[ChannelInfo]` | per-channel id+length |
 | `name` | `str` | raw Pascal-string name (CP932 etc on Japanese PSDs — pybind11 may raise UnicodeDecodeError when read) |
 | `name_unicode` | `str` | UTF-16 Unicode name from `luni` record (preferred) |
+| `text` | `dict` \| `None` | text-layer content & style (`None` for non-text layers) — see below |
 | `visible` | `bool` | flag bit 1 inverted |
 | `transparency_protected` | `bool` | flag bit 0 |
 | `obsolete` | `bool` | flag bit 2 |
 | `pixel_data_irrelevant` | `bool` | flag bit 4 |
 
 **Tip:** For Japanese PSDs prefer `name_unicode` and fall back to `name` only inside a `try / except UnicodeDecodeError`.
+
+### `layer.text` — text-layer content & style
+
+For text layers (`layer_type == LayerType.TEXT`) this returns a dict parsed from
+the `TySh` type-tool block and its embedded Adobe *EngineData*. For every other
+layer it returns `None`.
+
+```python
+{
+  "text": "普通のテキスト\r二行目\r三行目",  # full string; line breaks are CR ('\r')
+  "orientation": "horizontal",              # or "vertical"
+  "justification": 0,                        # first paragraph: 0=left 1=right 2=center
+  "transform": [xx, xy, yx, yy, tx, ty],     # affine placement transform (tx,ty = translation)
+  "runs": [                                   # per-run character styling, in text order
+    {
+      "length": 8,                            # run length in UTF-16 code units (see note)
+      "font": "NotoSansJP-Thin",              # resolved font-set family name
+      "size_px": 75.0,                        # font size (pt)
+      "color": (1.0, 0.0, 0.0, 1.0),          # RGBA, each 0..1 (None if unspecified)
+      "tracking": -100,                        # letter spacing, 1/1000 em
+      "kerning": 0,                            # manual kerning
+      "auto_kerning": False,                   # metrics/optical kerning enabled
+    },
+    ...
+  ],
+}
+```
+
+Notes:
+- **`length` is in UTF-16 code units**, matching Photoshop's EngineData
+  `RunLengthArray`. Astral characters (e.g. emoji) count as 2. To slice the
+  text by runs, index into `text.encode("utf-16-le")` (2 bytes per unit) rather
+  than the Python `str` (which is code-point indexed).
+- Adjacent runs may share identical styling — Photoshop stores runs as authored,
+  so the run split does not always coincide with a style change.
+- `color` is decoded from EngineData's `FillColor /Type 1` (RGB) and reordered
+  from its on-disk `[A R G B]` to `(R, G, B, A)`. Non-RGB fill types are not yet
+  decoded (`color` is `None`).
+
+```python
+for layer in p.layers:
+    t = layer.text
+    if t is None:
+        continue
+    print(t["text"], "→", {r["font"] for r in t["runs"]})
+```
 
 ## Enums
 

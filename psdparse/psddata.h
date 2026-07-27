@@ -392,6 +392,37 @@ namespace psd {
     bool isMaskChannel() const { return (id == -3 || id == -2); }
 	};
 
+  // テキストレイヤの文字スタイルラン。EngineData の StyleRun/RunArray の
+  // 1 エントリに対応し、length は本文の何文字分に適用されるか (RunLengthArray)。
+  struct TextStyleRun {
+    int         length;      // 適用文字数 (UTF-16 コードユニット)
+    u16str      font;        // 解決済みフォント名 (FontSet を index で引いたもの)
+    float       fontSize;    // pt
+    float       color[4];    // RGBA 0..1 (EngineData の ARGB を並べ替えて格納)
+    bool        hasColor;    // FillColor が指定されていたか
+    int         tracking;    // トラッキング (字送り, 1/1000 em)
+    int         kerning;     // 手動カーニング
+    bool        autoKerning; // 自動カーニング (メトリクス/オプティカル) 有効
+
+    TextStyleRun()
+      : length(0), fontSize(0.0f), color{0,0,0,1}, hasColor(false),
+        tracking(0), kerning(0), autoKerning(false) {}
+  };
+
+  // テキストレイヤ情報 (追加レイヤ情報 'TySh' 由来)。
+  struct TextLayerData {
+    bool        present;         // テキストレイヤとしてパースできたか
+    u16str      text;            // 本文全体 (改行は \r)
+    double      transform[6];    // アフィン変換 xx,xy,yx,yy,tx,ty
+    std::string orientation;     // "horizontal" / "vertical"
+    int         justification;   // 段落の行揃え 0=左 1=右 2=中央 (先頭段落)
+    std::vector<TextStyleRun> runs;
+
+    TextLayerData()
+      : present(false), transform{1,0,0,1,0,0},
+        justification(0) {}
+  };
+
 	// レイヤ情報
   class Data;
 	struct LayerInfo {
@@ -426,6 +457,9 @@ namespace psd {
     // レイヤーカンプ情報
     std::map<int, LayerCompInfo> layerComps;
     Descriptor layerCompDesc; // ディスクリプタ形式で全メタデータを格納
+
+    // テキストレイヤ情報 ('TySh' 由来)。layerType==TEXT のとき present=true。
+    TextLayerData textData;
 
     // 親フォルダレイヤ
     LayerInfo *parent;

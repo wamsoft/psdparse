@@ -1,6 +1,7 @@
 
 #include "psddata.h"
 #include "psddesc.h"
+#include "psdengine.h"
 #include <cstring>
 
 namespace psd {
@@ -110,6 +111,51 @@ namespace psd {
       }
     }
 
+    return true;
+  }
+
+  // 'TySh' Type tool object setting (Photoshop 6.0+)。
+  //   version(2) transform(double*6) textVer(2) descVer(4) <text descriptor>
+  //   warpVer(2) descVer(4) <warp descriptor> left top right bottom
+  // text descriptor の 'Txt ' に本文、'EngineData'(tdta) にラン単位スタイルが入る。
+  bool loadLayerTypeTool(LayerInfo &layer, AdditionalLayerInfo &additional)
+  {
+    IteratorBase *r = additional.data;
+    TextLayerData &td = layer.textData;
+
+    int version = r->getInt16(); // = 1
+    (void)version;
+    for (int i = 0; i < 6; i++) {
+      pun64 v;
+      v.i = r->getInt64();
+      td.transform[i] = v.f;
+    }
+    int textVer = r->getInt16(); // = 50
+    (void)textVer;
+    int descVer = r->getInt32(); // = 16
+    (void)descVer;
+
+    Descriptor text;
+    if (!text.load(r)) {
+      // 途中まで読めていれば itemMap には有効な項目が入っている
+    }
+
+    // 本文 ('Txt ' — キー末尾に空白)。EngineData が取れれば後で上書きされる。
+    DescriptorString *txt = text.item("Txt ");
+    if (txt) td.text = txt->val;
+
+    // 縦横 ('Ornt' enum: Hrzn / Vrtc)
+    DescriptorEnumerated *ornt = text.item("Ornt");
+    td.orientation = (ornt && ornt->enumId == "Vrtc") ? "vertical" : "horizontal";
+
+    // ラン単位スタイル (EngineData)
+    DescriptorRawData *eng = text.item("EngineData");
+    if (eng && !eng->bytes.empty()) {
+      parseEngineData(eng->bytes.data(), eng->bytes.size(), td);
+    }
+
+    td.present = true;
+    layer.layerType = LAYER_TYPE_TEXT;
     return true;
   }
 
