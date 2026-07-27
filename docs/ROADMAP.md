@@ -71,6 +71,7 @@ This is mostly a constructor that fills `Data` with a minimal-but-valid skeleton
 
 ## Other future work
 
+- **Text layer content extraction (`TySh` type-tool additional info).** `LayerType::TEXT` is already reported, but `LayerInfo` exposes no text data: the string, font family/size, color, justification, and transform all live in the `TySh` (Type tool object) additional-layer-info block, which is currently passed through as raw bytes. A downstream UI tool (elements_console `scripts/uitool`) wants to convert PSD text layers into editable `label` widgets and today can only fall back to the rasterized pixels (name-as-placeholder). Desired Python surface: `lay.text` → `{"text": str, "font": str, "size_px": float, "color": (r,g,b,a), "justify": str, "transform": [..]}` (or `None` for non-text layers). The `TySh` payload is an Adobe "descriptor" structure (versioned key/type/value tree) — parsing the descriptor format is the bulk of the work; the `EngineData` sub-blob holds the run/paragraph styling. Requested 2026-07-27 for uitool A4/B1 (text-layer → label). See elements_console memory `uitool-task-backlog-20260727`.
 - 16-bit (`Lr16`) and 32-bit-float (`Lr32`) layer data: currently captured in `layerAndMaskTrailing` for round-trip but not exposed as decoded pixels.
 - Layer mask: parse + re-emission for masks > 20 bytes (real mask, vector mask flag, density / feather).
 - Image resources: most are currently passed through as raw bytes. Higher-level accessors for ICC profile, EXIF, thumbnail, version info, etc. would be nice for tools.
