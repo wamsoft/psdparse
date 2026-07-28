@@ -204,6 +204,37 @@ namespace {
       }
     }
 
+    // 既定 StyleSheet (ResourceDict/StyleSheetSet[0]/StyleSheetData)。
+    // box text の基準 run は FontSize/Font 等の StyleSheetData を持たず、 この既定を
+    // 継承する。 これを読まないと FontSize=0 になる (実表示は既定サイズ)。
+    float defSize = 0.0f; int defFontIdx = -1; int defTracking = 0;
+    float defColor[4] = {0, 0, 0, 1}; bool defHasColor = false;
+    {
+      Node *rd2 = dget(root, "ResourceDict");
+      Node *sss = dget(rd2, "StyleSheetSet");
+      Node *dssd = 0;
+      if (sss && sss->kind == Node::ARRAY && !sss->arr.empty()) {
+        dssd = dget(sss->arr[0], "StyleSheetData");
+        if (!dssd) dssd = dget(dget(sss->arr[0], "StyleSheet"), "StyleSheetData");
+      }
+      if (dssd) {
+        Node *f = dget(dssd, "Font");
+        if (f && f->kind == Node::NUMBER) defFontIdx = (int)f->num;
+        Node *fs = dget(dssd, "FontSize");
+        if (fs && fs->kind == Node::NUMBER) defSize = (float)fs->num;
+        Node *tk = dget(dssd, "Tracking");
+        if (tk && tk->kind == Node::NUMBER) defTracking = (int)tk->num;
+        Node *vals = dget(dget(dssd, "FillColor"), "Values");
+        if (vals && vals->kind == Node::ARRAY && vals->arr.size() >= 4) {
+          defColor[3] = (float)vals->arr[0]->num; // A
+          defColor[0] = (float)vals->arr[1]->num; // R
+          defColor[1] = (float)vals->arr[2]->num; // G
+          defColor[2] = (float)vals->arr[3]->num; // B
+          defHasColor = true;
+        }
+      }
+    }
+
     // ラン単位スタイル (EngineDict/StyleRun)
     if (engine) {
       Node *styleRun = dget(engine, "StyleRun");
@@ -213,6 +244,15 @@ namespace {
         for (size_t i = 0; i < runArray->arr.size(); i++) {
           Node *ssd = dget(dget(runArray->arr[i], "StyleSheet"), "StyleSheetData");
           TextStyleRun r;
+          // 既定を先に適用 (未指定フィールドの継承)。
+          r.fontSize = defSize;
+          r.tracking = defTracking;
+          if (defFontIdx >= 0 && defFontIdx < (int)fonts.size()) r.font = fonts[defFontIdx];
+          if (defHasColor) {
+            r.color[0] = defColor[0]; r.color[1] = defColor[1];
+            r.color[2] = defColor[2]; r.color[3] = defColor[3];
+            r.hasColor = true;
+          }
           if (runLen && runLen->kind == Node::ARRAY && i < runLen->arr.size() &&
               runLen->arr[i]->kind == Node::NUMBER) {
             r.length = (int)runLen->arr[i]->num;
