@@ -63,6 +63,14 @@ py::object layerText(const psd::LayerInfo &l) {
     runs.append(rd);
   }
   d["runs"] = runs;
+  py::list paras;
+  for (const auto &p : t.paragraphs) {
+    py::dict pd;
+    pd["length"]        = p.length;          // UTF-16 code units
+    pd["justification"] = p.justification;   // 0=left 1=right 2=center
+    paras.append(pd);
+  }
+  d["paragraphs"] = paras;                    // 段落別行揃え (段落=改行区切り)
   return std::move(d);
 }
 

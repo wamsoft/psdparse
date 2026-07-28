@@ -289,12 +289,23 @@ namespace {
         }
       }
 
-      // 行揃え (先頭段落の Justification)
-      Node *paraArr = dget(dget(engine, "ParagraphRun"), "RunArray");
+      // 段落別の行揃え (ParagraphRun)。 out.justification は先頭段落 (後方互換)、
+      // out.paragraphs に全段落分 (length + justification) を格納する。
+      Node *paraRun = dget(engine, "ParagraphRun");
+      Node *paraArr = dget(paraRun, "RunArray");
+      Node *paraLen = dget(paraRun, "RunLengthArray");
       if (paraArr && paraArr->kind == Node::ARRAY && !paraArr->arr.empty()) {
-        Node *props = dget(dget(paraArr->arr[0], "ParagraphSheet"), "Properties");
-        Node *just  = dget(props, "Justification");
-        if (just && just->kind == Node::NUMBER) out.justification = (int)just->num;
+        for (size_t i = 0; i < paraArr->arr.size(); i++) {
+          TextParagraph p;
+          if (paraLen && paraLen->kind == Node::ARRAY && i < paraLen->arr.size() &&
+              paraLen->arr[i]->kind == Node::NUMBER)
+            p.length = (int)paraLen->arr[i]->num;
+          Node *props = dget(dget(paraArr->arr[i], "ParagraphSheet"), "Properties");
+          Node *just  = dget(props, "Justification");
+          if (just && just->kind == Node::NUMBER) p.justification = (int)just->num;
+          out.paragraphs.push_back(p);
+        }
+        out.justification = out.paragraphs[0].justification;  // 後方互換
       }
     }
 

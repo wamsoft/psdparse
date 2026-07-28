@@ -414,14 +414,23 @@ namespace psd {
         tracking(0), kerning(0), autoKerning(false), sizeInherited(false) {}
   };
 
+  // 段落単位の情報 (EngineDict/ParagraphRun)。 段落は本文中の改行 (\r) 区切り。
+  struct TextParagraph {
+    int length;          // 段落の文字数 (UTF-16 コードユニット, RunLengthArray)
+    int justification;   // 行揃え 0=左 1=右 2=中央 (3..=両端揃え系)
+
+    TextParagraph() : length(0), justification(0) {}
+  };
+
   // テキストレイヤ情報 (追加レイヤ情報 'TySh' 由来)。
   struct TextLayerData {
     bool        present;         // テキストレイヤとしてパースできたか
     u16str      text;            // 本文全体 (改行は \r)
     double      transform[6];    // アフィン変換 xx,xy,yx,yy,tx,ty
     std::string orientation;     // "horizontal" / "vertical"
-    int         justification;   // 段落の行揃え 0=左 1=右 2=中央 (先頭段落)
+    int         justification;   // 段落の行揃え 0=左 1=右 2=中央 (先頭段落; 後方互換)
     std::vector<TextStyleRun> runs;
+    std::vector<TextParagraph> paragraphs;  // 段落別 (行揃えが段落で変わる box text 用)
 
     TextLayerData()
       : present(false), transform{1,0,0,1,0,0},
