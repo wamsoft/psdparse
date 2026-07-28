@@ -52,7 +52,7 @@ py::object layerText(const psd::LayerInfo &l) {
     py::dict rd;
     rd["length"]       = r.length;         // UTF-16 code units covered by this run
     rd["font"]         = py::cast(r.font); // resolved font-set name
-    rd["size_px"]      = r.fontSize;       // pt
+    rd["size_px"]      = r.fontSize;       // px (文書解像度で換算済み; 継承分は pt×dpi/72)
     rd["tracking"]     = r.tracking;       // 1/1000 em
     rd["kerning"]      = r.kerning;        // manual kerning
     rd["auto_kerning"] = r.autoKerning;    // metrics/optical kerning on
@@ -134,7 +134,9 @@ PYBIND11_MODULE(psdparse, m) {
     .def_readonly("height",   &psd::Header::height)
     .def_readonly("width",    &psd::Header::width)
     .def_readonly("depth",    &psd::Header::depth)
-    .def_readonly("mode",     &psd::Header::mode);
+    .def_readonly("mode",     &psd::Header::mode)
+    .def_readonly("hres",     &psd::Header::hres)   // 水平解像度 dpi (既定 72)
+    .def_readonly("vres",     &psd::Header::vres);  // 垂直解像度 dpi
 
   py::class_<psd::ChannelInfo>(m, "ChannelInfo")
     .def_readonly("id",     &psd::ChannelInfo::id)

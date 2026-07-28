@@ -157,6 +157,8 @@ namespace psd {
 		int width;
 		int depth;
 		int mode;
+		double hres = 72.0;   // 水平解像度 dpi (image resource 1005)。 既定 72。
+		double vres = 72.0;   // 垂直解像度 dpi。
 	};
 
   // RGBAカラー
@@ -403,10 +405,13 @@ namespace psd {
     int         tracking;    // トラッキング (字送り, 1/1000 em)
     int         kerning;     // 手動カーニング
     bool        autoKerning; // 自動カーニング (メトリクス/オプティカル) 有効
+    bool        sizeInherited; // FontSize を既定 StyleSheet から継承したか。
+                               // 継承分は nominal pt なので dpi/72 で px 化する
+                               // (明示 run の FontSize は既に解決済み px)。内部用。
 
     TextStyleRun()
       : length(0), fontSize(0.0f), color{0,0,0,1}, hasColor(false),
-        tracking(0), kerning(0), autoKerning(false) {}
+        tracking(0), kerning(0), autoKerning(false), sizeInherited(false) {}
   };
 
   // テキストレイヤ情報 (追加レイヤ情報 'TySh' 由来)。

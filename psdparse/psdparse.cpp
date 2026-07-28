@@ -35,11 +35,22 @@ Data::processParsed()
       success = loadResourceLayerComps(*this, res);
       break;
 
+    case 1005: { // 0x03ED -- ResolutionInfo。 hRes/vRes は Fixed 16.16 の dpi。
+      if (res.data) {
+        int32_t h = res.data->getInt32();   // hRes (Fixed 16.16)
+        (void)res.data->getInt16();         // hResUnit
+        (void)res.data->getInt16();         // widthUnit
+        int32_t v = res.data->getInt32();   // vRes (Fixed 16.16)
+        if (h > 0) header.hres = (double)(uint32_t)h / 65536.0;
+        if (v > 0) header.vres = (double)(uint32_t)v / 65536.0;
+      }
+      break;
+    }
+
     default: // 未実装はそのままスルー
     case 1000:  // 0x03E8 -- (Obsolete--Photoshop 2.0 only ) Contains five 2-byte values: number of channels, rows, columns, depth, and mode
     case 1001:  // 0x03E9 -- Macintosh print manager print info record
     case 1003:  // 0x03EB -- (Obsolete--Photoshop 2.0 only ) Indexed color table
-    case 1005:  // 0x03ED -- ResolutionInfo structure. See Appendix A in Photoshop API Guide.pdf.
     case 1006:  // 0x03EE -- Names of the alpha channels as a series of Pascal strings.
     case 1007:  // 0x03EF -- (Obsolete) See ID 1077DisplayInfo structure. See Appendix A in Photoshop API Guide.pdf.
     case 1008:  // 0x03F0 -- The caption as a Pascal string.
@@ -292,6 +303,23 @@ Data::processParsed()
       break;
     default:
       break;
+    }
+  }
+
+  // テキスト run の FontSize を px に正規化する (レイヤ解析後・解像度確定後)。 明示
+  // run の FontSize は既に解決済み px だが、 既定 StyleSheet から継承した分は nominal
+  // pt なので dpi/72 を掛ける (300dpi なら 12pt → 50px)。
+  {
+    double sc = header.hres / 72.0;
+    if (sc != 1.0) {
+      for (uint32_t li = 0; li < layerList.size(); li++) {
+        TextLayerData &td = layerList[li].textData;
+        if (!td.present) continue;
+        for (size_t ri = 0; ri < td.runs.size(); ri++) {
+          if (td.runs[ri].sizeInherited)
+            td.runs[ri].fontSize *= (float)sc;
+        }
+      }
     }
   }
 

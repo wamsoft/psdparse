@@ -246,6 +246,7 @@ namespace {
           TextStyleRun r;
           // 既定を先に適用 (未指定フィールドの継承)。
           r.fontSize = defSize;
+          r.sizeInherited = true;   // 既定継承 (下で run が上書きすれば false)
           r.tracking = defTracking;
           if (defFontIdx >= 0 && defFontIdx < (int)fonts.size()) r.font = fonts[defFontIdx];
           if (defHasColor) {
@@ -264,7 +265,10 @@ namespace {
               if (idx >= 0 && idx < (int)fonts.size()) r.font = fonts[idx];
             }
             Node *fsz = dget(ssd, "FontSize");
-            if (fsz && fsz->kind == Node::NUMBER) r.fontSize = (float)fsz->num;
+            if (fsz && fsz->kind == Node::NUMBER) {
+              r.fontSize = (float)fsz->num;   // 明示 = 解決済み px
+              r.sizeInherited = false;
+            }
             Node *trk = dget(ssd, "Tracking");
             if (trk && trk->kind == Node::NUMBER) r.tracking = (int)trk->num;
             Node *krn = dget(ssd, "Kerning");
