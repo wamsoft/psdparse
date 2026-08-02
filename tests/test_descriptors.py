@@ -88,6 +88,14 @@ def test_descriptor_bad_key_raises(psd_group):
         psd_group.layers[0].descriptor("ab")
 
 
+def test_descriptor_absent_key_none(psd_group):
+    # A well-formed but absent 4cc key returns None (no exception). The
+    # smart-object / vector keys now carry known default skips so callers can
+    # omit `skip`; here we just confirm the absent-key path is clean.
+    for key in ("SoLd", "vstk", "vscg", "vogk", "CgEd"):
+        assert psd_group.layers[0].descriptor(key) is None
+
+
 def test_info_keys_are_4cc(psd_group):
     for l in psd_group.layers:
         keys = l.info_keys

@@ -277,18 +277,30 @@ namespace psd {
 	};
 	
 	struct GlobalLayerMaskInfo {
-		int overlayColorSpace;
-		int color1;
-		int color2;
-		int color3;
-		int color4;
-		int opacity;
-		int kind;
+		bool present = false;  // 空でない global layer mask info ブロックがあったか
+		int overlayColorSpace = 0;
+		int color1 = 0;
+		int color2 = 0;
+		int color3 = 0;
+		int color4 = 0;
+		int opacity = 0;
+		int kind = 0;
 	};
 
 	struct LayerMask {
     bool present = false;  // マスクブロック (size>0) が存在したか
-    bool hasReal = false;  // real/user mask (size>20) を含むか
+    bool hasReal = false;  // real/user mask (size>=36) を含むか
+    // マスクパラメータ (density/feather)。 flags bit4 (parameters_applied) が
+    // 立っているとき本体が続く。density は 0..255 (-1=不在)、feather は double。
+    bool hasParameters = false;   // パラメータブロックが実在したか
+    int  paramFlags = 0;          // パラメータ有無ビット (bit0:userDensity /
+                                  // bit1:userFeather / bit2:vecDensity / bit3:vecFeather)
+    int  userMaskDensity = -1;    // ユーザーマスク濃度 0..255 (-1=不在)
+    double userMaskFeather = 0.0; // ユーザーマスクぼかし (px)
+    bool hasUserFeather = false;
+    int  vectorMaskDensity = -1;  // ベクタマスク濃度 0..255 (-1=不在)
+    double vectorMaskFeather = 0.0;
+    bool hasVectorFeather = false;
     int width;
     int height;
 		int top;

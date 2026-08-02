@@ -1,6 +1,7 @@
 
 #include "psdfile.h"
 #include <cstring>
+#include <cmath>
 
 #define USE_ZLIB
 #ifdef USE_ZLIB
@@ -397,6 +398,84 @@ namespace psd {
         T *kp = chK + width * y;
         for (int x = 0; x < linePixel; x++) {
           *pix++ = cmykCompoToRgba32<T>(format, *cp++, *mp++, *yp++, *kp++);
+        }
+      }
+    }
+  }
+
+  // CIELAB(D65) を sRGB 8bit へ変換する。 L∈[0,100], a,b∈[-128,127]。
+  // Photoshop の Lab とは参照白(D50)やレンダリング intent が厳密には異なるため
+  // 近似だが、従来 Lab は完全に未対応 (全ゼロ出力) だったのを実用値に置き換える。
+  inline void labToRgb8(double L, double a, double b,
+                        uint8_t &R, uint8_t &G, uint8_t &B)
+  {
+    double fy = (L + 16.0) / 116.0;
+    double fx = fy + a / 500.0;
+    double fz = fy - b / 200.0;
+    auto finv = [](double t) {
+      double t3 = t * t * t;
+      return (t3 > 0.008856) ? t3 : (t - 16.0 / 116.0) / 7.787;
+    };
+    // D65 reference white
+    double X = 0.95047 * finv(fx);
+    double Y = 1.00000 * finv(fy);
+    double Z = 1.08883 * finv(fz);
+    // XYZ -> linear sRGB
+    double rl =  3.2406 * X - 1.5372 * Y - 0.4986 * Z;
+    double gl = -0.9689 * X + 1.8758 * Y + 0.0415 * Z;
+    double bl =  0.0557 * X - 0.2040 * Y + 1.0570 * Z;
+    auto gamma = [](double c) {
+      c = (c <= 0.0031308) ? (12.92 * c) : (1.055 * std::pow(c, 1.0 / 2.4) - 0.055);
+      return (c < 0.0) ? 0.0 : (c > 1.0 ? 1.0 : c);
+    };
+    R = (uint8_t)(gamma(rl) * 255.0 + 0.5);
+    G = (uint8_t)(gamma(gl) * 255.0 + 0.5);
+    B = (uint8_t)(gamma(bl) * 255.0 + 0.5);
+  }
+
+  // Lab チャネルを統合し pitch byte 単位で merged にフィルする。
+  // 8bit: L=0..255→0..100, a/b=0..255→-128..127。 16bit は上位バイト近似。
+  // 32bit Lab は Photoshop に存在しないため非対応。
+  template <typename T>
+  void mergeChannelsLab(void *merged, int width, int height,
+                        std::vector<int> &ids,
+                        std::vector<uint8_t*> &decodedChannels,
+                        const ColorFormat &format, int bufPitchByte)
+  {
+    T *chL = 0, *chA = 0, *chB = 0, *chAlpha = 0;
+    for (uint32_t i = 0; i < ids.size(); i++) {
+      switch (ids[i]) {
+      case CH_ID_TRANSP: chAlpha = (T*)decodedChannels[i]; break;
+      case 0:            chL     = (T*)decodedChannels[i]; break;  // L
+      case 1:            chA     = (T*)decodedChannels[i]; break;  // a
+      case 2:            chB     = (T*)decodedChannels[i]; break;  // b
+      default: break;
+      }
+    }
+    if (!chL || !chA || !chB) return;
+
+    // T の 1 サンプルを 0..255 相当へ正規化するスケール。
+    const double norm = (sizeof(T) == 1) ? 1.0 : (255.0 / 65535.0);
+
+    int pitchPixel = std::abs(bufPitchByte) / 4;
+    int linePixel  = std::min(width, pitchPixel);
+    for (int y = 0; y < height; y++) {
+      uint32_t *pix = (uint32_t *)((uint8_t *)merged + bufPitchByte * y);
+      T *lp = chL + width * y;
+      T *ap = chA + width * y;
+      T *bp = chB + width * y;
+      T *alp = chAlpha ? chAlpha + width * y : 0;
+      for (int x = 0; x < linePixel; x++) {
+        double Lv = ((double)(*lp++) * norm) / 255.0 * 100.0;
+        double av = ((double)(*ap++) * norm) - 128.0;
+        double bv = ((double)(*bp++) * norm) - 128.0;
+        uint8_t R, G, B;
+        labToRgb8(Lv, av, bv, R, G, B);
+        if (alp) {
+          uint8_t A = (uint8_t)((double)(*alp++) * norm);
+          *pix++ = rgbaCompoToRgba32<uint8_t>(format, R, G, B, A);
+        } else {
+          *pix++ = rgbaCompoToRgba32<uint8_t>(format, R, G, B);
         }
       }
     }
@@ -878,6 +957,7 @@ namespace psd {
                           decodedChannels[0], format, bufPitchByte);
       break;
     case COLOR_MODE_GRAYSCALE:
+    case COLOR_MODE_DUOTONE:   // Duotone は grayscale として格納される (Adobe 仕様)
       switch (header.depth) {
       case 8:
         mergeChannelsGray<uint8_t>(buf, imageWidth, imageHeight, channelIds,
@@ -935,10 +1015,22 @@ namespace psd {
         break;
       }
       break;
-    case COLOR_MODE_MULTICHANNEL:
-    case COLOR_MODE_DUOTONE:
     case COLOR_MODE_LAB:
-      // unsuported yet
+      switch (header.depth) {
+      case 8:
+        mergeChannelsLab<uint8_t>(buf, imageWidth, imageHeight, channelIds,
+                                  decodedChannels, format, bufPitchByte);
+        break;
+      case 16:
+        mergeChannelsLab<uint16_t>(buf, imageWidth, imageHeight, channelIds,
+                                   decodedChannels, format, bufPitchByte);
+        break;
+      default:  // 32bit Lab は存在しない
+        break;
+      }
+      break;
+    case COLOR_MODE_MULTICHANNEL:
+      // 任意スポットチャネル群で RGB への正準的な変換が無いため未対応
       break;
     default:
       break;
@@ -1052,6 +1144,7 @@ namespace psd {
                           decodedChannels[0], format, bufPitchByte);
       break;
     case COLOR_MODE_GRAYSCALE:
+    case COLOR_MODE_DUOTONE:   // Duotone は grayscale として格納される (Adobe 仕様)
       switch (header.depth) {
       case 8:
         mergeChannelsGray<uint8_t>(buf, imageWidth, imageHeight, channelIds,
@@ -1112,10 +1205,22 @@ namespace psd {
         break;
       }
       break;
-    case COLOR_MODE_MULTICHANNEL:
-    case COLOR_MODE_DUOTONE:
     case COLOR_MODE_LAB:
-      // unsuported yet
+      switch (header.depth) {
+      case 8:
+        mergeChannelsLab<uint8_t>(buf, imageWidth, imageHeight, channelIds,
+                                  decodedChannels, format, bufPitchByte);
+        break;
+      case 16:
+        mergeChannelsLab<uint16_t>(buf, imageWidth, imageHeight, channelIds,
+                                   decodedChannels, format, bufPitchByte);
+        break;
+      default:  // 32bit Lab は存在しない
+        break;
+      }
+      break;
+    case COLOR_MODE_MULTICHANNEL:
+      // 任意スポットチャネル群で RGB への正準的な変換が無いため未対応
       break;
     default:
       break;

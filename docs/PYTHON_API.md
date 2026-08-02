@@ -107,6 +107,7 @@ Read-only view of one layer.
 | `blending_ranges` | `dict` \| `None` | "Blend If" ranges (`None` when absent) — see below |
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
+| `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
 | `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
 | `visible` | `bool` | flag bit 1 inverted |
 | `transparency_protected` | `bool` | flag bit 0 |
@@ -175,15 +176,23 @@ for layer in p.layers:
   "disabled": False,         # bit1: mask disabled
   "inverted": False,         # bit2: invert (obsolete)
   "from_render": False,      # bit3: mask from rendering other data
-  "has_parameters": False,   # bit4: density/feather present (not decoded yet)
+  "has_parameters": True,    # bit4: density/feather block present
+  "user_density": 128,       # 0..255, or None if not stored
+  "user_feather": 2.5,       # feather radius (px), or None
+  "vector_density": None,    # 0..255, or None
+  "vector_feather": None,    # feather radius (px), or None
   "real": None,              # or a nested dict (below) for a real/user mask
 }
 ```
 
-When the record carries a *real* (user + vector combined) mask, `real` is a dict
-with `flags`, `background`, and the enclosing `top/left/bottom/right`. The mask
-**pixels** are unchanged from before — fetch them with
+When the record carries a *real* (user + vector combined) mask (block size ≥ 36),
+`real` is a dict with `flags`, `background`, and the enclosing
+`top/left/bottom/right`. The mask **pixels** are unchanged — fetch them with
 `p.layer_image(i, "mask")`.
+
+`user_density`/`user_feather`/`vector_density`/`vector_feather` are only non-`None`
+when `has_parameters` is set and the corresponding value was stored. (Fixed in
+0.6.0: the real-mask section was previously decoded one byte off.)
 
 ### `layer.blending_ranges` — "Blend If" ranges
 
@@ -224,6 +233,7 @@ p.guides        # dict|None : {"horizontal_grid", "vertical_grid", "guides":[{"l
 p.slices        # dict|None : {"group_name", "bounding":{...}, "slices":[{...}]}
 p.layer_comps   # list[dict]: [{"id","name","comment","record_visibility","record_position","record_appearance"}]
 p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparency_index"} for indexed-color PSDs
+p.global_layer_mask  # dict|None : {"overlay_color_space", "color":(c1,c2,c3,c4), "opacity", "kind"}
 ```
 
 ### Image resources (raw)
@@ -305,9 +315,12 @@ Notes:
 - `layer.effects` is `lfx2` (object-based, Photoshop 6+). The older binary
   `lrFX` block is **not** a descriptor and returns `None` via `descriptor()`.
 - `descriptor(key, skip)` is the generic escape hatch: `skip` is the number of
-  version-prefix bytes before the descriptor (`-1` auto-detects for `lfx2` = 8
-  and `SoCo`/`GdFl`/`PtFl` = 4, otherwise 0). Use `info_keys` to discover which
-  blocks a layer carries.
+  version-prefix bytes before the descriptor (`-1` auto-detects for the known
+  descriptor keys: `lfx2` = 8, `SoCo`/`GdFl`/`PtFl`/`vstk`/`CgEd` = 4,
+  `vscg`/`vogk` = 8, `SoLd` = 12, otherwise 0). Use `info_keys` to discover which
+  blocks a layer carries. The smart-object/vector defaults (`SoLd`/`vstk`/`vscg`/
+  `vogk`) are set from the psd-tools layouts but not yet verified against a real
+  smart-object sample — override `skip` if a parse looks wrong.
 - Decoding is **lazy** — the descriptor is parsed from the block's raw bytes on
   each access, so cache the result if you read it repeatedly.
 
@@ -341,6 +354,12 @@ COLOR_MODE_DUOTONE, COLOR_MODE_LAB
 psdparse.LAYER_TYPE_NORMAL, LAYER_TYPE_HIDDEN, LAYER_TYPE_FOLDER,
 LAYER_TYPE_ADJUST, LAYER_TYPE_FILL
 ```
+
+Pixel extraction (`merged_image()` / `layer_image()`) supports Bitmap, Grayscale,
+RGB, Indexed, CMYK (→RGB), **Duotone** (rendered as grayscale) and **Lab**
+(standard D65 CIELAB→sRGB approximation — Photoshop uses D50, so highly saturated
+colors differ slightly). **Multichannel** has no canonical RGB mapping and is not
+rendered.
 
 ## Pixel format
 

@@ -13,7 +13,7 @@ psdparse が PSD のどの機能を、どの水準で扱えるかの一覧です
 | 📦 | 生バイトのみ保持 (ラウンドトリップ用。Python へは未公開) |
 | ❌ | 未対応 — パースしていない |
 
-最終更新: 2026-08-02 (v0.4.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
+最終更新: 2026-08-02 (v0.6.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
 Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 
 ---
@@ -44,9 +44,9 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | RGB (8/16/32) | ✅ | |
 | Indexed (8bit) | ✅ | パレットは `PSDFile.color_table` |
 | CMYK (8/16/32) | ✅ | RGB へ変換して出力 |
-| Multichannel | ❌ | `getLayerImage` 未対応 |
-| Duotone | ❌ | 同上 |
-| Lab | ❌ | 同上 |
+| Multichannel | ❌ | RGB への正準的変換が無く未対応 |
+| Duotone (8/16/32) | ✅ | grayscale として展開 (Adobe 仕様: duotone データは gray) |
+| Lab (8/16) | ✅ | 標準 D65 CIELAB→sRGB 近似で変換 (Photoshop は D50 のため彩度の高い色は差あり)。32bit Lab は非存在 |
 
 出力は常に **BGRA インターリーブ** (4 byte/px)。ICC を用いた色変換は行いません。
 
@@ -74,15 +74,15 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | レイヤ種別 | ✅ | `layer_type` (NORMAL/HIDDEN/FOLDER/ADJUST/FILL/TEXT) |
 | **フォルダ階層 (親子)** | ✅ | `parent_index` (v0.3.0) |
 | チャンネル構成 (id/length) | ✅ | `channels[]` |
-| シートカラー (レイヤパネルの色ラベル, `lclr`) | ❌ | 未デコード |
+| シートカラー (レイヤパネルの色ラベル, `lclr`) | ✅ | `layer.sheet_color` (`{index,name}`, v0.6.0) |
 
 ## レイヤマスク / ブレンド範囲
 
 | 機能 | 状況 | API |
 |---|:---:|---|
 | マスク矩形/フラグ/既定色 | ✅ | `layer.mask` (v0.3.0) |
-| real/user mask (>20byte) | ✅ | `layer.mask["real"]` |
-| density / feather | 🟡 | `has_parameters` フラグのみ公開。値 (MaskParameters) は未デコード |
+| real/user mask (size>=36) | ✅ | `layer.mask["real"]` (v0.6.0 でオフセット 1 byte ずれを修正) |
+| density / feather | ✅ | `layer.mask` の `user_density`/`user_feather`/`vector_density`/`vector_feather` (v0.6.0) |
 | ベクタマスク / パス (`vmsk`/`vsms`) | ❌ | 未対応 |
 | ブレンディングレンジ ("Blend If") | ✅ | `layer.blending_ranges` (raw 32bit packed) |
 
@@ -118,9 +118,9 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 |---|:---:|---|
 | 調整レイヤの種別判定 | ✅ | `layer_type == ADJUST` |
 | 調整レイヤのパラメータ (levels/curves 等, binary) | ❌ | 未デコード。descriptor 形式のもの (`CgEd` 等) は `descriptor()` で取得可 |
-| スマートオブジェクト変換 (`SoLd`/`PlLd`) | 🟡 | `descriptor()` で試行可 (未検証、既定 skip 要調整) |
+| スマートオブジェクト変換 (`SoLd`) | 🟡 | `descriptor("SoLd")` で取得可 (既定 skip=12 を設定済。実サンプル未検証) |
 | スマートオブジェクト埋め込みデータ抽出 (`lnkD`) | ❌ | 未対応 |
-| ベクタストローク/シェイプ (`vstk`/`vscg`) | 🟡 | `descriptor()` 経由で取得可 (未検証) |
+| ベクタストローク/シェイプ (`vstk`/`vscg`/`vogk`) | 🟡 | `descriptor()` 経由で取得可 (既定 skip 設定済、実サンプル未検証) |
 | ライブシェイプ情報 (origination) | ❌ | 未対応 |
 
 ---
@@ -142,19 +142,19 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 | 任意リソースの生バイト | ✅ | `PSDFile.image_resource(id)` / `image_resource_ids` (v0.5.0) |
 | 上記の内容デコード (EXIF タグ解析等) | ❌ | 生バイトを返すのみ。解析は利用側 (Pillow 等) で |
 | バージョン情報 / アルファチャンネル名 / その他 | 📦→✅ | `image_resource(id)` で生バイト取得可 |
-| Global layer mask info | 📦 | 構造体フィールドは未充填、生バイトのみ |
+| Global layer mask info | ✅ | `PSDFile.global_layer_mask` (overlay 色/opacity/kind, v0.6.0) |
 
 ---
 
 ## まとめ (一言で)
 
-- **得意**: レイヤ列挙 + 属性 + 階層、RGB/CMYK/Gray/Indexed のピクセル取得、
-  テキストのラン単位スタイル、レイヤー効果/塗りの descriptor、文書メタデータ
-  (ガイド/スライス/カンプ) と image resource の生バイト (ICC/EXIF/XMP/サムネイル)、
-  そして **byte-identical なラウンドトリップ**。
-- **未対応/限定的**: Lab/Duotone/Multichannel ピクセル、調整レイヤの数値
-  パラメータ、ベクタパス、スマートオブジェクト実体、効果込みの再合成、
-  そして編集して保存。
+- **得意**: レイヤ列挙 + 属性 + 階層 + 色ラベル、RGB/CMYK/Gray/Indexed/Lab/Duotone
+  のピクセル取得、テキストのラン単位スタイル、マスクの density/feather、レイヤー
+  効果/塗りの descriptor、文書メタデータ (ガイド/スライス/カンプ/global layer
+  mask) と image resource の生バイト (ICC/EXIF/XMP/サムネイル)、そして
+  **byte-identical なラウンドトリップ**。
+- **未対応/限定的**: Multichannel ピクセル、調整レイヤの数値パラメータ、ベクタ
+  パス、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成、そして編集して保存。
+- Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを
-  返すのみ。残る 📦 (global layer mask info の構造化) は「公開するだけ」で対応可
-  (ROADMAP 参照)。
+  返すのみ。

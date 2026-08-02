@@ -93,8 +93,17 @@ py::object layerMask(const psd::LayerInfo &l) {
   d["disabled"]   = (bool)(m.flags & 2);  // mask disabled
   d["inverted"]   = (bool)(m.flags & 4);  // invert (obsolete)
   d["from_render"] = (bool)(m.flags & 8); // mask from rendering other data
-  d["has_parameters"] = (bool)(m.flags & 16); // density/feather present (not decoded yet)
-  if (m.hasReal) {                         // real/user mask (block size > 20)
+  d["has_parameters"] = (bool)(m.flags & 16); // density/feather block present
+  // マスクパラメータ (density 0..255 / feather px)。 未指定フィールドは None。
+  d["user_density"]   = (m.userMaskDensity >= 0) ? py::object(py::cast(m.userMaskDensity))
+                                                 : py::object(py::none());
+  d["user_feather"]   = m.hasUserFeather   ? py::object(py::cast(m.userMaskFeather))
+                                           : py::object(py::none());
+  d["vector_density"] = (m.vectorMaskDensity >= 0) ? py::object(py::cast(m.vectorMaskDensity))
+                                                   : py::object(py::none());
+  d["vector_feather"] = m.hasVectorFeather ? py::object(py::cast(m.vectorMaskFeather))
+                                           : py::object(py::none());
+  if (m.hasReal) {                         // real/user mask (block size >= 36)
     py::dict rd;
     rd["flags"]      = m.realFlags;
     rd["background"] = m.realUserMaskBackground;
@@ -121,6 +130,30 @@ py::object layerBlendingRanges(const psd::LayerInfo &l) {
     ch.append(py::make_tuple(c.source, c.dest));
   d["channels"] = ch;
   return std::move(d);
+}
+
+// Sheet (layer-panel) color label from the 'lclr' block: 2-byte index + 6
+// padding bytes. Returns {"index", "name"} or None when the layer has no
+// label (index 0 / "none" is still reported so callers can distinguish
+// "explicitly none" from "no lclr block"). Names match Photoshop's order.
+py::object layerSheetColor(const psd::LayerInfo &l) {
+  static const char *kNames[] = {
+    "none", "red", "orange", "yellow", "green", "blue", "violet", "gray",
+    "seafoam", "indigo", "magenta", "fuschia",
+  };
+  for (const auto &a : l.extraData.additionalLayers) {
+    if (a.key != 'lclr' || !a.data) continue;
+    psd::IteratorBase *rd = a.data->clone();
+    rd->init();
+    int idx = (uint16_t)rd->getInt16(true);
+    delete rd;
+    py::dict d;
+    d["index"] = idx;
+    d["name"]  = (idx >= 0 && idx < (int)(sizeof(kNames) / sizeof(kNames[0])))
+                 ? kNames[idx] : "unknown";
+    return std::move(d);
+  }
+  return py::none();
 }
 
 // Grid & guides image resource (1032) as a dict, or None when the PSD has none.
@@ -210,6 +243,19 @@ py::object psdColorTable(psd::PSDFile &self) {
   for (const auto &c : t.colors)
     cols.append(py::make_tuple(c.r, c.g, c.b, c.a));
   d["colors"] = cols;
+  return std::move(d);
+}
+
+// Global layer mask info (the document-level overlay color used to display
+// masks) as a dict, or None when the block is empty/absent.
+py::object psdGlobalLayerMask(psd::PSDFile &self) {
+  const psd::GlobalLayerMaskInfo &g = self.globalLayerMaskInfo;
+  if (!g.present) return py::none();
+  py::dict d;
+  d["overlay_color_space"] = g.overlayColorSpace;
+  d["color"]   = py::make_tuple(g.color1, g.color2, g.color3, g.color4);
+  d["opacity"] = g.opacity;   // 0..100
+  d["kind"]    = g.kind;      // 0=inverted / 1=all-masks / 128=per-layer
   return std::move(d);
 }
 
@@ -338,9 +384,13 @@ py::object layerDescriptor(const psd::LayerInfo &l, const std::string &keyStr, i
             ((int)(uint8_t)keyStr[2] << 8)  |  (int)(uint8_t)keyStr[3];
   if (skip < 0) {
     switch (key) {
-    case 'lfx2':                             skip = 8; break;
-    case 'SoCo': case 'GdFl': case 'PtFl':   skip = 4; break;
-    default:                                 skip = 0; break;
+    case 'lfx2':                             skip = 8;  break;  // objVer + descVer
+    case 'SoCo': case 'GdFl': case 'PtFl':   skip = 4;  break;  // descVer
+    case 'SoLd': case 'SoLE':                skip = 12; break;  // 'soLD' + ver + descVer
+    case 'vstk': case 'CgEd':                skip = 4;  break;  // descVer
+    case 'vscg':                             skip = 8;  break;  // key + ver
+    case 'vogk':                             skip = 8;  break;  // ver + dataVer
+    default:                                 skip = 0;  break;
     }
   }
   return keyDescriptor(l, key, skip);
@@ -537,6 +587,9 @@ PYBIND11_MODULE(psdparse, m) {
     .def_property_readonly("fill", &layerFill,
         "Fill-layer content as {'type': 'solid'|'gradient'|'pattern', "
         "'data': {...}} from SoCo/GdFl/PtFl, or None.")
+    .def_property_readonly("sheet_color", &layerSheetColor,
+        "Layer-panel color label ('lclr') as {'index', 'name'} (0/'none' .. "
+        "11/'fuschia'), or None when the layer carries no lclr block.")
     .def_property_readonly("info_keys", &layerInfoKeys,
         "List of the 4cc keys of every additional-layer-info block present.")
     .def("descriptor", &layerDescriptor,
@@ -614,6 +667,9 @@ PYBIND11_MODULE(psdparse, m) {
     .def_property_readonly("color_table", &psdColorTable,
          "Indexed-color palette as a dict (colors[], valid_count, "
          "transparency_index), or None for non-indexed PSDs.")
+    .def_property_readonly("global_layer_mask", &psdGlobalLayerMask,
+         "Global layer mask info as a dict (overlay_color_space, color, "
+         "opacity, kind), or None when the block is empty/absent.")
     .def_property_readonly("image_resource_ids", &imageResourceIds,
          "List of the integer IDs of every image resource present.")
     .def("image_resource", &imageResource, py::arg("id"),

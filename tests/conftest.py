@@ -70,6 +70,31 @@ def sample_mask_psd():
     return _find_sample("masktest.psd")
 
 
+@pytest.fixture(scope="session")
+def sample_maskparams_psd():
+    """A PSD whose layer mask carries a real/user mask section plus mask
+    parameters (density + feather) and an lclr color label (synthesized)."""
+    return _find_sample("maskparams.psd")
+
+
+@pytest.fixture(scope="session")
+def sample_lab_psd():
+    """A Lab-mode PSD with known swatches (synthesized)."""
+    return _find_sample("labsample.psd")
+
+
+@pytest.fixture(scope="session")
+def sample_gray_psd():
+    """A grayscale PSD (synthesized)."""
+    return _find_sample("graysample.psd")
+
+
+@pytest.fixture(scope="session")
+def sample_duo_psd():
+    """The grayscale PSD with its color mode flipped to Duotone (synthesized)."""
+    return _find_sample("duosample.psd")
+
+
 @pytest.fixture
 def psd_ui(sample_ui_psd):
     p = psdparse.PSDFile()
@@ -95,6 +120,34 @@ def psd_group(sample_group_psd):
 def psd_mask(sample_mask_psd):
     p = psdparse.PSDFile()
     assert p.load(str(sample_mask_psd))
+    return p
+
+
+@pytest.fixture
+def psd_maskparams(sample_maskparams_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_maskparams_psd))
+    return p
+
+
+@pytest.fixture
+def psd_lab(sample_lab_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_lab_psd))
+    return p
+
+
+@pytest.fixture
+def psd_gray(sample_gray_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_gray_psd))
+    return p
+
+
+@pytest.fixture
+def psd_duo(sample_duo_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_duo_psd))
     return p
 
 

@@ -443,17 +443,17 @@ void parseImageResources(IteratorBase &outer, Data &data) {
 }
 
 void parseLayerMask(IteratorBase &r, LayerMask &m, int size) {
-  if (size <= 0) { std::memset(&m, 0, sizeof(LayerMask)); return; }
+  if (size <= 0) { m = LayerMask(); return; }
+  // Field order matches psd-tools' MaskData._read_body (the Adobe spec is
+  // wrong here): rect, defaultColor, flags, [real section if size>=36],
+  // [parameters if flags bit4]. There is NO filler byte after flags.
   m.top    = r.getInt32(true);
   m.left   = r.getInt32(true);
   m.bottom = r.getInt32(true);
   m.right  = r.getInt32(true);
   m.defaultColor = r.getCh();
   m.flags        = r.getCh();
-  // The spec says one filler byte here on size==20.  At size>20 the next byte
-  // is realFlags; the original grammar consumed a byte before realFlags too.
-  (void)r.getCh();
-  if (size > 20) {
+  if (size >= 36) {
     m.hasReal                = true;
     m.realFlags              = r.getCh();
     m.realUserMaskBackground = r.getCh();
@@ -461,6 +461,20 @@ void parseLayerMask(IteratorBase &r, LayerMask &m, int size) {
     m.enclosingLeft          = r.getInt32(true);
     m.enclosingBottom        = r.getInt32(true);
     m.enclosingRight         = r.getInt32(true);
+  }
+  if (m.flags & 0x10) {  // parameters_applied
+    m.hasParameters = true;
+    m.paramFlags    = r.getCh();
+    if (m.paramFlags & 0x01) m.userMaskDensity = r.getCh();
+    if (m.paramFlags & 0x02) {
+      pun64 v; v.i = (uint64_t)r.getInt64(true);
+      m.userMaskFeather = v.f; m.hasUserFeather = true;
+    }
+    if (m.paramFlags & 0x04) m.vectorMaskDensity = r.getCh();
+    if (m.paramFlags & 0x08) {
+      pun64 v; v.i = (uint64_t)r.getInt64(true);
+      m.vectorMaskFeather = v.f; m.hasVectorFeather = true;
+    }
   }
   m.width  = m.right  - m.left;
   m.height = m.bottom - m.top;
@@ -580,6 +594,7 @@ void parseGlobalLayerMaskInfo(IteratorBase &r, GlobalLayerMaskInfo &g) {
   g.color4 = r.getInt16(true);
   g.opacity = r.getInt16(true);
   g.kind    = r.getCh();
+  g.present = true;
   // trailing filler bytes are ignored
 }
 
