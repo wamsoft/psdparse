@@ -42,7 +42,11 @@ Open `path` as a `std::ifstream` and parse via `StreamReader`. Functionally equi
 p.save(path: str) -> bool
 ```
 
-Save the currently loaded data back to disk as PSD. **The current implementation is round-trip-only**: `p.load(a); p.save(b)` produces a byte-identical copy. Modifying `layers` after load and then saving is not yet supported (see [ROADMAP.md](ROADMAP.md) for the per-channel / RLE-encoder work needed for that).
+Save the currently loaded (and optionally edited) data back to disk as PSD.
+An **unmodified** file round-trips byte-identically (`p.load(a); p.save(b)`),
+and edits are re-serialized on save — see [Editing & saving](#editing--saving).
+Do not save over a file that is currently loaded (returns `False`; see
+[Saving](#saving)).
 
 ### Header
 
@@ -225,13 +229,37 @@ for i, l in enumerate(p.layers):
 
 ## Editing & saving
 
-psdparse can make **structural edits** to a loaded PSD and save the result.
-The model is *lazy*: edits only rearrange in-memory references — no pixels are
-copied or re-encoded until `save()`, which re-serializes the layer section.
+psdparse can edit a loaded PSD (or build one from scratch) and save the result.
+Editable: layer **parameters** (opacity/visibility/clipping/blend/fill-opacity),
+**names**, **structure** (delete/move/duplicate/cross-file copy), **pixels** and
+**masks**, layer-**effect values**, and **text content** — plus `create_blank`
+for new documents.
 
-The original file is never touched (`load()` mmaps it read-only; `save()` writes
-a new path). An **unmodified** file still round-trips byte-identically; the
-per-layer re-serialization only kicks in once you actually edit the layer list.
+The model is *lazy*: edits only touch in-memory fields/references — nothing is
+re-encoded until `save()`, which re-serializes just the parts you changed. The
+original file is never touched (`load()` mmaps it read-only; `save()` writes a
+new path), and an **unmodified** file still round-trips byte-identically — the
+re-serialization only kicks in for layers you actually edited. Byte-exact
+serializers back the effect (`lfx2`) and text (EngineData) editing, so unedited
+descriptors reproduce their original bytes exactly.
+
+Quick map of the API (details in the subsections below):
+
+| Want to… | Use |
+|---|---|
+| change opacity / visibility / blend / clipping | `layer.opacity = …`, `layer.visible = …`, `layer.set_blend_mode("mul ")` |
+| rename a layer | `layer.name_unicode = …` / `p.set_layer_name(i, …)` |
+| change fill opacity | `layer.fill_opacity = …` |
+| delete / move / duplicate | `p.delete_layer(i)` / `p.move_layer(a,b)` / `p.duplicate_layer(i)` |
+| copy a layer from another file | `p.copy_layer_from(src, j)` |
+| replace layer pixels / add an image layer | `p.set_layer_pixels(...)` / `p.add_layer(...)` |
+| set mask pixels + geometry / mask values | `p.set_layer_mask_pixels(...)` / `p.set_layer_mask(...)` |
+| edit effect / descriptor values | `p.set_effects(i, changes)` / `p.set_layer_descriptor(...)` |
+| edit text content | `p.set_text(i, str)` |
+| build a new PSD | `p.create_blank(w, h)` then `add_layer(...)` |
+
+**8-bit RGB only** for the pixel/mask/new-document operations. The stored
+composite image is **not** re-rendered after edits (see [Saving](#saving)).
 
 ### Parameter edits (writable properties)
 
@@ -260,8 +288,9 @@ p.set_layer_mask(3, disabled=True, density=200, feather=2.5, default_color=0)
 ```
 
 `set_layer_mask` takes any subset of `disabled` (bool), `density` (0..255),
-`feather` (px), `default_color` (0..255). Editing a mask's **geometry** (rectangle)
-is not supported yet.
+`feather` (px), `default_color` (0..255). To change the mask **geometry**
+(rectangle) or its pixels, use `set_layer_mask_pixels(...)`
+(see [Mask pixels & geometry](#mask-pixels--geometry)).
 
 ### Effect / descriptor values (E3)
 
@@ -309,8 +338,8 @@ Notes:
   psdparse keeps a reference to the source automatically, so simply saving before
   discarding both is enough. Source and destination must share color mode and bit
   depth.
-- **Brand-new PSDs (from scratch)** are not yet supported (planned E5), and
-  **text-layer editing** is planned E6.
+- **New-from-scratch** documents (`create_blank`) and **text content** editing
+  (`set_text`) are covered in their own subsections below.
 - The stored **composite (merged) image is not regenerated** after edits — it
   stays as it was until Photoshop (or another editor) recomposites on open.
 

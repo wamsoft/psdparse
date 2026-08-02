@@ -4,7 +4,8 @@ Pure C++17 PSD (Photoshop) reader/writer library, with pybind11-based Python bin
 
 - Lazy I/O: PSD pixel data is **not** copied into memory at parse time. Only the structural metadata (a few hundred KB even for large files) is read upfront; layer pixels are paged in on demand via mmap or stream callbacks.
 - Round-trip save: `load(p) -> save(q)` produces a byte-identical PSD file.
-- Python wrapper: `import psdparse` → `PSDFile.load(path) / layer_image(i) / merged_image() / save(path)`.
+- **Edit & save**: add / delete / reorder / duplicate layers, copy layers between files, replace layer & mask pixels, edit parameters / names / masks / fill opacity, edit layer-effect (`lfx2`) values and text content, or build a PSD from scratch — all with byte-exact re-serialization of the parts you touch (unedited layers stay byte-identical).
+- Python wrapper: `import psdparse` → `PSDFile.load(path) / layer_image(i) / merged_image() / save(path)` plus the editing API.
 
 The library was extracted from the [psdfile](https://github.com/wamsoft/psdfile) kirikiri plugin in 2026. psdfile now consumes this library as a submodule.
 
@@ -90,11 +91,29 @@ layer_bgra = p.layer_image(0, "masked") # bytes, BGRA, 4*w*h
 p.save(r"out.psd")              # byte-identical round-trip
 ```
 
+Editing (8-bit RGB), re-serialized on save — unedited layers stay byte-identical:
+
+```python
+p.layers[0].opacity = 128                       # parameters
+p.layers[0].name_unicode = "背景"               # rename
+p.delete_layer(3); p.move_layer(1, 4)           # structure
+p.set_layer_pixels(0, bgra_bytes, w, h)         # replace pixels
+p.set_layer_mask_pixels(0, gray, 0, 0, w, h)    # mask pixels + geometry
+p.set_effects(0, {"masterFXSwitch": False})     # layer-effect values
+p.set_text(2, "新しいテキスト")                 # text content
+p.save(r"edited.psd")
+
+q = psdparse.PSDFile()                           # or build one from scratch
+q.create_blank(1024, 768)
+q.add_layer("bg", 0, 0, bgra_bytes, 1024, 768)
+q.save(r"new.psd")
+```
+
 Full API reference: [docs/PYTHON_API.md](docs/PYTHON_API.md).
 
 ## PSD feature coverage
 
-What psdparse can and cannot read, at a glance:
+What psdparse can and cannot read **and edit**, at a glance:
 [docs/SUPPORT.md](docs/SUPPORT.md) (対応状況マトリクス).
 
 ## Tests

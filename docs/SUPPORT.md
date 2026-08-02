@@ -1,19 +1,22 @@
 # psdparse PSD 対応状況 (Support Matrix)
 
 psdparse が PSD のどの機能を、どの水準で扱えるかの一覧です。psdparse は
-**参照 (読み取り) + ラウンドトリップ保存** に重点を置いた実装で、編集保存や
-高度な再合成は対象外です。
+**参照 (読み取り) + ラウンドトリップ保存** を土台に、**構造編集 (レイヤの
+追加/削除/並べ替え/複製、画素・マスク・パラメータ・効果・テキスト本文の編集、
+ゼロからの新規作成)** まで対応します (v0.7.0)。未編集のファイルは byte-identical
+に保存され、編集した部分だけがフィールドから再構築されます。効果込みの再合成
+(composite の再描画) は対象外です。
 
 対応状況の凡例:
 
 | 記号 | 意味 |
 |:---:|---|
-| ✅ | 対応済み — 構造化して取得できる |
+| ✅ | 対応済み — 構造化して取得 / 編集できる |
 | 🟡 | 部分対応 — 一部の値のみ / 生 descriptor 経由 |
 | 📦 | 生バイトのみ保持 (ラウンドトリップ用。Python へは未公開) |
 | ❌ | 未対応 — パースしていない |
 
-最終更新: 2026-08-02 (v0.6.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
+最終更新: 2026-08-02 (v0.7.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
 Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 
 ---
@@ -26,20 +29,31 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 解像度 (dpi, image resource 1005) | ✅ | `header.hres` / `header.vres` |
 | PSB (large document, version 2) | ❌ | `version` は読めるが、PSB 特有の 8 byte 長フィールドの分岐が無く未対応 |
 | ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
-| 編集保存: パラメータ変更 | ✅ | `layer.opacity`/`visible`/`set_blend_mode()` (v0.7.0) |
-| 編集保存: レイヤ改名 | ✅ | `layer.name_unicode = ...` / `set_layer_name()` — mask/blend は生バイト保持 (v0.7.0) |
-| 編集保存: マスク値編集 (disabled/density/feather/default色) | ✅ | `set_layer_mask(i, ...)` — 矩形/画素は不変 (v0.7.0) |
-| 編集保存: マスク画素/矩形 (幾何) の設定 | ✅ | `set_layer_mask_pixels(i, gray, top, left, w, h)` — 無ければ新規作成 (v0.7.0) |
-| 編集保存: 塗り不透明度 (fill opacity) | ✅ | `layer.fill_opacity = ...` (iOpa, v0.7.0) |
-| 編集保存: 効果 (lfx2) の値編集 | ✅ | `set_effects(i, changes)` — Descriptor シリアライザ実装済 (byte-exact) (v0.7.0) |
-| 編集保存: 任意 descriptor (塗り SoCo/GdFl/PtFl 等) の値編集 | ✅ | `set_layer_descriptor(i, key, changes)` (v0.7.0) |
-| 編集保存: レイヤ削除/並べ替え/複製 | ✅ | `delete_layer`/`move_layer`/`duplicate_layer` (v0.7.0) |
-| 編集保存: 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる (v0.7.0) |
-| 編集保存: 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` — 8bit RGB のみ (v0.7.0) |
-| 編集保存: 画像レイヤ新規追加 | ✅ | `add_layer(name, l, t, bgra, w, h)` — 8bit RGB のみ、名前は luni で Unicode 対応 (v0.7.0) |
-| 編集保存: 完全新規 PSD 作成 | ✅ | `create_blank(w, h)` → `add_layer` → `save` — 8bit RGB のみ (v0.7.0) |
-| 編集保存: テキストレイヤ編集 | ❌ | Descriptor/EngineData シリアライザ未実装 (ROADMAP Phase E6) |
-| 編集後の合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
+
+## 編集して保存 (edit & save, v0.7.0)
+
+編集は「参照のみ・保存時に再構築」モデル。未編集のレイヤは生バイトをそのまま
+書き出すので byte-identical を維持し、編集した部分だけがフィールドから再構築
+される。画素系は **8bit RGB 文書のみ**。
+
+| 機能 | 状況 | API |
+|---|:---:|---|
+| パラメータ変更 (不透明度/可視/クリップ/ブレンド) | ✅ | `layer.opacity`/`visible`/`clipping`/`set_blend_mode()` |
+| 塗り不透明度 (fill opacity) | ✅ | `layer.fill_opacity = ...` (iOpa) |
+| レイヤ改名 | ✅ | `layer.name_unicode = ...` / `set_layer_name()` (Pascal + luni) |
+| レイヤ削除 / 並べ替え / 複製 | ✅ | `delete_layer` / `move_layer` / `duplicate_layer` |
+| 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる |
+| 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` (RLE 符号化) |
+| 画像レイヤ新規追加 | ✅ | `add_layer(name, l, t, bgra, w, h)` (名前は luni で Unicode) |
+| 完全新規 PSD 作成 | ✅ | `create_blank(w, h)` → `add_layer` → `save` |
+| マスク値編集 (disabled/density/feather/default色) | ✅ | `set_layer_mask(i, ...)` — 矩形/画素は不変 |
+| マスク画素 / 矩形 (幾何) の設定 | ✅ | `set_layer_mask_pixels(i, gray, top, left, w, h)` |
+| 効果 (lfx2) の値編集 | ✅ | `set_effects(i, changes)` — descriptor シリアライザ byte-exact |
+| 任意 descriptor (塗り SoCo/GdFl/PtFl 等) の値編集 | ✅ | `set_layer_descriptor(i, key, changes)` |
+| テキスト本文の編集 | ✅ | `set_text(i, str)` — EngineData シリアライザ byte-exact |
+| テキストのラン単位スタイル編集 | 🟡 | `set_text` は先頭ランに畳む (範囲別書式は未対応) |
+| マスク幾何の単独編集 (画素なし) | 🟡 | `set_layer_mask_pixels` で画素とセットのみ |
+| 効果込みの合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
 
 ## 圧縮 / ビット深度
 
@@ -163,13 +177,17 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 
 ## まとめ (一言で)
 
-- **得意**: レイヤ列挙 + 属性 + 階層 + 色ラベル、RGB/CMYK/Gray/Indexed/Lab/Duotone
-  のピクセル取得、テキストのラン単位スタイル、マスクの density/feather、レイヤー
-  効果/塗りの descriptor、文書メタデータ (ガイド/スライス/カンプ/global layer
-  mask) と image resource の生バイト (ICC/EXIF/XMP/サムネイル)、そして
+- **得意 (参照)**: レイヤ列挙 + 属性 + 階層 + 色ラベル、RGB/CMYK/Gray/Indexed/Lab/
+  Duotone のピクセル取得、テキストのラン単位スタイル、マスクの density/feather、
+  レイヤー効果/塗りの descriptor、文書メタデータ (ガイド/スライス/カンプ/global
+  layer mask) と image resource の生バイト (ICC/EXIF/XMP/サムネイル)、そして
   **byte-identical なラウンドトリップ**。
+- **得意 (編集, v0.7.0)**: レイヤの追加/削除/並べ替え/複製/他ファイルコピー、
+  画素・マスク画素・パラメータ・改名・fill opacity の編集、効果 (lfx2) とテキスト
+  本文の byte-exact な編集、ゼロからの新規作成。未編集部分は byte-identical を維持。
 - **未対応/限定的**: Multichannel ピクセル、調整レイヤの数値パラメータ、ベクタ
-  パス、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成、そして編集して保存。
+  パス、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成 (composite 再描画)、
+  テキストのラン単位スタイル編集。画素編集は 8bit RGB のみ。
 - Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを
   返すのみ。
