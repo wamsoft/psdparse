@@ -11,6 +11,7 @@
 #include "psdparse.h"
 #include "psddesc.h"
 #include "psdwrite.h"
+#include "psdengine.h"
 
 #include <fstream>
 #include <memory>
@@ -483,6 +484,47 @@ void editLayerDescriptor(psd::PSDFile &self, int index, int key, int skip,
   throw std::runtime_error("layer has no descriptor block for that key");
 }
 
+// Replace a text layer's body text: parse the TySh descriptor, rewrite the
+// embedded EngineData text (+ run lengths) and the 'Txt ' string, re-serialize
+// TySh (prefix + descriptor + warp/bounds suffix) and swap it into extra data.
+void setLayerText(psd::PSDFile &self, int index, const psd::u16str &newText) {
+  if (index < 0 || index >= (int)self.layerList.size())
+    throw std::out_of_range("layer index out of range");
+  psd::LayerInfo &lay = self.layerList[(size_t)index];
+  for (auto &a : lay.extraData.additionalLayers) {
+    if (a.key != 'TySh' || !a.data) continue;
+    psd::IteratorBase *rd = a.data->clone();
+    rd->init();
+    // prefix: version(2) + transform(6*8) + textVer(2) + descVer(4) = 56
+    std::vector<uint8_t> prefix(56);
+    if (rd->getData(prefix.data(), 56) != 56) { delete rd; throw std::runtime_error("TySh block too short"); }
+    psd::Descriptor td;
+    td.load(rd);
+    int restLen = rd->rest();
+    std::vector<uint8_t> suffix((size_t)(restLen > 0 ? restLen : 0));
+    if (restLen > 0) rd->getData(suffix.data(), restLen);   // warp + bounds
+    delete rd;
+
+    auto *eng = dynamic_cast<psd::DescriptorRawData*>(td.findItem("EngineData"));
+    if (!eng) throw std::runtime_error("text layer has no EngineData");
+    std::string newEngine;
+    if (!psd::editEngineDataText(eng->bytes.data(), eng->bytes.size(), newText, newEngine))
+      throw std::runtime_error("failed to edit EngineData");
+    eng->bytes = newEngine;
+    if (auto *txt = dynamic_cast<psd::DescriptorString*>(td.findItem("Txt ")))
+      txt->val = newText;
+
+    std::vector<uint8_t> buf;
+    psd::MemoryWriter w(buf);
+    w.putData(prefix.data(), prefix.size());
+    psd::writeDescriptorBody(w, &td);
+    if (!suffix.empty()) w.putData(suffix.data(), suffix.size());
+    self.setAdditionalInfoBytes(index, 'TySh', buf.data(), (int)buf.size());
+    return;
+  }
+  throw std::runtime_error("layer is not a text layer (no TySh block)");
+}
+
 // Raw bytes of an additional-layer-info block (payload after the size field),
 // or None. Useful for round-trip validation and low-level inspection.
 py::object layerDescriptorBytes(const psd::LayerInfo &l, const std::string &keyStr) {
@@ -600,6 +642,15 @@ py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
 
 PYBIND11_MODULE(psdparse, m) {
   m.doc() = "psdparse: PSD reader (Boost-free, no kirikiri deps).";
+
+  // Internal: parse + re-serialize EngineData for byte-exact round-trip tests.
+  m.def("_reserialize_engine_data", [](py::bytes b) -> py::object {
+      py::buffer_info info(py::buffer(b).request());
+      std::string out;
+      if (!psd::reserializeEngineData((const char *)info.ptr, (size_t)info.size, out))
+          return py::none();
+      return py::bytes(out);
+  }, py::arg("data"));
 
   py::enum_<psd::LayerType>(m, "LayerType")
     .value("NORMAL", psd::LAYER_TYPE_NORMAL)
@@ -865,6 +916,14 @@ PYBIND11_MODULE(psdparse, m) {
          "Generic version of set_effects for an arbitrary descriptor key "
          "(e.g. 'SoCo'/'GdFl'/'PtFl' fill layers). `skip` = version-prefix "
          "bytes (-1 = auto for known keys).")
+    .def("set_text",
+         [](psd::PSDFile &self, int index, const std::string &text) {
+            setLayerText(self, index, psd::utf8ToU16(text));
+         },
+         py::arg("index"), py::arg("text"),
+         "Replace a text layer's body text (rewrites the embedded EngineData + "
+         "'Txt '). Multi-run styling collapses to the first run's style; a "
+         "trailing newline is added if missing. Raises for non-text layers.")
     .def("set_layer_name",
          [](psd::PSDFile &self, int index, const std::string &name) {
             if (!self.setLayerName(index, name.c_str()))

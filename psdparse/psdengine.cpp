@@ -14,12 +14,14 @@ namespace {
   struct Node {
     enum Kind { DICT, ARRAY, STRING, NUMBER, BOOL } kind;
     std::map<std::string, Node*> dict;
+    std::vector<std::string>     keyOrder;  // dict のキー出現順 (再直列化用)
     std::vector<Node*>           arr;
     std::string                  str;   // STRING: 生バイト (UTF-16BE, BOM 含む)
     double                       num;
+    bool                         isInt; // NUMBER: 整数トークン (小数点なし) だったか
     bool                         bl;
 
-    Node(Kind k) : kind(k), num(0), bl(false) {}
+    Node(Kind k) : kind(k), num(0), isInt(false), bl(false) {}
     ~Node() {
       for (std::map<std::string, Node*>::iterator it = dict.begin(); it != dict.end(); ++it)
         delete it->second;
@@ -77,6 +79,7 @@ namespace {
           if (v) {
             std::map<std::string, Node*>::iterator it = n->dict.find(key);
             if (it != n->dict.end()) delete it->second;
+            else n->keyOrder.push_back(key);
             n->dict[key] = v;
           }
         } else {
@@ -140,6 +143,10 @@ namespace {
       }
       Node *n = new Node(Node::NUMBER);
       n->num = atof(s.c_str());
+      // 小数点も指数もなければ整数トークン ("%d" で書く)。
+      n->isInt = (s.find('.') == std::string::npos &&
+                  s.find('e') == std::string::npos &&
+                  s.find('E') == std::string::npos);
       return n;
     }
   };
@@ -169,6 +176,124 @@ namespace {
       out.push_back((char16_t)((hi << 8) | lo));
     }
     return out;
+  }
+
+  // --------------------------------------------------------------------------
+  // シリアライザ (psd-tools の EngineData 出力形式を厳密に再現)
+  //   Dict:  << >> をタブ字下げ + 改行で。 深さ = tab 数。
+  //   List:  要素が Dict なら複数行、そうでなければ [ v v ] のインライン。
+  //   Float: %.8f を rstrip('0')、末尾 '.' には '0'、|v|<1 は先頭 "0." を "." に。
+  //   Int:   %lld、 Bool: true/false、 String: ( BOM + \-escape された UTF16BE )
+  // --------------------------------------------------------------------------
+  void emitFloat(std::string &o, double v) {
+    char b[64];
+    snprintf(b, sizeof(b), "%.8f", v);
+    std::string s(b);
+    size_t e = s.find_last_not_of('0');
+    if (e != std::string::npos) s.erase(e + 1);
+    if (!s.empty() && s.back() == '.') s.push_back('0');
+    if (v > -1.0 && v < 1.0 && v != 0.0) {
+      size_t pos = s.find("0.");
+      if (pos == 0)                         s.erase(0, 1);   // "0.5" -> ".5"
+      else if (pos == 1 && s[0] == '-')     s.erase(1, 1);   // "-0.5" -> "-.5"
+    }
+    o += s;
+  }
+
+  void emitString(std::string &o, const std::string &raw) {
+    o.push_back('(');
+    for (size_t i = 0; i < raw.size(); i++) {
+      unsigned char c = (unsigned char)raw[i];
+      if (c == '\\' || c == '(' || c == ')') o.push_back('\\');
+      o.push_back((char)c);
+    }
+    o.push_back(')');
+  }
+
+  void emitScalar(std::string &o, Node *n) {
+    switch (n->kind) {
+    case Node::NUMBER:
+      if (n->isInt) { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)n->num); o += b; }
+      else          emitFloat(o, n->num);
+      break;
+    case Node::BOOL:   o += (n->bl ? "true" : "false"); break;
+    case Node::STRING: emitString(o, n->str); break;
+    default: break;
+    }
+  }
+
+  void emitValue(std::string &o, Node *n, int indent, bool inlineMode);
+
+  // indent<0 は "None" (インライン) を表す。
+  void emitIndent(std::string &o, int indent, char def = ' ') {
+    if (indent < 0) { o.push_back(def); return; }
+    o.append((size_t)indent, '\t');
+  }
+  void emitNewline(std::string &o, int indent) {
+    if (indent < 0) return;
+    o.push_back('\n');
+  }
+
+  void emitDict(std::string &o, Node *n, int indent, bool writeContainer) {
+    int inner = (indent < 0) ? -1 : indent + 1;
+    if (writeContainer) {
+      if (indent == 0) emitNewline(o, indent);
+      emitNewline(o, indent);
+      emitIndent(o, indent);
+      o += "<<";
+      emitNewline(o, indent);
+    }
+    for (const std::string &key : n->keyOrder) {
+      std::map<std::string, Node*>::iterator it = n->dict.find(key);
+      if (it == n->dict.end()) continue;
+      Node *value = it->second;
+      emitIndent(o, inner);
+      o.push_back('/');
+      o += key;
+      if (value->kind == Node::DICT) {
+        emitDict(o, value, inner, true);
+      } else {
+        o.push_back(' ');
+        if (value->kind == Node::ARRAY) {
+          bool multiline = !value->arr.empty() && value->arr[0]->kind == Node::DICT;
+          emitValue(o, value, multiline ? inner : -1, !multiline);
+        } else {
+          emitScalar(o, value);
+        }
+      }
+      emitNewline(o, indent);
+    }
+    if (writeContainer) {
+      emitIndent(o, indent);
+      o += ">>";
+    }
+  }
+
+  void emitList(std::string &o, Node *n, int indent) {
+    o.push_back('[');
+    if (indent < 0) {                      // インライン
+      for (size_t i = 0; i < n->arr.size(); i++) {
+        Node *item = n->arr[i];
+        if (item->kind == Node::DICT) emitDict(o, item, -1, true);
+        else { o.push_back(' '); emitScalar(o, item); }
+      }
+      o.push_back(' ');
+    } else {                               // 複数行 (要素は Dict)
+      for (size_t i = 0; i < n->arr.size(); i++)
+        emitValue(o, n->arr[i], indent, false);
+      emitNewline(o, indent);
+      emitIndent(o, indent);
+    }
+    o.push_back(']');
+  }
+
+  void emitValue(std::string &o, Node *n, int indent, bool inlineMode) {
+    (void)inlineMode;
+    switch (n->kind) {
+    case Node::DICT:  emitDict(o, n, indent, true); break;
+    case Node::ARRAY: emitList(o, n, indent);       break;
+    default:          emitScalar(o, n);             break;
+    }
   }
 
 } // anonymous namespace
@@ -311,6 +436,73 @@ namespace {
 
     delete root;
     return haveText;
+  }
+
+  // u16str から EngineData 文字列の生バイト (BOM FE FF + UTF-16BE) を作る。
+  static std::string buildTextRaw(const u16str &text) {
+    std::string s;
+    s.push_back((char)0xFE); s.push_back((char)0xFF);   // BOM
+    for (size_t i = 0; i < text.size(); i++) {
+      char16_t ch = text[i];
+      s.push_back((char)((ch >> 8) & 0xff));
+      s.push_back((char)(ch & 0xff));
+    }
+    return s;
+  }
+
+  // EngineData をパースしてそのまま再直列化する (バイト一致検証・編集の土台)。
+  bool reserializeEngineData(const char *data, size_t len, std::string &out) {
+    Parser ps(data, len);
+    Node *root = ps.parseValue();
+    if (!root || root->kind != Node::DICT) { delete root; return false; }
+    out.clear();
+    emitDict(out, root, 0, true);
+    delete root;
+    return true;
+  }
+
+  // EngineData の本文 (EngineDict/Editor/Text) を newText に差し替える。 本文長が
+  // 変わるので StyleRun / ParagraphRun を「先頭スタイルの単一ラン」に畳んで長さを
+  // 合わせる (複数スタイルは失われる)。 末尾に改行 (\r) が無ければ補う。
+  bool editEngineDataText(const char *data, size_t len, const u16str &newText,
+                          std::string &out) {
+    Parser ps(data, len);
+    Node *root = ps.parseValue();
+    if (!root || root->kind != Node::DICT) { delete root; return false; }
+
+    u16str text = newText;
+    if (text.empty() || text[text.size() - 1] != u'\r') text.push_back(u'\r');
+    int textLen = (int)text.size();
+
+    Node *engine = dget(root, "EngineDict");
+    Node *editor = dget(engine, "Editor");
+    Node *tnode  = dget(editor, "Text");
+    if (tnode && tnode->kind == Node::STRING) tnode->str = buildTextRaw(text);
+
+    // StyleRun / ParagraphRun を単一ランへ畳む。
+    const char *runKeys[2] = { "StyleRun", "ParagraphRun" };
+    for (int k = 0; k < 2; k++) {
+      Node *run = dget(engine, runKeys[k]);
+      if (!run) continue;
+      Node *rla = dget(run, "RunLengthArray");
+      if (rla && rla->kind == Node::ARRAY) {
+        for (size_t i = 0; i < rla->arr.size(); i++) delete rla->arr[i];
+        rla->arr.clear();
+        Node *num = new Node(Node::NUMBER);
+        num->num = textLen; num->isInt = true;
+        rla->arr.push_back(num);
+      }
+      Node *ra = dget(run, "RunArray");
+      if (ra && ra->kind == Node::ARRAY && ra->arr.size() > 1) {
+        for (size_t i = 1; i < ra->arr.size(); i++) delete ra->arr[i];
+        ra->arr.resize(1);
+      }
+    }
+
+    out.clear();
+    emitDict(out, root, 0, true);
+    delete root;
+    return true;
   }
 
 } // namespace psd

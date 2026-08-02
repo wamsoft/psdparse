@@ -336,6 +336,25 @@ new_i = p.add_layer("name", left, top, bgra_bytes, width, height,
   *masked* layer at a different size leaves a stale mask; prefer same-size
   replacement on masked layers.
 
+### Text content (E6)
+
+Replace a text layer's body text. This rewrites the embedded Adobe *EngineData*
+(re-serialized byte-for-byte in Photoshop's format) plus the `Txt ` descriptor
+string, and re-serializes the `TySh` block keeping the warp/bounds intact.
+
+```python
+p.set_text(i, "新しいテキスト\r二行目")     # \r separates lines
+p.save("out.psd")
+```
+
+- Non-ASCII and emoji are supported (stored as UTF-16 in EngineData).
+- A trailing newline (`\r`) is added if missing (Photoshop's convention).
+- **Styling collapses to the first run's style**: `set_text` sets a single style
+  run over the whole new text, so per-character formatting is lost. Editing
+  run-level styles (font, size, colour per range) is not supported yet.
+- Only the *content* changes; the layer's transform, font set and bounds are
+  kept. Raises for non-text layers.
+
 ### New from scratch (E5)
 
 Build a PSD without loading one first:

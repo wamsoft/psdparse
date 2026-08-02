@@ -29,6 +29,15 @@ namespace psd {
   // 本文 (Editor/Text) が取得できたら true を返す。
   bool parseEngineData(const char *data, size_t len, TextLayerData &out);
 
+  // EngineData をパースして psd-tools 準拠の形式で再直列化する。 out に結果。
+  // (未編集なら元とバイト一致するのが目標 — 直列化器の検証用)。
+  bool reserializeEngineData(const char *data, size_t len, std::string &out);
+
+  // EngineData の本文を newText に差し替えて再直列化する。 スタイルは先頭ランに
+  // 畳まれる。 成功で true。
+  bool editEngineDataText(const char *data, size_t len, const u16str &newText,
+                          std::string &out);
+
 } // namespace psd
 
 #endif // __psdengine_h__

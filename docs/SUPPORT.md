@@ -105,6 +105,8 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 本文 / 縦横 / 変換行列 | ✅ | `layer.text` (`text`/`orientation`/`transform`) |
 | ラン単位スタイル (font/size/color/tracking/kerning) | ✅ | `text["runs"]` |
 | 段落別の行揃え | ✅ | `text["paragraphs"]` (v0.2.2) |
+| **本文の編集 (save)** | ✅ | `set_text(i, str)` — EngineData を byte-exact に再直列化 (v0.7.0) |
+| ラン単位スタイルの編集 | 🟡 | `set_text` はスタイルを先頭ランに畳む (複数スタイル・書式編集は未対応) |
 | ワープ (warp) | ❌ | TySh warp descriptor 未処理 |
 | 非 RGB の FillColor | ❌ | `/Type 1` (RGB) のみ |
 | leading / 疑似ボールド / 下線 等 | 🟡 | EngineData にキーはあるが既定値サンプルのみで未検証 |
