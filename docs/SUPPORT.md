@@ -28,7 +28,9 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
 | 編集保存: パラメータ変更 | ✅ | `layer.opacity`/`visible`/`set_blend_mode()` (v0.7.0) |
 | 編集保存: レイヤ改名 | ✅ | `layer.name_unicode = ...` / `set_layer_name()` — mask/blend は生バイト保持 (v0.7.0) |
-| 編集保存: マスク/効果の値編集 | ❌ | 改名以外の extra-data 項目編集は未実装 (ROADMAP E3 の続き) |
+| 編集保存: マスク値編集 (disabled/density/feather/default色) | ✅ | `set_layer_mask(i, ...)` — 矩形/画素は不変 (v0.7.0) |
+| 編集保存: 塗り不透明度 (fill opacity) | ✅ | `layer.fill_opacity = ...` (iOpa, v0.7.0) |
+| 編集保存: 効果 (lfx2) の値編集 | ❌ | Descriptor シリアライザ未実装 (ROADMAP E3 残 / E6 と共通) |
 | 編集保存: レイヤ削除/並べ替え/複製 | ✅ | `delete_layer`/`move_layer`/`duplicate_layer` (v0.7.0) |
 | 編集保存: 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる (v0.7.0) |
 | 編集保存: 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` — 8bit RGB のみ (v0.7.0) |

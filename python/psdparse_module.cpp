@@ -578,7 +578,13 @@ PYBIND11_MODULE(psdparse, m) {
         py::arg("key"),
         "Set the blend mode from a 4-char key string (e.g. 'norm', 'mul ', "
         "'scrn'). Note the trailing space on 3-letter keys.")
-    .def_readonly("fill_opacity",  &psd::LayerInfo::fill_opacity)
+    .def_property("fill_opacity",
+        [](const psd::LayerInfo &l) { return l.fill_opacity; },
+        [](psd::LayerInfo &l, int v) {
+            l.fill_opacity = v < 0 ? 0 : (v > 255 ? 255 : v);
+            l.extraData.useRawBytes = false;    // reconstruct extra data (iOpa) on save
+        },
+        "Fill opacity 0..255 (the 'iOpa' block). Writable.")
     .def_readonly("blend_mode",    &psd::LayerInfo::blendMode)
     .def_readonly("layer_type",    &psd::LayerInfo::layerType)
     .def_readonly("layer_id",      &psd::LayerInfo::layerId)
@@ -727,6 +733,28 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("index"), py::arg("name"),
          "Rename layer `index` (updates Pascal + luni names). Equivalent to "
          "`layer.name_unicode = name`. Re-serialized on save().")
+    .def("set_layer_mask",
+         [](psd::PSDFile &self, int index, py::object disabled, py::object density,
+            py::object feather, py::object default_color) {
+            bool any = false, ok = true;
+            if (!disabled.is_none())      { ok &= self.setMaskDisabled(index, disabled.cast<bool>()); any = true; }
+            if (!density.is_none())       { ok &= self.setMaskDensity(index, density.cast<int>()); any = true; }
+            if (!feather.is_none())       { ok &= self.setMaskFeather(index, feather.cast<double>()); any = true; }
+            if (!default_color.is_none()) { ok &= self.setMaskDefaultColor(index, default_color.cast<int>()); any = true; }
+            if (!any)
+                throw std::invalid_argument("set_layer_mask: pass at least one of "
+                                            "disabled/density/feather/default_color");
+            if (!ok)
+                throw std::runtime_error("set_layer_mask failed (index out of range, "
+                                         "or the layer has no mask)");
+         },
+         py::arg("index"), py::arg("disabled") = py::none(),
+         py::arg("density") = py::none(), py::arg("feather") = py::none(),
+         py::arg("default_color") = py::none(),
+         "Edit an existing layer mask's values (the layer must already have a "
+         "mask). Any of: disabled (bool), density (0..255), feather (px, float), "
+         "default_color (0..255). The mask rectangle and pixels are unchanged; "
+         "the mask block is re-serialized on save().")
     .def("create_blank",
          [](psd::PSDFile &self, int width, int height, int mode) {
             if (!self.createBlank(width, height, mode))

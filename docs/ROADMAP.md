@@ -23,9 +23,14 @@ The `save()` path started as round-trip-only (correct only when the loaded `Data
 
 - ✅ **E5 — new-from-scratch PSD construction.** *Done 2026-08-02 (0.7.0).* `PSDFile.create_blank(width, height, mode=RGB)` fills a minimal valid skeleton — header (v1, 3ch, 8-bit RGB), empty color-mode/resources, empty dirty layer list, and a white raw composite (`VectorReader`) — so you can `create_blank()` → `add_layer()` → `save()` with no source file. Validated empty and multi-layer, cross-checked with psd-tools `composite()` — see `tests/test_create.py`.
 
-- 🟡 **E3 — extra-data field edits (rename done).** *Rename done 2026-08-02 (0.7.0).* Layer **renaming** is implemented: `layer.name_unicode = "..."` / `PSDFile.set_layer_name(i, name)` update the Pascal + `luni` names and set a per-layer `LayerExtraData::useRawBytes=false` flag; on save, `writeLayerExtraFromFields` reconstructs the extra-data block from fields while copying the **layer mask and blending ranges through byte-for-byte** (captured at parse as `maskRaw`/`blendRaw`). Unmodified layers keep the exact-bytes path, so round-trip identity is untouched. Validated incl. renaming a *masked* layer (mask bbox/params/real preserved) and psd-tools readback — see `tests/test_edit_name.py`. **Still to do in E3:** editing mask geometry/params, fill opacity (`iOpa`), and effect (`lfx2`) values — the reconstruction path exists, these just need field-level setters + serializers.
+- 🟡 **E3 — extra-data field edits (rename + mask + fill opacity done).** *Done 2026-08-02 (0.7.0).* Editing of extra-data-resident fields, via a per-layer `LayerExtraData::useRawBytes=false` flag that routes save through `writeLayerExtraFromFields` (reconstruct from fields) instead of the raw-bytes passthrough:
+  - **Rename** — `layer.name_unicode = "..."` / `set_layer_name(i, name)` (Pascal + `luni`).
+  - **Fill opacity** — `layer.fill_opacity = ...` (the `iOpa` block; written as the 1-byte value + 3 filler to match Photoshop / psd-tools' `B3x` reader).
+  - **Mask values** — `set_layer_mask(i, disabled=, density=, feather=, default_color=)`; a `LayerMask::edited` flag makes the mask sub-block re-serialize from fields (`serializeLayerMask`), matching `parseLayerMask` exactly (real section gated on size≥36, params on flags bit4).
 
-**Remaining edit work** (E3 mask/effect value edits, E6 text-layer editing) is described below.
+  The layer mask & blending ranges are otherwise copied through byte-for-byte from `maskRaw`/`blendRaw` (captured at parse). Unmodified layers keep the exact-bytes path so round-trip identity is untouched. Learned the hard way that **layer-record tagged blocks use `padding=1` (no 4-byte alignment)** — only the *global* additional info and the Pascal name pad to 4. Validated with psd-tools reading back disabled/density/feather/bg/fill-opacity and no alignment warnings — see `tests/test_edit_name.py`, `tests/test_edit_mask.py`. **Still to do in E3:** mask *geometry* (rectangle) edits and effect (`lfx2`) value edits (the latter needs a Descriptor serializer, shared with E6).
+
+**Remaining edit work** (E3 mask-geometry / effect-value edits, E6 text-layer editing) is described below.
 
 ### Phase E3 (was 4c) — extra data field re-serialization (enables rename, blend-mode change)
 

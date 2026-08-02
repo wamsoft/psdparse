@@ -92,7 +92,7 @@ Read-only view of one layer.
 | `top, left, bottom, right` | `int` | layer bounding box on canvas |
 | `width, height` | `int` | derived from bbox |
 | `opacity` | `int` | 0..255 |
-| `fill_opacity` | `int` | 0..255 |
+| `fill_opacity` | `int` | 0..255. **Writable** (the `iOpa` block) |
 | `clipping` | `int` | 0=base, 1=non-base |
 | `blend_mode_key` | `int` | raw 4cc value (e.g. `'norm'` as int) |
 | `blend_mode` | `BlendMode` enum | parsed blend mode |
@@ -246,11 +246,23 @@ p.save("out.psd")
 ```
 
 `opacity` / `clipping` / `visible` / `blend_mode_key` are record-level fields,
-re-serialized directly. **Renaming** (`name_unicode = ...` or
-`set_layer_name(i, name)`) edits the extra-data block instead: it updates both the
-Pascal and Unicode (`luni`) names and reconstructs the extra data on save, copying
-the layer mask and blending ranges through byte-for-byte. Other extra-data fields
-(mask geometry, fill opacity, effects) are **not** writable yet.
+re-serialized directly. The rest edit the **extra-data block**, which is
+reconstructed on save (the layer mask and blending ranges are copied through
+byte-for-byte unless you edit the mask itself):
+
+```python
+p.layers[3].name_unicode = "新しい名前"      # rename (or p.set_layer_name(3, ...))
+p.layers[3].fill_opacity = 128               # 0..255 (the 'iOpa' block)
+
+# edit an existing mask's values (the layer must already have a mask;
+# the mask rectangle and pixels are unchanged):
+p.set_layer_mask(3, disabled=True, density=200, feather=2.5, default_color=0)
+```
+
+`set_layer_mask` takes any subset of `disabled` (bool), `density` (0..255),
+`feather` (px), `default_color` (0..255). Editing a mask's **geometry** (rectangle)
+or **effect (`lfx2`) values** is not supported yet (effects need a descriptor
+serializer).
 
 ### Structural edits (methods on `PSDFile`)
 

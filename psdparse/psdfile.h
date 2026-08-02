@@ -95,6 +95,15 @@ namespace psd {
     // (mask/blending ranges は生バイトを保持するので不変)。失敗で false。
     bool setLayerName(int index, const char *nameUtf8);
 
+    // マスク値の編集 (マスクを持つレイヤのみ、失敗で false)。矩形/画素は変えない。
+    bool setMaskDisabled(int index, bool disabled);
+    bool setMaskDensity(int index, int density);       // ユーザーマスク濃度 0..255
+    bool setMaskFeather(int index, double feather);     // ユーザーマスクぼかし(px)
+    bool setMaskDefaultColor(int index, int color);     // 0..255
+
+    // 塗り不透明度 (iOpa) の編集。0..255。失敗で false。
+    bool setFillOpacity(int index, int opacity);
+
     // --- 新規作成 (E5) ------------------------------------------------------
     // この PSDFile を空の 8bit RGB 文書 (幅×高さ, 白の合成画像) として初期化する。
     // 以後 addLayer(...) でレイヤを足して save() できる。成功で true。

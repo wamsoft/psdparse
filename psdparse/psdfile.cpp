@@ -246,6 +246,60 @@ bool PSDFile::createBlank(int width, int height, int mode) {
   return true;
 }
 
+// --- extra data 項目編集 (mask / fill opacity) -----------------------------
+
+namespace {
+// マスク編集の共通前処理: マスクを持つレイヤの LayerMask を返し、編集フラグを立てる。
+LayerMask *beginMaskEdit(std::vector<LayerInfo> &layers, int index) {
+  if (index < 0 || index >= (int)layers.size()) return nullptr;
+  LayerExtraData &ex = layers[(size_t)index].extraData;
+  if (!ex.layerMask.present) return nullptr;
+  ex.layerMask.edited = true;
+  ex.useRawBytes = false;
+  return &ex.layerMask;
+}
+} // namespace
+
+bool PSDFile::setMaskDisabled(int index, bool disabled) {
+  LayerMask *m = beginMaskEdit(layerList, index);
+  if (!m) return false;
+  if (disabled) m->flags |= 0x02; else m->flags &= ~0x02;
+  return true;
+}
+
+bool PSDFile::setMaskDensity(int index, int density) {
+  LayerMask *m = beginMaskEdit(layerList, index);
+  if (!m) return false;
+  if (density < 0) density = 0; if (density > 255) density = 255;
+  m->userMaskDensity = density;
+  return true;
+}
+
+bool PSDFile::setMaskFeather(int index, double feather) {
+  LayerMask *m = beginMaskEdit(layerList, index);
+  if (!m) return false;
+  m->userMaskFeather = feather;
+  m->hasUserFeather = true;
+  return true;
+}
+
+bool PSDFile::setMaskDefaultColor(int index, int color) {
+  LayerMask *m = beginMaskEdit(layerList, index);
+  if (!m) return false;
+  if (color < 0) color = 0; if (color > 255) color = 255;
+  m->defaultColor = color;
+  return true;
+}
+
+bool PSDFile::setFillOpacity(int index, int opacity) {
+  if (index < 0 || index >= (int)layerList.size()) return false;
+  LayerInfo &lay = layerList[(size_t)index];
+  if (opacity < 0) opacity = 0; if (opacity > 255) opacity = 255;
+  lay.fill_opacity = opacity;
+  lay.extraData.useRawBytes = false;   // save 時に iOpa を再構築
+  return true;
+}
+
 // --- 構造編集 --------------------------------------------------------------
 
 bool PSDFile::deleteLayer(int index) {

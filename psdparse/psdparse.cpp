@@ -543,6 +543,8 @@ void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex) {
         AdditionalLayerInfo(sigType, key, (int)dataSize,
                             r.cloneRange(0, (int)dataSize)));
     r.advance((int)dataSize);
+    // レイヤレコードの tagged block は padding=1 (整列パディング無し)。
+    // (global additional info は 4 整列だが、そちらはこの経路を通らない)。
     int posAfter = r.size() - r.rest();
     if (posAfter <= posBefore) break;
   }

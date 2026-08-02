@@ -124,11 +124,51 @@ inline void writeImageResources(WriterBase &w, const Data &data) {
   w.seek(bodyEnd);
 }
 
+// 8 バイト double を big-endian で書く (mask feather 用)。
+inline void putDoubleBE(WriterBase &w, double d) {
+  pun64 v; v.f = d;
+  w.putUint32BE((uint32_t)(v.i >> 32));
+  w.putUint32BE((uint32_t)(v.i & 0xffffffffu));
+}
+
+// layer mask サブブロックの本体 (4 バイト長の後ろ) をフィールドから直列化する。
+// parseLayerMask と対で、real セクションは size>=36、パラメータは flags bit4 で
+// 判定される。編集された density/feather に合わせて flags bit4 を張り直す。
+inline void serializeLayerMask(WriterBase &w, const LayerMask &m) {
+  w.putInt32BE(m.top);  w.putInt32BE(m.left);
+  w.putInt32BE(m.bottom); w.putInt32BE(m.right);
+  w.putCh(m.defaultColor);
+  bool params = (m.userMaskDensity >= 0) || m.hasUserFeather ||
+                (m.vectorMaskDensity >= 0) || m.hasVectorFeather;
+  int flags = m.flags;
+  if (params) flags |= 0x10; else flags &= ~0x10;
+  w.putCh(flags);
+  if (m.hasReal) {
+    w.putCh(m.realFlags);
+    w.putCh(m.realUserMaskBackground);
+    w.putInt32BE(m.enclosingTop);    w.putInt32BE(m.enclosingLeft);
+    w.putInt32BE(m.enclosingBottom); w.putInt32BE(m.enclosingRight);
+  }
+  if (params) {
+    int pf = 0;
+    if (m.userMaskDensity   >= 0) pf |= 0x01;
+    if (m.hasUserFeather)         pf |= 0x02;
+    if (m.vectorMaskDensity >= 0) pf |= 0x04;
+    if (m.hasVectorFeather)       pf |= 0x08;
+    w.putCh(pf);
+    if (pf & 0x01) w.putCh(m.userMaskDensity);
+    if (pf & 0x02) putDoubleBE(w, m.userMaskFeather);
+    if (pf & 0x04) w.putCh(m.vectorMaskDensity);
+    if (pf & 0x08) putDoubleBE(w, m.vectorMaskFeather);
+  }
+}
+
 // luni (Unicode layer name) 追加情報ブロックを書く。
+// レイヤレコードの tagged block は整列パディング無し (padding=1)。
 inline void writeLuniBlock(WriterBase &w, const u16str &name) {
   w.putData("8BIM", 4);
   w.putUint32BE((uint32_t)'luni');
-  uint32_t dataLen = 4 + 2 * (uint32_t)name.size();  // charCount(4) + UTF16BE (常に偶数)
+  uint32_t dataLen = 4 + 2 * (uint32_t)name.size();  // charCount(4) + UTF16BE
   w.putUint32BE(dataLen);
   w.putUint32BE((uint32_t)name.size());
   for (char16_t ch : name) w.putUint16BE((uint16_t)ch);
@@ -140,9 +180,19 @@ inline void writeLuniBlock(WriterBase &w, const u16str &name) {
 // lay.layerNameUnicode で置き換える (無ければ末尾に追加)。
 inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
   const LayerExtraData &ex = lay.extraData;
-  // layer mask
-  if (ex.maskRaw) { w.putUint32BE((uint32_t)ex.maskRaw->size()); w.copyAllFrom(ex.maskRaw); }
-  else            { w.putUint32BE(0); }
+  // layer mask: 編集済みならフィールドから直列化、そうでなければ生バイトを転送。
+  if (ex.layerMask.present && ex.layerMask.edited) {
+    int64_t p = w.tell();
+    w.putUint32BE(0);                          // 長さプレースホルダ
+    int64_t s = w.tell();
+    serializeLayerMask(w, ex.layerMask);
+    int64_t e = w.tell();
+    w.seek(p); w.putUint32BE((uint32_t)(e - s)); w.seek(e);
+  } else if (ex.maskRaw) {
+    w.putUint32BE((uint32_t)ex.maskRaw->size()); w.copyAllFrom(ex.maskRaw);
+  } else {
+    w.putUint32BE(0);
+  }
   // blending ranges
   if (ex.blendRaw) { w.putUint32BE((uint32_t)ex.blendRaw->size()); w.copyAllFrom(ex.blendRaw); }
   else             { w.putUint32BE(0); }
@@ -155,11 +205,18 @@ inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
   int pad = (4 - (total & 3)) & 3;
   w.putZero((size_t)pad);
   // additional layer info
-  bool wroteLuni = false;
+  bool wroteLuni = false, wroteIOpa = false;
   for (const auto &a : ex.additionalLayers) {
     if (a.key == 'luni') {
       writeLuniBlock(w, lay.layerNameUnicode);   // 新しい名前で置換
       wroteLuni = true;
+    } else if (a.key == 'iOpa') {
+      w.putData("8BIM", 4);                      // fill opacity を新値で置換
+      w.putUint32BE((uint32_t)'iOpa');
+      w.putUint32BE(4);                          // 1 byte 値 + 3 filler (Photoshop 形式)
+      w.putCh(lay.fill_opacity & 0xff);
+      w.putZero(3);
+      wroteIOpa = true;
     } else {
       w.putData(a.sigType == 1 ? "8B64" : "8BIM", 4);
       w.putUint32BE((uint32_t)a.key);
@@ -169,6 +226,13 @@ inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
   }
   if (!wroteLuni && !lay.layerNameUnicode.empty())
     writeLuniBlock(w, lay.layerNameUnicode);
+  if (!wroteIOpa && lay.fill_opacity != 255) {   // 既存 iOpa 無し & 非既定なら追加
+    w.putData("8BIM", 4);
+    w.putUint32BE((uint32_t)'iOpa');
+    w.putUint32BE(4);
+    w.putCh(lay.fill_opacity & 0xff);
+    w.putZero(3);
+  }
 }
 
 inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {

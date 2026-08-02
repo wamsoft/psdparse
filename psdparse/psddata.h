@@ -290,6 +290,7 @@ namespace psd {
 	struct LayerMask {
     bool present = false;  // マスクブロック (size>0) が存在したか
     bool hasReal = false;  // real/user mask (size>=36) を含むか
+    bool edited  = false;  // フィールドが編集され、save 時にフィールドから再直列化するか
     // マスクパラメータ (density/feather)。 flags bit4 (parameters_applied) が
     // 立っているとき本体が続く。density は 0..255 (-1=不在)、feather は double。
     bool hasParameters = false;   // パラメータブロックが実在したか
