@@ -31,7 +31,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 編集保存: 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる (v0.7.0) |
 | 編集保存: 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` — 8bit RGB のみ (v0.7.0) |
 | 編集保存: 画像レイヤ新規追加 | ✅ | `add_layer(name, l, t, bgra, w, h)` — 8bit RGB のみ、名前は luni で Unicode 対応 (v0.7.0) |
-| 編集保存: 完全新規 PSD 作成 | ❌ | ROADMAP Phase E5 |
+| 編集保存: 完全新規 PSD 作成 | ✅ | `create_blank(w, h)` → `add_layer` → `save` — 8bit RGB のみ (v0.7.0) |
 | 編集保存: テキストレイヤ編集 | ❌ | Descriptor/EngineData シリアライザ未実装 (ROADMAP Phase E6) |
 | 編集後の合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
 

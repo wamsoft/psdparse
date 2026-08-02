@@ -711,6 +711,17 @@ PYBIND11_MODULE(psdparse, m) {
          "layer references `source`'s pixel/extra bytes lazily, so `source` is "
          "kept alive until this file is garbage-collected (do not let it close "
          "before save()). Assumes matching color mode and bit depth.")
+    .def("create_blank",
+         [](psd::PSDFile &self, int width, int height, int mode) {
+            if (!self.createBlank(width, height, mode))
+                throw std::invalid_argument("create_blank failed (size must be > 0 "
+                                            "and mode must be COLOR_MODE_RGB)");
+         },
+         py::arg("width"), py::arg("height"),
+         py::arg("mode") = (int)psd::COLOR_MODE_RGB,
+         "Initialize this PSDFile as a blank width×height 8-bit RGB document "
+         "(white composite). Then build it up with add_layer(...) and save(). "
+         "RGB only. The stored composite stays white until an editor recomposites.")
     .def("set_layer_pixels",
          [](psd::PSDFile &self, int index, py::bytes data, int width, int height) {
             py::buffer_info info(py::buffer(data).request());

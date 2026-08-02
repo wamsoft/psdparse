@@ -21,7 +21,9 @@ The `save()` path started as round-trip-only (correct only when the loaded `Data
 
 - ✅ **E4 — RLE encoder + pixel replacement + new image layers.** *Done 2026-08-02 (0.7.0).* A PackBits(RLE) encoder (`psdimage.cpp`, the exact inverse of `decodePackBits`) plus an owning `VectorReader` (a `MemoryReader` that keeps its bytes alive via `shared_ptr`) back two new APIs: `PSDFile.set_layer_pixels(i, bgra, w, h)` replaces a layer's channels, and `PSDFile.add_layer(name, l, t, bgra, w, h, blend, opacity)` builds a whole new RGBA layer — channels in `(-1,0,1,2)` order and a minimal extra-data block (empty mask/ranges + Pascal name + `luni` Unicode name + `lyid`). 8-bit RGB only. Encoder round-trip is pixel-exact across edge cases (1×1, constant, runs, 128/129/255 widths); the Unicode name (incl. emoji) and all output files were cross-checked against psd-tools (`composite()`), see `tests/test_edit_pixels.py`. Also surfaced (and documented) that saving over an mmap'd path returns `False` rather than corrupting.
 
-**Remaining edit phases** (E3 rename/mask/effect *extra-data* edits, E5 new-from-scratch PSD, E6 text-layer editing) are described below (originally drafted as Phase 4c–4e).
+- ✅ **E5 — new-from-scratch PSD construction.** *Done 2026-08-02 (0.7.0).* `PSDFile.create_blank(width, height, mode=RGB)` fills a minimal valid skeleton — header (v1, 3ch, 8-bit RGB), empty color-mode/resources, empty dirty layer list, and a white raw composite (`VectorReader`) — so you can `create_blank()` → `add_layer()` → `save()` with no source file. Validated empty and multi-layer, cross-checked with psd-tools `composite()` — see `tests/test_create.py`.
+
+**Remaining edit phases** (E3 rename/mask/effect *extra-data* edits, E6 text-layer editing) are described below (E3 was originally drafted as Phase 4c).
 
 ### Phase E3 (was 4c) — extra data field re-serialization (enables rename, blend-mode change)
 

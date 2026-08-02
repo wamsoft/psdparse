@@ -217,6 +217,35 @@ bool PSDFile::save(const char *filename) {
   return writePSD(w, *this);
 }
 
+// --- 新規作成 --------------------------------------------------------------
+
+bool PSDFile::createBlank(int width, int height, int mode) {
+  if (width <= 0 || height <= 0) return false;
+  if (mode != COLOR_MODE_RGB) return false;   // v1: 8bit RGB のみ
+  clearData();                                 // iterator/mapping を解放
+  layerList.clear();
+  imageResourceList.clear();
+  header = Header();                           // hres/vres=72 の既定
+  header.version  = 1;
+  header.channels = 3;                         // 合成画像は RGB 3ch (α無し)
+  header.height   = height;
+  header.width    = width;
+  header.depth    = 8;
+  header.mode     = mode;
+  colorModeSize     = 0;
+  colorModeIterator = nullptr;
+  mergedAlpha  = false;
+  layersDirty  = true;                         // save() はレイヤ毎再構築経路へ
+  globalLayerMaskInfo = GlobalLayerMaskInfo();
+  // 白の合成画像: [00 00] (raw) + 3 プレーン分の 0xFF。
+  auto buf = std::make_shared<std::vector<uint8_t>>();
+  buf->push_back(0); buf->push_back(0);        // compression = 0 (raw)
+  buf->insert(buf->end(), (size_t)width * (size_t)height * 3, 0xFF);
+  imageData = new VectorReader(buf);
+  isLoaded = true;
+  return true;
+}
+
 // --- 構造編集 --------------------------------------------------------------
 
 bool PSDFile::deleteLayer(int index) {

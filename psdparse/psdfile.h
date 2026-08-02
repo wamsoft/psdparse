@@ -89,6 +89,13 @@ namespace psd {
                   const uint8_t *bgra, int width, int height,
                   int blendModeKey = 'norm', int opacity = 255, int destIndex = -1);
 
+    // --- 新規作成 (E5) ------------------------------------------------------
+    // この PSDFile を空の 8bit RGB 文書 (幅×高さ, 白の合成画像) として初期化する。
+    // 以後 addLayer(...) でレイヤを足して save() できる。成功で true。
+    // (合成画像は白のまま。レイヤ追加後も再合成はされない — Photoshop が開いて
+    //  再合成するまで白。)
+    bool createBlank(int width, int height, int mode = COLOR_MODE_RGB);
+
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);
     bool getLayerImage(const LayerInfo &layer, void *buf, const ColorFormat &format,

@@ -294,6 +294,24 @@ new_i = p.add_layer("name", left, top, bgra_bytes, width, height,
   *masked* layer at a different size leaves a stale mask; prefer same-size
   replacement on masked layers.
 
+### New from scratch (E5)
+
+Build a PSD without loading one first:
+
+```python
+p = psdparse.PSDFile()
+p.create_blank(1024, 768)                       # blank 8-bit RGB, white composite
+p.add_layer("background", 0, 0, bg_bgra, 1024, 768)
+p.add_layer("sprite", 100, 100, sprite_bgra, 200, 150, "norm", 255)
+p.save("new.psd")
+```
+
+- `create_blank(width, height, mode=COLOR_MODE_RGB)` — 8-bit RGB only. Resets the
+  object to an empty document with a white stored composite.
+- Add content with `add_layer(...)`; a document with zero layers is also valid.
+- As with edited files, the stored composite is **not** rendered from the layers
+  — it stays white until an editor recomposites on open.
+
 ### Saving
 
 `save(path)` returns `True`/`False`. **Do not save over a file that is currently
