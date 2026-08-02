@@ -74,6 +74,21 @@ namespace psd {
     // 色モード/ビット深度が一致している前提。新インデックスを返す。失敗 -1。
     int  copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex = -1);
 
+    // --- 画素編集 (E4) ------------------------------------------------------
+    // 8bit RGB 文書のみ対応。入力は BGRA インターリーブ (layer_image と同じ並び、
+    // width*height*4 バイト)。チャンネルは PackBits(RLE) で符号化して保持し、
+    // save() 時にレイヤ毎の再構築経路で書き出される。
+
+    // 既存レイヤ index の画素を差し替える。bbox は left/top を保ち width/height を
+    // 更新する。マスク等の extra data は変更しない (サイズ不一致に注意)。失敗 false。
+    bool setLayerPixels(int index, const uint8_t *bgra, int width, int height);
+
+    // 新規画像レイヤを (left,top) に追加する。destIndex<0 で末尾に挿入。
+    // 新しいレイヤのインデックスを返す。失敗で -1。
+    int  addLayer(const char *nameUtf8, int left, int top,
+                  const uint8_t *bgra, int width, int height,
+                  int blendModeKey = 'norm', int opacity = 255, int destIndex = -1);
+
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);
     bool getLayerImage(const LayerInfo &layer, void *buf, const ColorFormat &format,

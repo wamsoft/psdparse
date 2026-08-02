@@ -29,7 +29,8 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 編集保存: パラメータ変更 | ✅ | `layer.opacity`/`visible`/`set_blend_mode()` (v0.7.0) |
 | 編集保存: レイヤ削除/並べ替え/複製 | ✅ | `delete_layer`/`move_layer`/`duplicate_layer` (v0.7.0) |
 | 編集保存: 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる (v0.7.0) |
-| 編集保存: 画素差し替え/画像レイヤ新規追加 | ❌ | RLE エンコーダ未実装 (ROADMAP Phase E4) |
+| 編集保存: 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` — 8bit RGB のみ (v0.7.0) |
+| 編集保存: 画像レイヤ新規追加 | ✅ | `add_layer(name, l, t, bgra, w, h)` — 8bit RGB のみ、名前は luni で Unicode 対応 (v0.7.0) |
 | 編集保存: 完全新規 PSD 作成 | ❌ | ROADMAP Phase E5 |
 | 編集保存: テキストレイヤ編集 | ❌ | Descriptor/EngineData シリアライザ未実装 (ROADMAP Phase E6) |
 | 編集後の合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
@@ -38,7 +39,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 
 | 項目 | 状況 | 備考 |
 |---|:---:|---|
-| Raw / RLE(PackBits) / ZIP(±prediction) | ✅ | 展開対応 |
+| Raw / RLE(PackBits) / ZIP(±prediction) | ✅ | 展開対応。PackBits は符号化 (save 時のレイヤ画素書き出し) も対応 |
 | ビット深度 1 / 8 / 16 / 32 | ✅ | それ以外は非対応 |
 
 ## カラーモード (ピクセル展開: `merged_image` / `layer_image`)

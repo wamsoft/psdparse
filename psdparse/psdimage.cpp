@@ -1,7 +1,10 @@
 
 #include "psdfile.h"
+#include "psdparse.h"   // MemoryReader / VectorReader
 #include <cstring>
 #include <cmath>
+#include <memory>
+#include <vector>
 
 #define USE_ZLIB
 #ifdef USE_ZLIB
@@ -1047,6 +1050,195 @@ namespace psd {
 #endif
 
     return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // 画素編集 (E4): PackBits エンコーダ + チャンネル/レイヤ構築
+  // --------------------------------------------------------------------------
+  namespace {
+
+  // PackBits(RLE) で 1 行を符号化して out に追記する。decodePackBits と対で、
+  // ヘッダバイトは 0..127 (リテラル長-1) と 129..255 (連長 257-n) のみを使い、
+  // 128 (デコーダが誤動作する値) は決して出さない。
+  void packBitsEncodeRow(std::vector<uint8_t> &out, const uint8_t *src, int n) {
+    int i = 0;
+    while (i < n) {
+      int run = 1;
+      while (i + run < n && src[i + run] == src[i] && run < 128) run++;
+      if (run >= 2) {
+        out.push_back((uint8_t)(257 - run));  // 129..255
+        out.push_back(src[i]);
+        i += run;
+      } else {
+        int start = i;
+        int lit = 0;
+        while (i < n && lit < 128) {
+          if (i + 1 < n && src[i + 1] == src[i]) break;  // 連長が始まる → リテラル終端
+          i++; lit++;
+        }
+        out.push_back((uint8_t)(lit - 1));   // 0..127
+        out.insert(out.end(), src + start, src + start + lit);
+      }
+    }
+  }
+
+  // 1 チャンネル分の RLE バイト列を作る:
+  //   [00 01] (compression=1) + [height 個の行バイト数 int16 BE] + [各行の圧縮データ]
+  std::shared_ptr<std::vector<uint8_t>> buildRleChannel(const uint8_t *plane, int w, int h) {
+    auto buf = std::make_shared<std::vector<uint8_t>>();
+    std::vector<uint8_t> &out = *buf;
+    out.push_back(0); out.push_back(1);          // compression word = 1 (RLE)
+    size_t countPos = out.size();
+    out.resize(out.size() + (size_t)h * 2, 0);   // 行バイト数テーブルのプレースホルダ
+    for (int y = 0; y < h; y++) {
+      size_t before = out.size();
+      packBitsEncodeRow(out, plane + (size_t)y * w, w);
+      size_t rowBytes = out.size() - before;     // 想定画像サイズでは 65535 未満
+      out[countPos + (size_t)y * 2]     = (uint8_t)((rowBytes >> 8) & 0xff);
+      out[countPos + (size_t)y * 2 + 1] = (uint8_t)(rowBytes & 0xff);
+    }
+    return buf;
+  }
+
+  void putBE16(std::vector<uint8_t> &v, uint16_t x) {
+    v.push_back((uint8_t)(x >> 8)); v.push_back((uint8_t)(x & 0xff));
+  }
+  void putBE32(std::vector<uint8_t> &v, uint32_t x) {
+    v.push_back((uint8_t)(x >> 24)); v.push_back((uint8_t)(x >> 16));
+    v.push_back((uint8_t)(x >> 8));  v.push_back((uint8_t)(x & 0xff));
+  }
+
+  // UTF-8 → UTF-16 (host-order u16str)。luni ブロック用。不正バイトはスキップ。
+  u16str utf8ToU16(const std::string &s) {
+    u16str out;
+    size_t i = 0, n = s.size();
+    while (i < n) {
+      unsigned char c = (unsigned char)s[i];
+      uint32_t cp; int len;
+      if (c < 0x80)            { cp = c;        len = 1; }
+      else if ((c >> 5) == 0x6){ cp = c & 0x1f; len = 2; }
+      else if ((c >> 4) == 0xe){ cp = c & 0x0f; len = 3; }
+      else if ((c >> 3) == 0x1e){cp = c & 0x07; len = 4; }
+      else { i++; continue; }
+      if (i + (size_t)len > n) break;
+      for (int k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3f);
+      i += (size_t)len;
+      if (cp <= 0xffff) out.push_back((char16_t)cp);
+      else {
+        cp -= 0x10000;
+        out.push_back((char16_t)(0xd800 + (cp >> 10)));
+        out.push_back((char16_t)(0xdc00 + (cp & 0x3ff)));
+      }
+    }
+    return out;
+  }
+
+  // BGRA を 4 チャンネル (-1:A, 0:R, 1:G, 2:B) に分解して RLE 符号化し lay に設定。
+  void buildLayerChannels(LayerInfo &lay, const uint8_t *bgra, int w, int h) {
+    int px = w * h;
+    std::vector<uint8_t> R((size_t)px), G((size_t)px), B((size_t)px), A((size_t)px);
+    for (int i = 0; i < px; i++) {
+      B[i] = bgra[i * 4 + 0]; G[i] = bgra[i * 4 + 1];
+      R[i] = bgra[i * 4 + 2]; A[i] = bgra[i * 4 + 3];
+    }
+    lay.channels.clear();
+    const struct { int id; const std::vector<uint8_t> *p; } chs[] = {
+      { -1, &A }, { 0, &R }, { 1, &G }, { 2, &B },
+    };
+    for (const auto &c : chs) {
+      auto cbuf = buildRleChannel(c.p->data(), w, h);
+      ChannelInfo ci(c.id, (int)cbuf->size());
+      ci.imageData = new VectorReader(cbuf);   // push_back で clone (buf を共有)
+      lay.channels.push_back(ci);
+    }
+  }
+
+  // 新規レイヤ用の extra data (layer mask=0, blending ranges=0, pascal 名,
+  // luni, lyid) を組み立てて生バイトで返す。
+  std::shared_ptr<std::vector<uint8_t>> buildLayerExtra(const std::string &nameUtf8,
+                                                        int layerId) {
+    auto buf = std::make_shared<std::vector<uint8_t>>();
+    std::vector<uint8_t> &v = *buf;
+    putBE32(v, 0);   // layer mask data length = 0
+    putBE32(v, 0);   // blending ranges length = 0
+    // pascal 名 (システムバイト列)。UTF-8 バイトをそのまま、255 で切り詰め。
+    std::string pn = nameUtf8;
+    if (pn.size() > 255) pn.resize(255);
+    v.push_back((uint8_t)pn.size());
+    v.insert(v.end(), pn.begin(), pn.end());
+    int total = 1 + (int)pn.size();
+    int pad = (4 - (total & 3)) & 3;             // 名前は 4 バイト境界へ
+    for (int i = 0; i < pad; i++) v.push_back(0);
+    // luni (Unicode 名)
+    {
+      u16str u = utf8ToU16(nameUtf8);
+      std::vector<uint8_t> d;
+      putBE32(d, (uint32_t)u.size());
+      for (char16_t ch : u) putBE16(d, (uint16_t)ch);   // charCount(4)+2n → 常に偶数
+      const char sig[8] = { '8','B','I','M','l','u','n','i' };
+      v.insert(v.end(), sig, sig + 8);
+      putBE32(v, (uint32_t)d.size());
+      v.insert(v.end(), d.begin(), d.end());
+    }
+    // lyid (Layer ID)
+    {
+      const char sig[8] = { '8','B','I','M','l','y','i','d' };
+      v.insert(v.end(), sig, sig + 8);
+      putBE32(v, 4);
+      putBE32(v, (uint32_t)layerId);
+    }
+    return buf;
+  }
+
+  }  // anonymous namespace
+
+  bool PSDFile::setLayerPixels(int index, const uint8_t *bgra, int width, int height) {
+    if (index < 0 || index >= (int)layerList.size()) return false;
+    if (!bgra || width <= 0 || height <= 0) return false;
+    if (header.depth != 8 || header.mode != COLOR_MODE_RGB) return false;
+    LayerInfo &lay = layerList[(size_t)index];
+    buildLayerChannels(lay, bgra, width, height);
+    lay.right  = lay.left + width;
+    lay.bottom = lay.top  + height;
+    lay.width  = width;
+    lay.height = height;
+    layersDirty = true;
+    return true;
+  }
+
+  int PSDFile::addLayer(const char *nameUtf8, int left, int top,
+                        const uint8_t *bgra, int width, int height,
+                        int blendModeKey, int opacity, int destIndex) {
+    if (!bgra || width <= 0 || height <= 0) return -1;
+    if (header.depth != 8 || header.mode != COLOR_MODE_RGB) return -1;
+    LayerInfo lay;
+    lay.owner = this;
+    lay.parent = nullptr;
+    lay.parentIndex = -1;
+    lay.top = top; lay.left = left;
+    lay.bottom = top + height; lay.right = left + width;
+    lay.width = width; lay.height = height;
+    lay.blendModeKey = blendModeKey;
+    lay.blendMode = blendKeyToMode(blendModeKey);
+    lay.opacity = opacity & 0xff;
+    lay.clipping = 0;
+    lay.flag = 0;
+    lay.fill_opacity = 255;
+    lay.layerType = LAYER_TYPE_NORMAL;
+    int maxId = 0;
+    for (const auto &l : layerList) if (l.layerId > maxId) maxId = l.layerId;
+    lay.layerId = maxId + 1;
+    lay.layerName = nameUtf8 ? nameUtf8 : "";
+    lay.layerNameUnicode = utf8ToU16(lay.layerName);
+    lay.extraData.layerName = lay.layerName;
+    buildLayerChannels(lay, bgra, width, height);
+    auto extra = buildLayerExtra(lay.layerName, lay.layerId);
+    lay.extraData.rawBytes = new VectorReader(extra);
+    int pos = (destIndex < 0 || destIndex > (int)layerList.size())
+                ? (int)layerList.size() : destIndex;
+    layerList.insert(layerList.begin() + pos, lay);
+    layersDirty = true;
+    return pos;
   }
 
   bool PSDFile::getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte)

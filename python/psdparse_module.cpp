@@ -711,6 +711,46 @@ PYBIND11_MODULE(psdparse, m) {
          "layer references `source`'s pixel/extra bytes lazily, so `source` is "
          "kept alive until this file is garbage-collected (do not let it close "
          "before save()). Assumes matching color mode and bit depth.")
+    .def("set_layer_pixels",
+         [](psd::PSDFile &self, int index, py::bytes data, int width, int height) {
+            py::buffer_info info(py::buffer(data).request());
+            size_t need = (size_t)width * (size_t)height * 4;
+            if (width <= 0 || height <= 0 || (size_t)info.size != need)
+                throw std::invalid_argument("data must be width*height*4 BGRA bytes");
+            if (!self.setLayerPixels(index, (const uint8_t *)info.ptr, width, height))
+                throw std::runtime_error("set_layer_pixels failed (index out of range, "
+                                         "or document is not 8-bit RGB)");
+         },
+         py::arg("index"), py::arg("data"), py::arg("width"), py::arg("height"),
+         "Replace layer `index`'s pixels with BGRA bytes (width*height*4). The "
+         "layer's left/top are kept; width/height are updated. Channels are "
+         "RLE-encoded on the next save(). 8-bit RGB documents only. The layer's "
+         "mask/extra data is left unchanged — avoid resizing a masked layer.")
+    .def("add_layer",
+         [](psd::PSDFile &self, const std::string &name, int left, int top,
+            py::bytes data, int width, int height,
+            const std::string &blend_mode, int opacity, int dest_index) {
+            py::buffer_info info(py::buffer(data).request());
+            size_t need = (size_t)width * (size_t)height * 4;
+            if (width <= 0 || height <= 0 || (size_t)info.size != need)
+                throw std::invalid_argument("data must be width*height*4 BGRA bytes");
+            if (blend_mode.size() != 4)
+                throw std::invalid_argument("blend_mode must be a 4-char key, e.g. 'norm'");
+            int key = ((int)(uint8_t)blend_mode[0] << 24) | ((int)(uint8_t)blend_mode[1] << 16) |
+                      ((int)(uint8_t)blend_mode[2] << 8)  |  (int)(uint8_t)blend_mode[3];
+            int r = self.addLayer(name.c_str(), left, top, (const uint8_t *)info.ptr,
+                                  width, height, key, opacity, dest_index);
+            if (r < 0)
+                throw std::runtime_error("add_layer failed (document is not 8-bit RGB)");
+            return r;
+         },
+         py::arg("name"), py::arg("left"), py::arg("top"),
+         py::arg("data"), py::arg("width"), py::arg("height"),
+         py::arg("blend_mode") = "norm", py::arg("opacity") = 255,
+         py::arg("dest_index") = -1,
+         "Add a new image layer at (left, top) from BGRA bytes "
+         "(width*height*4). Returns the new layer index. `blend_mode` is a "
+         "4-char key ('norm', 'mul ', ...). 8-bit RGB documents only.")
     .def_readonly("is_loaded", &psd::PSDFile::isLoaded)
     .def_readonly("header",    &psd::PSDFile::header)
     .def_readonly("layers",    &psd::PSDFile::layerList)

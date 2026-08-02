@@ -267,11 +267,40 @@ Notes:
   psdparse keeps a reference to the source automatically, so simply saving before
   discarding both is enough. Source and destination must share color mode and bit
   depth.
-- **Pixel replacement, new image layers, and brand-new PSDs are not yet
-  supported** (they need an RLE encoder — planned E4/E5). Text-layer editing is
-  planned E6.
+- **Brand-new PSDs (from scratch)** are not yet supported (planned E5), and
+  **text-layer editing** is planned E6.
 - The stored **composite (merged) image is not regenerated** after edits — it
   stays as it was until Photoshop (or another editor) recomposites on open.
+
+### Pixel edits (E4)
+
+Replace an existing layer's pixels, or add a whole new image layer, from BGRA
+bytes (the same interleave `layer_image` returns). **8-bit RGB documents only.**
+
+```python
+# replace layer i's pixels (left/top kept; width/height updated)
+p.set_layer_pixels(i, bgra_bytes, width, height)
+
+# add a new image layer; returns its index
+new_i = p.add_layer("name", left, top, bgra_bytes, width, height,
+                    blend_mode="norm", opacity=255, dest_index=-1)
+```
+
+- `bgra_bytes` must be exactly `width*height*4` bytes (B, G, R, A per pixel).
+- Channels are PackBits(RLE)-encoded on `save()`; decode round-trips exactly.
+- `add_layer` writes the name as both a Pascal string and a Unicode `luni`
+  block, so non-ASCII names (incl. emoji) survive.
+- `set_layer_pixels` leaves the layer's mask/extra data untouched — replacing a
+  *masked* layer at a different size leaves a stale mask; prefer same-size
+  replacement on masked layers.
+
+### Saving
+
+`save(path)` returns `True`/`False`. **Do not save over a file that is currently
+loaded** (by this or any live `PSDFile`): `load()` memory-maps the file
+read-only, so the write is refused and `save()` returns `False` (the original is
+never corrupted). Always save to a fresh path, then swap the files yourself if
+you want to replace the original.
 
 ```python
 # Merge one layer from file B into file A, on top:
