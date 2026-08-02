@@ -332,9 +332,23 @@ new_i = p.add_layer("name", left, top, bgra_bytes, width, height,
 - Channels are PackBits(RLE)-encoded on `save()`; decode round-trips exactly.
 - `add_layer` writes the name as both a Pascal string and a Unicode `luni`
   block, so non-ASCII names (incl. emoji) survive.
-- `set_layer_pixels` leaves the layer's mask/extra data untouched — replacing a
-  *masked* layer at a different size leaves a stale mask; prefer same-size
-  replacement on masked layers.
+- `set_layer_pixels` keeps an existing **mask channel** intact (only the colour
+  channels are rebuilt). Replacing a *masked* layer at a different size leaves a
+  stale mask rectangle, though — prefer same-size replacement, or follow with
+  `set_layer_mask_pixels` to reset the mask.
+
+### Mask pixels & geometry
+
+```python
+# set/replace the mask with a grayscale buffer (0 = hidden, 255 = shown),
+# positioned at (left, top). Creates the mask if the layer had none:
+p.set_layer_mask_pixels(i, gray_bytes, top, left, width, height)
+```
+
+- `gray_bytes` is `width*height` bytes (one per pixel). This sets both the mask
+  pixels **and** the mask rectangle (geometry). Colour channels are preserved.
+- Mask **value** attributes (disabled / density / feather / default colour) are
+  edited separately with `set_layer_mask(...)`. 8-bit documents only.
 
 ### Text content (E6)
 

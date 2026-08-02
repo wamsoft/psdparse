@@ -33,7 +33,9 @@ The `save()` path started as round-trip-only (correct only when the loaded `Data
 
 - 🟡 **E6 — text-layer content editing.** *Text content done 2026-08-02 (0.7.0).* A **byte-exact Adobe EngineData serializer** (`psdengine.cpp`, the inverse of the parser — replicating psd-tools/Photoshop formatting: tab indentation by depth, `%.8f` float trimming with `0.`→`.`, inline-vs-multiline arrays, `(BOM …)` string escaping, and `Node.keyOrder`/`isInt` to preserve dict order and int-vs-float). Verified byte-exact on all 6 sample text layers. `PSDFile.set_text(i, str)` rewrites `EngineDict/Editor/Text` + collapses run-length arrays to a single run, updates the `Txt ` descriptor string, and re-serializes the `TySh` block (reusing the E3b descriptor serializer) with the version/transform prefix and warp/bounds suffix preserved verbatim. psd-tools reads the new text (incl. emoji) with no warnings — see `tests/test_edit_text.py`. **Still to do in E6:** per-run style editing (font/size/colour per range) — currently `set_text` collapses to the first run's style.
 
-**Remaining edit work** (E3 mask-geometry edits, E6 per-run text styling) is described below.
+- ✅ **Mask pixels & geometry editing.** *Done 2026-08-02 (0.7.0).* `PSDFile.set_layer_mask_pixels(i, gray, top, left, w, h)` RLE-encodes a grayscale buffer into the layer's user-mask channel (`-2`) and sets the mask rectangle (creating the mask if absent), so mask geometry is editable together with its pixels. Also fixed `set_layer_pixels` to **preserve** an existing mask channel instead of dropping it. Cross-checked mask pixels + rectangle with psd-tools — see `tests/test_edit_mask_pixels.py`.
+
+**Remaining edit work** (E6 per-run text styling) is described below.
 
 ### Phase E3 (was 4c) — extra data field re-serialization (enables rename, blend-mode change)
 

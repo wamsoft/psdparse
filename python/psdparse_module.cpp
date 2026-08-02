@@ -980,6 +980,24 @@ PYBIND11_MODULE(psdparse, m) {
          "layer's left/top are kept; width/height are updated. Channels are "
          "RLE-encoded on the next save(). 8-bit RGB documents only. The layer's "
          "mask/extra data is left unchanged — avoid resizing a masked layer.")
+    .def("set_layer_mask_pixels",
+         [](psd::PSDFile &self, int index, py::bytes data,
+            int top, int left, int width, int height) {
+            py::buffer_info info(py::buffer(data).request());
+            size_t need = (size_t)width * (size_t)height;
+            if (width <= 0 || height <= 0 || (size_t)info.size != need)
+                throw std::invalid_argument("data must be width*height grayscale bytes");
+            if (!self.setLayerMaskPixels(index, (const uint8_t *)info.ptr,
+                                         top, left, width, height))
+                throw std::runtime_error("set_layer_mask_pixels failed (index out of "
+                                         "range, or document is not 8-bit)");
+         },
+         py::arg("index"), py::arg("data"), py::arg("top"), py::arg("left"),
+         py::arg("width"), py::arg("height"),
+         "Set/replace the layer's mask with grayscale bytes (width*height, one "
+         "byte/px; 0=hidden, 255=shown). Positions the mask rectangle at "
+         "(left, top) — this also sets mask geometry. Creates the mask if the "
+         "layer had none. Color channels are preserved. 8-bit documents only.")
     .def("add_layer",
          [](psd::PSDFile &self, const std::string &name, int left, int top,
             py::bytes data, int width, int height,

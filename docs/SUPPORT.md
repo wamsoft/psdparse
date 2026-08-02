@@ -29,6 +29,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 編集保存: パラメータ変更 | ✅ | `layer.opacity`/`visible`/`set_blend_mode()` (v0.7.0) |
 | 編集保存: レイヤ改名 | ✅ | `layer.name_unicode = ...` / `set_layer_name()` — mask/blend は生バイト保持 (v0.7.0) |
 | 編集保存: マスク値編集 (disabled/density/feather/default色) | ✅ | `set_layer_mask(i, ...)` — 矩形/画素は不変 (v0.7.0) |
+| 編集保存: マスク画素/矩形 (幾何) の設定 | ✅ | `set_layer_mask_pixels(i, gray, top, left, w, h)` — 無ければ新規作成 (v0.7.0) |
 | 編集保存: 塗り不透明度 (fill opacity) | ✅ | `layer.fill_opacity = ...` (iOpa, v0.7.0) |
 | 編集保存: 効果 (lfx2) の値編集 | ✅ | `set_effects(i, changes)` — Descriptor シリアライザ実装済 (byte-exact) (v0.7.0) |
 | 編集保存: 任意 descriptor (塗り SoCo/GdFl/PtFl 等) の値編集 | ✅ | `set_layer_descriptor(i, key, changes)` (v0.7.0) |

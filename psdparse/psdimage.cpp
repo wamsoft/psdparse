@@ -1109,6 +1109,7 @@ namespace psd {
   }
 
   // BGRA を 4 チャンネル (-1:A, 0:R, 1:G, 2:B) に分解して RLE 符号化し lay に設定。
+  // 既存のマスクチャンネル (-2/-3) は末尾に保持する (画素差し替えでマスクを失わない)。
   void buildLayerChannels(LayerInfo &lay, const uint8_t *bgra, int w, int h) {
     int px = w * h;
     std::vector<uint8_t> R((size_t)px), G((size_t)px), B((size_t)px), A((size_t)px);
@@ -1116,6 +1117,9 @@ namespace psd {
       B[i] = bgra[i * 4 + 0]; G[i] = bgra[i * 4 + 1];
       R[i] = bgra[i * 4 + 2]; A[i] = bgra[i * 4 + 3];
     }
+    std::vector<ChannelInfo> maskChannels;   // 既存マスクを退避
+    for (const auto &c : lay.channels)
+      if (c.isMaskChannel()) maskChannels.push_back(c);
     lay.channels.clear();
     const struct { int id; const std::vector<uint8_t> *p; } chs[] = {
       { -1, &A }, { 0, &R }, { 1, &G }, { 2, &B },
@@ -1126,6 +1130,7 @@ namespace psd {
       ci.imageData = new VectorReader(cbuf);   // push_back で clone (buf を共有)
       lay.channels.push_back(ci);
     }
+    for (const auto &mc : maskChannels) lay.channels.push_back(mc);
   }
 
   // 新規レイヤ用の extra data (layer mask=0, blending ranges=0, pascal 名,
@@ -1214,6 +1219,38 @@ namespace psd {
     layerList.insert(layerList.begin() + pos, lay);
     layersDirty = true;
     return pos;
+  }
+
+  bool PSDFile::setLayerMaskPixels(int index, const uint8_t *gray,
+                                   int top, int left, int width, int height) {
+    if (index < 0 || index >= (int)layerList.size()) return false;
+    if (!gray || width <= 0 || height <= 0) return false;
+    if (header.depth != 8) return false;   // 8bit のみ
+    LayerInfo &lay = layerList[(size_t)index];
+    // 既存のマスクチャンネル (-2/-3) を除いて再構成し、新しい user mask (-2) を末尾へ。
+    std::vector<ChannelInfo> kept;
+    for (const auto &c : lay.channels)
+      if (!c.isMaskChannel()) kept.push_back(c);
+    lay.channels.swap(kept);
+    auto cbuf = buildRleChannel(gray, width, height);
+    ChannelInfo mc(CH_ID_UMASK, (int)cbuf->size());   // -2
+    mc.imageData = new VectorReader(cbuf);
+    lay.channels.push_back(mc);
+    // マスク幾何を更新 (無ければ新規作成)
+    LayerMask &m = lay.extraData.layerMask;
+    if (!m.present) {
+      m = LayerMask();
+      m.present = true;
+      m.defaultColor = 0;   // 矩形外は隠す
+      m.flags = 0;
+    }
+    m.hasReal = false;      // 単純な user mask
+    m.top = top; m.left = left; m.bottom = top + height; m.right = left + width;
+    m.width = width; m.height = height;
+    m.edited = true;
+    lay.extraData.useRawBytes = false;
+    layersDirty = true;
+    return true;
   }
 
   bool PSDFile::setLayerName(int index, const char *nameUtf8) {

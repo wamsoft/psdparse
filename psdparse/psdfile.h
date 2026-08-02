@@ -83,6 +83,12 @@ namespace psd {
     // 更新する。マスク等の extra data は変更しない (サイズ不一致に注意)。失敗 false。
     bool setLayerPixels(int index, const uint8_t *bgra, int width, int height);
 
+    // レイヤのマスク画素 (グレースケール, width*height バイト) を差し替える。
+    // マスク矩形も (top,left,w,h) に設定する (幾何編集を兼ねる)。マスクが無ければ
+    // 新規作成 (既定色 0)。8bit のみ。失敗で false。カラーチャンネルは保持。
+    bool setLayerMaskPixels(int index, const uint8_t *gray,
+                            int top, int left, int width, int height);
+
     // 新規画像レイヤを (left,top) に追加する。destIndex<0 で末尾に挿入。
     // 新しいレイヤのインデックスを返す。失敗で -1。
     int  addLayer(const char *nameUtf8, int left, int top,
