@@ -59,56 +59,49 @@ namespace psd {
       additional.data->advance(3);
       int len = additional.data->getInt32();
 
+      // 各メタデータ項目は正確に len バイト。処理後にこの位置へ整列させないと、
+      // cmls より前に別項目 (未処理) があると読み位置がずれて descriptor が壊れる。
+      int dataStart = additional.data->size() - additional.data->rest();
+
       // レイヤーカンプ
       if (key == 'cmls') {
         int ver = additional.data->getInt32();
-        if (ver != 16) {
-          continue; // not support
-        }
-        Descriptor &dsc = layer.layerCompDesc;
-        if (!dsc.load(additional.data)) {
-          continue; // invalid data
-        }
-        // dprint("----\n");
-        // dsc.dump();
-        DescriptorList *settings = (DescriptorList*)dsc.findItem("layerSettings");
-        if (settings) {
-          bool lastEnabled = true;
-          for (int i = 0; i < (int)settings->items.size(); i++) {
-            Descriptor *comp = settings->item(i);
-            DescriptorList *compList = comp->item("compList");
-            if (compList) {
-              LayerCompInfo ci;
-              memset(&ci, 0, sizeof(ci));
+        if (ver == 16) {
+          Descriptor &dsc = layer.layerCompDesc;
+          if (dsc.load(additional.data)) {
+            DescriptorList *settings = (DescriptorList*)dsc.findItem("layerSettings");
+            if (settings) {
+              for (int s = 0; s < (int)settings->items.size(); s++) {
+                Descriptor *comp = settings->item(s);
+                DescriptorList *compList = comp->item("compList");
+                if (!compList || compList->items.empty()) continue;
+                LayerCompInfo ci;
+                memset(&ci, 0, sizeof(ci));
+                ci.id = ((DescriptorInteger*)compList->items[0])->val;
 
-              int compId = ((DescriptorInteger*)compList->items[0])->val;
-              ci.id = compId;
+                Descriptor *offset = comp->item("Ofst");
+                if (offset) {
+                  DescriptorInteger *h = offset->item("Hrzn");
+                  DescriptorInteger *v = offset->item("Vrtc");
+                  ci.offsetX = (h) ? h->val : 0;
+                  ci.offsetY = (v) ? v->val : 0;
+                }
 
-              Descriptor *offset = comp->item("Ofst");
-              if (offset) {
-                DescriptorInteger *h = comp->item("Hrzn");
-                DescriptorInteger *v = comp->item("Hrzn");
-                ci.offsetX = (h) ? h->val : 0;
-                ci.offsetY = (v) ? v->val : 0;
+                // enab が無いレイヤ (この comp で可視状態を上書きしていない) は
+                // レイヤの基準可視状態を採用する。
+                DescriptorBoolean *enable = comp->item("enab");
+                ci.isEnabled = enable ? enable->val : layer.isVisible();
+
+                layer.layerComps[ci.id] = ci;
               }
-
-              DescriptorBoolean *enable = comp->item("enab");
-              if (enable) {
-                ci.isEnabled  = lastEnabled = enable->val;
-              } else {
-                ci.isEnabled  = lastEnabled;
-              }
-
-              dprint("Comp: id:0x%08x, offX:%d, offY:%d, enabled:%d\n",
-                     ci.id, ci.offsetX, ci.offsetY, ci.isEnabled);
-              
-              layer.layerComps[compId] = ci;
             }
           }
         }
-      } else {
-        // additional.data->getData(, len);
       }
+
+      // 次項目のために len バイト境界へ整列 (未処理項目や余剰も読み飛ばす)。
+      int consumed = (additional.data->size() - additional.data->rest()) - dataStart;
+      if (consumed < len) additional.data->advance(len - consumed);
     }
 
     return true;

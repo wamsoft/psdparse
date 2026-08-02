@@ -40,7 +40,12 @@ shows at a time. This enumerates option combinations and composites each.
 ```bash
 python variations.py character.psd out_dir/               # sweep the first group
 python variations.py character.psd out_dir/ --group 表情   # sweep a named group
+python variations.py doc.psd out_dir/ --comps              # render each Photoshop layer comp
 ```
+
+`--comps` renders each of the document's Photoshop **layer comps** using
+`layer.comp_states` (visibility only; position/appearance overrides aren't
+applied). Otherwise it sweeps folder-based option slots.
 
 ```python
 from variations import option_groups, composite_choices

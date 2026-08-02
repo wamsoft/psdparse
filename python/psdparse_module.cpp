@@ -159,6 +159,29 @@ py::object layerSheetColor(const psd::LayerInfo &l) {
   return py::none();
 }
 
+// Per-layer layer-comp state: {comp_id: {"enabled", "offset_x", "offset_y"}}.
+// Empty dict when the layer participates in no comps. `enabled` drives which
+// layers are shown for a given document layer comp (PSDFile.layer_comps).
+py::dict layerCompStates(const psd::LayerInfo &l) {
+  py::dict out;
+  for (const auto &kv : l.layerComps) {
+    const psd::LayerCompInfo &ci = kv.second;
+    py::dict s;
+    s["enabled"]  = ci.isEnabled;
+    s["offset_x"] = ci.offsetX;
+    s["offset_y"] = ci.offsetY;
+    out[py::int_(kv.first)] = s;
+  }
+  return out;
+}
+
+// Strip a single trailing NUL from a u16 string (Photoshop stores some names
+// NUL-terminated in the count).
+psd::u16str stripNul(const psd::u16str &s) {
+  if (!s.empty() && s.back() == u'\0') return s.substr(0, s.size() - 1);
+  return s;
+}
+
 // Grid & guides image resource (1032) as a dict, or None when the PSD has none.
 py::object psdGuides(psd::PSDFile &self) {
   const psd::GridGuideResource &g = self.gridGuide;
@@ -224,8 +247,8 @@ py::list psdLayerComps(psd::PSDFile &self) {
   for (const auto &c : self.layerComps) {
     py::dict d;
     d["id"]      = c.id;
-    d["name"]    = py::cast(c.name);
-    d["comment"] = py::cast(c.comment);
+    d["name"]    = py::cast(stripNul(c.name));
+    d["comment"] = py::cast(stripNul(c.comment));
     d["record_visibility"] = c.isRecordVisibility;
     d["record_position"]   = c.isRecordPosition;
     d["record_appearance"] = c.isRecordAppearance;
@@ -801,6 +824,10 @@ PYBIND11_MODULE(psdparse, m) {
     .def_property_readonly("fill", &layerFill,
         "Fill-layer content as {'type': 'solid'|'gradient'|'pattern', "
         "'data': {...}} from SoCo/GdFl/PtFl, or None.")
+    .def_property_readonly("comp_states", &layerCompStates,
+        "Per-layer layer-comp state as {comp_id: {'enabled', 'offset_x', "
+        "'offset_y'}} (empty when the layer is in no comps). `enabled` says "
+        "whether this layer is shown in that document comp (PSDFile.layer_comps).")
     .def_property_readonly("sheet_color", &layerSheetColor,
         "Layer-panel color label ('lclr') as {'index', 'name'} (0/'none' .. "
         "11/'fuschia'), or None when the layer carries no lclr block.")

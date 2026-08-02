@@ -164,7 +164,8 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 | グリッド & ガイド (1032) | ✅ | `PSDFile.guides` (v0.3.0) |
 | スライス (1050 v6) | ✅ | `PSDFile.slices` (v0.3.0) |
 | スライス (1050 v7/v8, descriptor) | ❌ | 未格納 |
-| レイヤーカンプ (1065) | ✅ | `PSDFile.layer_comps` (v0.3.0) |
+| レイヤーカンプ (1065, 文書レベル) | ✅ | `PSDFile.layer_comps` (id/name/comment/record_*, v0.3.0) |
+| レイヤーカンプの各レイヤ状態 (可視) | ✅ | `layer.comp_states` = `{comp_id: {enabled, offset_x, offset_y}}` (v0.7.x)。位置/効果の上書きは未適用 |
 | インデックスカラーパレット (色/count/透明index) | ✅ | `PSDFile.color_table` (v0.3.0) |
 | ICC プロファイル (1039) | ✅ | `PSDFile.icc_profile` (生バイト, v0.5.0) |
 | EXIF (1058) | ✅ | `PSDFile.exif` (生バイト, v0.5.0) |

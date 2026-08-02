@@ -72,18 +72,51 @@ def find_group(psd: psdparse.PSDFile, name: str) -> int | None:
     return None
 
 
+def composite_comp(psd: psdparse.PSDFile, comp_id: int):
+    """Composite a document **layer comp** (`comp_id` from psd.layer_comps).
+
+    Each layer's `comp_states[comp_id].enabled` says whether it shows in that
+    comp; layers the comp doesn't mention keep their current visibility. (Comp
+    position/appearance overrides are not applied — visibility only.)
+    """
+    show = set()
+    for i, layer in enumerate(psd.layers):
+        if layer.layer_type not in _PIXEL_TYPES:
+            continue
+        st = layer.comp_states
+        visible = st[comp_id]["enabled"] if comp_id in st else layer.visible
+        if visible:
+            show.add(i)
+    return composite(psd, show)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Composite tachie layer-group combinations.")
     ap.add_argument("input")
     ap.add_argument("out_dir")
     ap.add_argument("--group", action="append", default=[],
                     help="folder name to sweep (repeatable). Default: the first group.")
+    ap.add_argument("--comps", action="store_true",
+                    help="instead of sweeping groups, render each document layer comp")
     ap.add_argument("--limit", type=int, default=24, help="max images to write")
     args = ap.parse_args()
 
     psd = psdparse.PSDFile()
     if not psd.load(args.input):
         raise SystemExit(f"failed to load {args.input}")
+
+    if args.comps:
+        comps = psd.layer_comps
+        if not comps:
+            raise SystemExit("this PSD has no document layer comps")
+        os.makedirs(args.out_dir, exist_ok=True)
+        for n, c in enumerate(comps):
+            img = composite_comp(psd, c["id"])
+            safe = "".join(ch if ch.isalnum() else "_" for ch in c["name"]).strip("_")
+            img.save(os.path.join(args.out_dir, f"comp{n:02d}_{safe or c['id']}.png"))
+        print(f"wrote {len(comps)} layer comps to {args.out_dir}")
+        return
+
     groups = option_groups(psd)
     if not groups:
         raise SystemExit("no option groups (top-level folders) found")

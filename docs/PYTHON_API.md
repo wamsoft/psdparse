@@ -112,6 +112,7 @@ Read-only view of one layer.
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
 | `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
+| `comp_states` | `dict` | per layer-comp state `{comp_id: {"enabled", "offset_x", "offset_y"}}` (empty if the layer is in no comps). `enabled` says if the layer shows in that comp — see [Layer comps](#layer-comps) |
 | `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
 | `visible` | `bool` | flag bit 1 inverted |
 | `transparency_protected` | `bool` | flag bit 0 |
@@ -468,6 +469,30 @@ p.layer_comps   # list[dict]: [{"id","name","comment","record_visibility","recor
 p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparency_index"} for indexed-color PSDs
 p.global_layer_mask  # dict|None : {"overlay_color_space", "color":(c1,c2,c3,c4), "opacity", "kind"}
 ```
+
+### Layer comps
+
+`p.layer_comps` lists the document's layer comps (saved layer-state snapshots).
+Which layers each comp shows is on the **layers**: `layer.comp_states` maps a
+comp id to that layer's state in the comp:
+
+```python
+{ comp_id: {"enabled": True, "offset_x": 0, "offset_y": 0}, ... }
+```
+
+`enabled` is whether the layer is visible in that comp; a layer the comp doesn't
+mention isn't in the dict (fall back to its current visibility). To render a comp
+(visibility only — position/appearance overrides aren't applied):
+
+```python
+for comp in p.layer_comps:
+    show = {i for i, l in enumerate(p.layers)
+            if (l.comp_states[comp["id"]]["enabled"]
+                if comp["id"] in l.comp_states else l.visible)}
+    # composite `show` with Pillow — see examples/variations.py (composite_comp)
+```
+
+`examples/variations.py --comps` renders every comp this way.
 
 ### Image resources (raw)
 

@@ -78,6 +78,13 @@ def sample_maskparams_psd():
 
 
 @pytest.fixture(scope="session")
+def sample_layercomps_psd():
+    """A PSD with Photoshop layer comps (Adobe's 'Layer Comps.psd' sample,
+    saved locally as layercomps.psd; not committed)."""
+    return _find_sample("layercomps.psd", "Layer Comps.psd")
+
+
+@pytest.fixture(scope="session")
 def sample_lab_psd():
     """A Lab-mode PSD with known swatches (synthesized)."""
     return _find_sample("labsample.psd")
@@ -127,6 +134,13 @@ def psd_mask(sample_mask_psd):
 def psd_maskparams(sample_maskparams_psd):
     p = psdparse.PSDFile()
     assert p.load(str(sample_maskparams_psd))
+    return p
+
+
+@pytest.fixture
+def psd_layercomps(sample_layercomps_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_layercomps_psd))
     return p
 
 
