@@ -105,6 +105,9 @@ Read-only view of one layer.
 | `text` | `dict` \| `None` | text-layer content & style (`None` for non-text layers) — see below |
 | `mask` | `dict` \| `None` | layer mask geometry & flags (`None` when the layer has no mask) — see below |
 | `blending_ranges` | `dict` \| `None` | "Blend If" ranges (`None` when absent) — see below |
+| `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
+| `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
+| `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
 | `visible` | `bool` | flag bit 1 inverted |
 | `transparency_protected` | `bool` | flag bit 0 |
 | `obsolete` | `bool` | flag bit 2 |
@@ -230,6 +233,55 @@ p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparenc
   alignment, and an `(r, g, b, a)` `color` tuple.
 - **`color_table`** — only present for `COLOR_MODE_INDEXED` PSDs; `colors` is the
   palette and `transparency_index` is `-1` when there is no transparent entry.
+
+## Descriptor blocks
+
+Photoshop stores layer **effects**, **fill-layer** content and many other
+tagged blocks as its generic *descriptor* tree (the same OSType structure used
+throughout PSD). These accessors decode a block into nested Python
+dicts/lists so they can be read without a decoder per feature.
+
+```python
+layer.effects   # dict|None : object-based effects ('lfx2')
+layer.fill      # dict|None : {"type": "solid"|"gradient"|"pattern", "data": {...}}
+layer.info_keys # list[str] : every additional-info 4cc key present on the layer
+layer.descriptor(key, skip=-1)  # dict|None : parse an arbitrary key as a descriptor
+```
+
+**Value mapping** (descriptor item → Python):
+
+| Descriptor type | Python |
+|---|---|
+| Integer / Double | `int` / `float` |
+| Boolean | `bool` |
+| String / Alias / Class | `str` |
+| UnitFloat | `{"value": float, "unit": str}` (unit: `percent`, `angle`, `pixels`, …) |
+| Enumerated | `{"type": str, "value": str}` |
+| Descriptor (nested) | `dict` (keys are raw 4cc, **may end in a space**, e.g. `"Scl "`) |
+| List | `list` |
+| RawData (`tdta`) | `bytes` |
+| Reference / unknown | `None` |
+
+```python
+fx = layer.effects
+if fx:
+    print("effects on:", fx.get("masterFXSwitch"))
+    po = fx.get("patternFill")           # a nested descriptor dict
+    if po:
+        print("pattern overlay opacity:", po["Opct"]["value"])   # -> 100.0
+```
+
+Notes:
+- Keys are the **raw 4cc** as stored (trailing spaces preserved) — index with
+  the exact string, e.g. `fx["Scl "]`, `color["Rd  "]`.
+- `layer.effects` is `lfx2` (object-based, Photoshop 6+). The older binary
+  `lrFX` block is **not** a descriptor and returns `None` via `descriptor()`.
+- `descriptor(key, skip)` is the generic escape hatch: `skip` is the number of
+  version-prefix bytes before the descriptor (`-1` auto-detects for `lfx2` = 8
+  and `SoCo`/`GdFl`/`PtFl` = 4, otherwise 0). Use `info_keys` to discover which
+  blocks a layer carries.
+- Decoding is **lazy** — the descriptor is parsed from the block's raw bytes on
+  each access, so cache the result if you read it repeatedly.
 
 ## Enums
 

@@ -9,6 +9,7 @@
 
 #include "psdfile.h"
 #include "psdparse.h"
+#include "psddesc.h"
 
 #include <fstream>
 #include <memory>
@@ -212,6 +213,139 @@ py::object psdColorTable(psd::PSDFile &self) {
   return std::move(d);
 }
 
+// -------------------------------------------------------------------------
+// Generic Descriptor -> Python bridge (Tier 2).
+//
+// Photoshop stores layer effects (lfx2), fill layers (SoCo/GdFl/PtFl) and
+// several other tagged blocks as its generic OSType "descriptor" tree. The
+// C++ core already has a complete descriptor parser (psddesc.*); these helpers
+// convert a parsed Descriptor into nested Python dicts/lists so the previously
+// skipped blocks become readable without per-feature decoders.
+// -------------------------------------------------------------------------
+
+const char *descUnitName(psd::DescriptorUnit u) {
+  switch (u) {
+  case psd::UNIT_POINTS:      return "points";
+  case psd::UNIT_MILLIMETERS: return "millimeters";
+  case psd::UNIT_ANGLE:       return "angle";
+  case psd::UNIT_DENSITY:     return "density";
+  case psd::UNIT_DISTANCE:    return "distance";
+  case psd::UNIT_NONE:        return "none";
+  case psd::UNIT_PERCENT:     return "percent";
+  case psd::UNIT_PIXELS:      return "pixels";
+  default:                    return "unknown";
+  }
+}
+
+py::dict descToPy(psd::Descriptor *d);
+
+// Dispatch a single descriptor item to a Python value. Uses dynamic_cast
+// rather than the `type` field because DescriptorReference and
+// DescriptorRawData share the same type tag ('tdta').
+py::object descItemToPy(psd::DescriptorItem *it) {
+  if (!it) return py::none();
+  if (auto *x = dynamic_cast<psd::DescriptorInteger*>(it))  return py::cast(x->val);
+  if (auto *x = dynamic_cast<psd::DescriptorDouble*>(it))   return py::cast(x->val);
+  if (auto *x = dynamic_cast<psd::DescriptorBoolean*>(it))  return py::cast(x->val);
+  if (auto *x = dynamic_cast<psd::DescriptorString*>(it))   return py::cast(x->val); // u16str -> str
+  if (auto *x = dynamic_cast<psd::DescriptorUnitFloat*>(it)) {
+    py::dict u; u["value"] = x->val; u["unit"] = descUnitName(x->unit);
+    return std::move(u);
+  }
+  if (auto *x = dynamic_cast<psd::DescriptorEnumerated*>(it)) {
+    py::dict e; e["type"] = x->typeId; e["value"] = x->enumId;
+    return std::move(e);
+  }
+  if (auto *x = dynamic_cast<psd::DescriptorList*>(it)) {
+    py::list out;
+    for (auto *item : x->items) out.append(descItemToPy(item));
+    return std::move(out);
+  }
+  if (auto *x = dynamic_cast<psd::Descriptor*>(it))        return descToPy(x);
+  if (auto *x = dynamic_cast<psd::DescriptorRawData*>(it)) return py::bytes(x->bytes);
+  if (auto *x = dynamic_cast<psd::DescriptorClass*>(it))   return py::cast(x->classId);
+  if (auto *x = dynamic_cast<psd::DescriptorAlias*>(it))   return py::cast(x->alias);
+  // DescriptorReference and anything unrecognized -> None.
+  return py::none();
+}
+
+py::dict descToPy(psd::Descriptor *d) {
+  py::dict out;
+  for (const auto &kv : d->itemMap)          // keys are raw 4cc (may end in space)
+    out[py::str(kv.first)] = descItemToPy(kv.second);
+  return out;
+}
+
+// Locate an additional-layer-info entry by 4cc key, parse its bytes as a
+// descriptor (after skipping `skip` version-prefix bytes) and return a dict,
+// or None when the key is absent / unparseable.
+py::object keyDescriptor(const psd::LayerInfo &l, int key, int skip) {
+  for (const auto &a : l.extraData.additionalLayers) {
+    if (a.key != key || !a.data) continue;
+    psd::IteratorBase *rd = a.data->clone();
+    rd->init();                    // rewind to the start of this key's data
+    if (skip > 0) rd->advance(skip);
+    psd::Descriptor desc;
+    desc.load(rd);                 // partial parse still leaves valid items
+    delete rd;
+    if (desc.itemMap.empty()) return py::none();
+    return descToPy(&desc);
+  }
+  return py::none();
+}
+
+// Object-based layer effects ('lfx2'): objVer(4) + descVer(4) then descriptor.
+py::object layerEffects(const psd::LayerInfo &l) {
+  return keyDescriptor(l, 'lfx2', 8);
+}
+
+// Fill-layer content ('SoCo' solid / 'GdFl' gradient / 'PtFl' pattern):
+// version(4) then descriptor. Returns {"type": ..., "data": {...}} or None.
+py::object layerFill(const psd::LayerInfo &l) {
+  const struct { int key; const char *type; } tbl[] = {
+    {'SoCo', "solid"}, {'GdFl', "gradient"}, {'PtFl', "pattern"},
+  };
+  for (const auto &e : tbl) {
+    py::object d = keyDescriptor(l, e.key, 4);
+    if (!d.is_none()) {
+      py::dict out;
+      out["type"] = e.type;
+      out["data"] = d;
+      return std::move(out);
+    }
+  }
+  return py::none();
+}
+
+// List the 4cc keys of all additional-layer-info blocks present on a layer.
+py::list layerInfoKeys(const psd::LayerInfo &l) {
+  py::list out;
+  for (const auto &a : l.extraData.additionalLayers) {
+    char s[4] = { (char)((a.key >> 24) & 0xff), (char)((a.key >> 16) & 0xff),
+                  (char)((a.key >> 8) & 0xff),  (char)(a.key & 0xff) };
+    out.append(py::str(s, 4));
+  }
+  return out;
+}
+
+// Generic escape hatch: parse an arbitrary additional-info key as a descriptor.
+// `skip` defaults (-1) to the known version-prefix length for well-known keys,
+// or 0 otherwise.
+py::object layerDescriptor(const psd::LayerInfo &l, const std::string &keyStr, int skip) {
+  if (keyStr.size() != 4)
+    throw std::invalid_argument("key must be a 4-character string");
+  int key = ((int)(uint8_t)keyStr[0] << 24) | ((int)(uint8_t)keyStr[1] << 16) |
+            ((int)(uint8_t)keyStr[2] << 8)  |  (int)(uint8_t)keyStr[3];
+  if (skip < 0) {
+    switch (key) {
+    case 'lfx2':                             skip = 8; break;
+    case 'SoCo': case 'GdFl': case 'PtFl':   skip = 4; break;
+    default:                                 skip = 0; break;
+    }
+  }
+  return keyDescriptor(l, key, skip);
+}
+
 py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
   if (!self.isLoaded) throw std::runtime_error("PSD not loaded");
   if (index < 0 || index >= (int)self.layerList.size())
@@ -321,6 +455,19 @@ PYBIND11_MODULE(psdparse, m) {
         "or None when the layer has no mask.")
     .def_property_readonly("blending_ranges", &layerBlendingRanges,
         "Layer blending ranges as a dict (gray, channels[]), or None.")
+    .def_property_readonly("effects", &layerEffects,
+        "Object-based layer effects ('lfx2') as a nested descriptor dict "
+        "(drop shadow / glow / overlay / stroke / bevel ...), or None.")
+    .def_property_readonly("fill", &layerFill,
+        "Fill-layer content as {'type': 'solid'|'gradient'|'pattern', "
+        "'data': {...}} from SoCo/GdFl/PtFl, or None.")
+    .def_property_readonly("info_keys", &layerInfoKeys,
+        "List of the 4cc keys of every additional-layer-info block present.")
+    .def("descriptor", &layerDescriptor,
+        py::arg("key"), py::arg("skip") = -1,
+        "Parse an arbitrary additional-info `key` (4-char str) as a Photoshop "
+        "descriptor dict. `skip` = version-prefix bytes before the descriptor "
+        "(-1 = auto for known keys, else 0). Returns None if absent/unparseable.")
     .def_property_readonly("visible",                [](const psd::LayerInfo &l){ return l.isVisible(); })
     .def_property_readonly("transparency_protected", [](const psd::LayerInfo &l){ return l.isTransparencyProtected(); })
     .def_property_readonly("obsolete",               [](const psd::LayerInfo &l){ return l.isObsolete(); })

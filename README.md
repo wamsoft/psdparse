@@ -92,6 +92,11 @@ p.save(r"out.psd")              # byte-identical round-trip
 
 Full API reference: [docs/PYTHON_API.md](docs/PYTHON_API.md).
 
+## PSD feature coverage
+
+What psdparse can and cannot read, at a glance:
+[docs/SUPPORT.md](docs/SUPPORT.md) (対応状況マトリクス).
+
 ## Tests
 
 Tests live under `tests/` and use [pytest](https://docs.pytest.org/). They need sample PSDs placed at the repo root or `tests/data/` (not committed — listed in `.gitignore`); without them the tests skip rather than fail.
