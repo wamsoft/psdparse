@@ -226,6 +226,34 @@ p.layer_comps   # list[dict]: [{"id","name","comment","record_visibility","recor
 p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparency_index"} for indexed-color PSDs
 ```
 
+### Image resources (raw)
+
+Most image resources are exposed as their raw on-disk bytes; decoding (EXIF
+tags, rendering the thumbnail, parsing the ICC profile) is left to the caller.
+
+```python
+p.image_resource_ids     # list[int]  : IDs of every resource present
+p.image_resource(id)     # bytes|None : raw bytes of the resource with that ID
+p.icc_profile            # bytes|None : ICC profile (resource 1039)
+p.exif                   # bytes|None : EXIF block (1058)
+p.xmp                    # str|None   : XMP packet (1060), UTF-8 XML
+p.thumbnail              # dict|None  : {"format","width","height","bits","resource_id","data"}
+```
+
+- **`thumbnail`** — resource 1036 (RGB) or legacy 1033 (BGR). When
+  `format == "jpeg"`, `data` is JFIF JPEG bytes ready for `PIL.Image.open`:
+
+  ```python
+  import io
+  from PIL import Image
+  th = p.thumbnail
+  if th and th["format"] == "jpeg":
+      Image.open(io.BytesIO(th["data"])).save("thumb.png")
+  ```
+
+- **`xmp`** decodes as UTF-8 `str`; if a file's packet is not valid UTF-8, read
+  the raw bytes with `p.image_resource(1060)` instead.
+
 - **`guides`** — grid spacing (in 1/32 px) and each guide's `location` (1/32 px
   from origin) and `direction` (`"vertical"` / `"horizontal"`).
 - **`slices`** — Photoshop slices (v6). Each slice has `id`, `name`, bbox

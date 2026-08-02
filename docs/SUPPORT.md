@@ -135,11 +135,13 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 | スライス (1050 v7/v8, descriptor) | ❌ | 未格納 |
 | レイヤーカンプ (1065) | ✅ | `PSDFile.layer_comps` (v0.3.0) |
 | インデックスカラーパレット (色/count/透明index) | ✅ | `PSDFile.color_table` (v0.3.0) |
-| ICC プロファイル (1039) | 📦 | 生バイト保持のみ・未公開 |
-| EXIF (1058/1059) | 📦 | 同上 |
-| XMP メタデータ (1060) | 📦 | 同上 |
-| サムネイル (1033/1036) | 📦 | 同上 |
-| バージョン情報 / アルファチャンネル名 / その他 | 📦 | 同上 |
+| ICC プロファイル (1039) | ✅ | `PSDFile.icc_profile` (生バイト, v0.5.0) |
+| EXIF (1058) | ✅ | `PSDFile.exif` (生バイト, v0.5.0) |
+| XMP メタデータ (1060) | ✅ | `PSDFile.xmp` (UTF-8 str, v0.5.0) |
+| サムネイル (1036/1033) | ✅ | `PSDFile.thumbnail` (JPEG bytes + 寸法, v0.5.0) |
+| 任意リソースの生バイト | ✅ | `PSDFile.image_resource(id)` / `image_resource_ids` (v0.5.0) |
+| 上記の内容デコード (EXIF タグ解析等) | ❌ | 生バイトを返すのみ。解析は利用側 (Pillow 等) で |
+| バージョン情報 / アルファチャンネル名 / その他 | 📦→✅ | `image_resource(id)` で生バイト取得可 |
 | Global layer mask info | 📦 | 構造体フィールドは未充填、生バイトのみ |
 
 ---
@@ -147,10 +149,12 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 ## まとめ (一言で)
 
 - **得意**: レイヤ列挙 + 属性 + 階層、RGB/CMYK/Gray/Indexed のピクセル取得、
-  テキストのラン単位スタイル、レイヤー効果/塗りの descriptor、主要な文書
-  メタデータ (ガイド/スライス/カンプ)、そして **byte-identical なラウンドトリップ**。
+  テキストのラン単位スタイル、レイヤー効果/塗りの descriptor、文書メタデータ
+  (ガイド/スライス/カンプ) と image resource の生バイト (ICC/EXIF/XMP/サムネイル)、
+  そして **byte-identical なラウンドトリップ**。
 - **未対応/限定的**: Lab/Duotone/Multichannel ピクセル、調整レイヤの数値
   パラメータ、ベクタパス、スマートオブジェクト実体、効果込みの再合成、
   そして編集して保存。
-- 生バイトは全ブロックが保持されているので、📦 の項目は「公開するだけ」で
-  対応できるものが多い (ROADMAP 参照)。
+- image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを
+  返すのみ。残る 📦 (global layer mask info の構造化) は「公開するだけ」で対応可
+  (ROADMAP 参照)。

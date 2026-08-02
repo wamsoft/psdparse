@@ -346,6 +346,82 @@ py::object layerDescriptor(const psd::LayerInfo &l, const std::string &keyStr, i
   return keyDescriptor(l, key, skip);
 }
 
+// -------------------------------------------------------------------------
+// Image resource raw-bytes access.
+//
+// Most image resources are kept as raw bytes internally (imageResourceList)
+// but were never reachable from Python. These helpers expose them: a generic
+// by-ID accessor plus typed shortcuts for the common ones (ICC / EXIF / XMP /
+// thumbnail). Decoding (parsing EXIF tags, rendering the thumbnail) is left to
+// the caller with e.g. Pillow.
+// -------------------------------------------------------------------------
+
+std::string resourceBytes(const psd::ImageResourceInfo &res) {
+  std::string buf((size_t)(res.size > 0 ? res.size : 0), '\0');
+  if (res.size > 0 && res.data) {
+    psd::IteratorBase *rd = res.data->clone();
+    rd->init();                       // rewind to the start of this resource
+    rd->getData(&buf[0], res.size);
+    delete rd;
+  }
+  return buf;
+}
+
+const psd::ImageResourceInfo *findResource(const psd::PSDFile &self, int id) {
+  for (const auto &res : self.imageResourceList)
+    if (res.id == id) return &res;
+  return nullptr;
+}
+
+py::list imageResourceIds(psd::PSDFile &self) {
+  py::list out;
+  for (const auto &res : self.imageResourceList) out.append((int)res.id);
+  return out;
+}
+
+py::object imageResource(psd::PSDFile &self, int id) {
+  const psd::ImageResourceInfo *res = findResource(self, id);
+  return res ? py::object(py::bytes(resourceBytes(*res))) : py::none();
+}
+
+py::object iccProfile(psd::PSDFile &self) { return imageResource(self, 1039); }
+py::object exifData(psd::PSDFile &self)   { return imageResource(self, 1058); }
+
+// XMP packet (resource 1060) is UTF-8 XML. Returned as str; use
+// image_resource(1060) for the raw bytes if the packet is not valid UTF-8.
+py::object xmpMetadata(psd::PSDFile &self) {
+  const psd::ImageResourceInfo *res = findResource(self, 1060);
+  if (!res) return py::none();
+  return py::str(resourceBytes(*res));
+}
+
+// Embedded thumbnail (resource 1036 = RGB / legacy 1033 = BGR). Header is 28
+// bytes; for format==1 the payload is a JFIF JPEG. Returns a dict with the
+// header fields and the raw payload, or None.
+py::object thumbnail(psd::PSDFile &self) {
+  const psd::ImageResourceInfo *res = findResource(self, 1036);
+  if (!res) res = findResource(self, 1033);
+  if (!res) return py::none();
+  std::string raw = resourceBytes(*res);
+  if (raw.size() < 28) return py::none();
+  auto be32 = [&](size_t o) {
+    return (uint32_t)(((uint8_t)raw[o] << 24) | ((uint8_t)raw[o+1] << 16) |
+                      ((uint8_t)raw[o+2] << 8) | (uint8_t)raw[o+3]);
+  };
+  auto be16 = [&](size_t o) {
+    return (uint16_t)(((uint8_t)raw[o] << 8) | (uint8_t)raw[o+1]);
+  };
+  py::dict d;
+  uint32_t fmt = be32(0);
+  d["format"]      = (fmt == 1) ? "jpeg" : "raw";
+  d["width"]       = be32(4);
+  d["height"]      = be32(8);
+  d["bits"]        = be16(24);
+  d["resource_id"] = (int)res->id;   // 1036 = RGB order, 1033 = BGR order
+  d["data"]        = py::bytes(raw.data() + 28, raw.size() - 28);
+  return std::move(d);
+}
+
 py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
   if (!self.isLoaded) throw std::runtime_error("PSD not loaded");
   if (index < 0 || index >= (int)self.layerList.size())
@@ -537,7 +613,22 @@ PYBIND11_MODULE(psdparse, m) {
          "(id, name, comment, record_*). Empty list when there are none.")
     .def_property_readonly("color_table", &psdColorTable,
          "Indexed-color palette as a dict (colors[], valid_count, "
-         "transparency_index), or None for non-indexed PSDs.");
+         "transparency_index), or None for non-indexed PSDs.")
+    .def_property_readonly("image_resource_ids", &imageResourceIds,
+         "List of the integer IDs of every image resource present.")
+    .def("image_resource", &imageResource, py::arg("id"),
+         "Raw bytes of the image resource with the given integer ID, or None.")
+    .def_property_readonly("icc_profile", &iccProfile,
+         "ICC profile (resource 1039) as raw bytes, or None.")
+    .def_property_readonly("exif", &exifData,
+         "EXIF block (resource 1058) as raw bytes, or None.")
+    .def_property_readonly("xmp", &xmpMetadata,
+         "XMP metadata (resource 1060) as a UTF-8 str, or None. Use "
+         "image_resource(1060) for raw bytes if not valid UTF-8.")
+    .def_property_readonly("thumbnail", &thumbnail,
+         "Embedded thumbnail (resource 1036/1033) as a dict "
+         "(format, width, height, bits, resource_id, data), or None. "
+         "For format=='jpeg', data is JFIF JPEG bytes.");
 
   // Enum-like ints exposed as module attributes for convenience
   m.attr("LAYER_TYPE_NORMAL") = (int)psd::LAYER_TYPE_NORMAL;
