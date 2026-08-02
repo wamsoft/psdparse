@@ -64,6 +64,7 @@ namespace psd {
       readId(data, key);
       DescriptorItem *item = readItem(data);
       if (item && item->isValid) {
+        if (itemMap.find(key) == itemMap.end()) keyOrder.push_back(key);
         itemMap[key] = item;
       } else {
         // 解釈不能が出てきたら構造上スキップできないのでここで終了する

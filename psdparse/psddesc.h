@@ -190,6 +190,9 @@ namespace psd {
     u16str name;
     std::string  classId;
     ItemMap      itemMap;
+    // itemMap は sorted map なのでディスク上のキー順を保てない。直列化で元の
+    // バイト順を再現するため、load 時のキー出現順を別途保持する。
+    std::vector<std::string> keyOrder;
   };
 
   struct DescriptorReference : DescriptorItem {

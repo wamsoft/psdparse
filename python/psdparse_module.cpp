@@ -10,6 +10,7 @@
 #include "psdfile.h"
 #include "psdparse.h"
 #include "psddesc.h"
+#include "psdwrite.h"
 
 #include <fstream>
 #include <memory>
@@ -397,6 +398,112 @@ py::object layerDescriptor(const psd::LayerInfo &l, const std::string &keyStr, i
 }
 
 // -------------------------------------------------------------------------
+// Descriptor editing: merge a (partial) Python dict onto a parsed Descriptor.
+//
+// To edit effect (lfx2) / fill values without the lossy dict->descriptor
+// round-trip, we keep the parsed typed Descriptor and only overwrite the leaf
+// values present in the changes dict; structure, classIDs and types are kept.
+// Unknown keys are ignored. Then the descriptor is re-serialized byte-for-byte
+// (except the changed leaves) and swapped into the layer's extra data.
+// -------------------------------------------------------------------------
+
+void mergeValueIntoItem(psd::DescriptorItem *item, py::handle val);
+
+void mergeDictIntoDescriptor(psd::Descriptor *d, const py::dict &changes) {
+  for (auto kv : changes) {
+    std::string key = py::str(kv.first);
+    auto it = d->itemMap.find(key);
+    if (it == d->itemMap.end()) continue;   // only edit existing keys
+    mergeValueIntoItem(it->second, kv.second);
+  }
+}
+
+void mergeValueIntoItem(psd::DescriptorItem *item, py::handle val) {
+  using namespace psd;
+  if (auto *x = dynamic_cast<DescriptorInteger*>(item)) {
+    if (py::isinstance<py::int_>(val) && !py::isinstance<py::bool_>(val)) x->val = val.cast<int32_t>();
+  } else if (auto *x = dynamic_cast<DescriptorDouble*>(item)) {
+    if (py::isinstance<py::float_>(val) || py::isinstance<py::int_>(val)) x->val = val.cast<double>();
+  } else if (auto *x = dynamic_cast<DescriptorBoolean*>(item)) {
+    if (py::isinstance<py::bool_>(val)) x->val = val.cast<bool>();
+  } else if (auto *x = dynamic_cast<DescriptorString*>(item)) {
+    if (py::isinstance<py::str>(val)) x->val = psd::utf8ToU16(val.cast<std::string>());
+  } else if (auto *x = dynamic_cast<DescriptorUnitFloat*>(item)) {
+    if (py::isinstance<py::dict>(val)) {
+      auto d = val.cast<py::dict>();
+      if (d.contains("value")) x->val = d["value"].cast<double>();
+    } else if (py::isinstance<py::float_>(val) || py::isinstance<py::int_>(val)) {
+      x->val = val.cast<double>();
+    }
+  } else if (auto *x = dynamic_cast<DescriptorEnumerated*>(item)) {
+    if (py::isinstance<py::dict>(val)) {
+      auto d = val.cast<py::dict>();
+      if (d.contains("type"))  x->typeId = d["type"].cast<std::string>();
+      if (d.contains("value")) x->enumId = d["value"].cast<std::string>();
+    } else if (py::isinstance<py::str>(val)) {
+      x->enumId = val.cast<std::string>();
+    }
+  } else if (auto *x = dynamic_cast<DescriptorList*>(item)) {
+    if (py::isinstance<py::list>(val)) {
+      auto l = val.cast<py::list>();
+      size_t n = std::min(l.size(), x->items.size());
+      for (size_t i = 0; i < n; i++) mergeValueIntoItem(x->items[i], l[i]);
+    }
+  } else if (auto *x = dynamic_cast<Descriptor*>(item)) {
+    if (py::isinstance<py::dict>(val)) mergeDictIntoDescriptor(x, val.cast<py::dict>());
+  }
+  // RawData / Reference / Class / Alias: not mergeable (ignored)
+}
+
+// Parse the descriptor block `key` (after `skip` version-prefix bytes), merge
+// `changes`, re-serialize, and swap it back into the layer's extra data.
+void editLayerDescriptor(psd::PSDFile &self, int index, int key, int skip,
+                         const py::dict &changes) {
+  if (index < 0 || index >= (int)self.layerList.size())
+    throw std::out_of_range("layer index out of range");
+  psd::LayerInfo &lay = self.layerList[(size_t)index];
+  for (auto &a : lay.extraData.additionalLayers) {
+    if (a.key != key || !a.data) continue;
+    psd::IteratorBase *rd = a.data->clone();
+    rd->init();
+    std::vector<uint8_t> prefix((size_t)(skip > 0 ? skip : 0));
+    if (skip > 0) rd->getData(prefix.data(), skip);   // objVer/descVer 等をそのまま保持
+    psd::Descriptor desc;
+    desc.load(rd);
+    delete rd;
+    mergeDictIntoDescriptor(&desc, changes);
+    std::vector<uint8_t> buf;
+    psd::MemoryWriter w(buf);
+    if (!prefix.empty()) w.putData(prefix.data(), prefix.size());
+    psd::writeDescriptorBody(w, &desc);
+    while (buf.size() & 3u) buf.push_back(0);   // descriptor data を 4 バイト境界へ
+    self.setAdditionalInfoBytes(index, key, buf.data(), (int)buf.size());
+    return;
+  }
+  throw std::runtime_error("layer has no descriptor block for that key");
+}
+
+// Raw bytes of an additional-layer-info block (payload after the size field),
+// or None. Useful for round-trip validation and low-level inspection.
+py::object layerDescriptorBytes(const psd::LayerInfo &l, const std::string &keyStr) {
+  if (keyStr.size() != 4) throw std::invalid_argument("key must be a 4-character string");
+  int key = ((int)(uint8_t)keyStr[0] << 24) | ((int)(uint8_t)keyStr[1] << 16) |
+            ((int)(uint8_t)keyStr[2] << 8)  |  (int)(uint8_t)keyStr[3];
+  for (const auto &a : l.extraData.additionalLayers) {
+    if (a.key != key || !a.data) continue;
+    std::string buf((size_t)(a.size > 0 ? a.size : 0), '\0');
+    if (a.size > 0) {
+      psd::IteratorBase *rd = a.data->clone();
+      rd->init();
+      rd->getData(&buf[0], a.size);
+      delete rd;
+    }
+    return py::bytes(buf);
+  }
+  return py::none();
+}
+
+// -------------------------------------------------------------------------
 // Image resource raw-bytes access.
 //
 // Most image resources are kept as raw bytes internally (imageResourceList)
@@ -625,6 +732,9 @@ PYBIND11_MODULE(psdparse, m) {
         "11/'fuschia'), or None when the layer carries no lclr block.")
     .def_property_readonly("info_keys", &layerInfoKeys,
         "List of the 4cc keys of every additional-layer-info block present.")
+    .def("descriptor_bytes", &layerDescriptorBytes, py::arg("key"),
+        "Raw bytes of the additional-layer-info block with this 4cc key "
+        "(payload after the size field), or None if absent.")
     .def("descriptor", &layerDescriptor,
         py::arg("key"), py::arg("skip") = -1,
         "Parse an arbitrary additional-info `key` (4-char str) as a Photoshop "
@@ -725,6 +835,36 @@ PYBIND11_MODULE(psdparse, m) {
          "layer references `source`'s pixel/extra bytes lazily, so `source` is "
          "kept alive until this file is garbage-collected (do not let it close "
          "before save()). Assumes matching color mode and bit depth.")
+    .def("set_effects",
+         [](psd::PSDFile &self, int index, py::dict changes) {
+            editLayerDescriptor(self, index, 'lfx2', 8, changes);
+         },
+         py::arg("index"), py::arg("changes"),
+         "Edit layer effect (lfx2) values. `changes` is a partial dict shaped "
+         "like layer.effects: only the leaf values present are overwritten "
+         "(numbers, {'value':..} for UnitFloat, {'value':..} / str for enums, "
+         "nested dicts for sub-descriptors, lists per-index). Structure, class "
+         "IDs and types are preserved; unknown keys are ignored. Raises if the "
+         "layer has no lfx2 block.")
+    .def("set_layer_descriptor",
+         [](psd::PSDFile &self, int index, const std::string &keyStr, py::dict changes, int skip) {
+            if (keyStr.size() != 4)
+                throw std::invalid_argument("key must be a 4-character string");
+            int key = ((int)(uint8_t)keyStr[0] << 24) | ((int)(uint8_t)keyStr[1] << 16) |
+                      ((int)(uint8_t)keyStr[2] << 8)  |  (int)(uint8_t)keyStr[3];
+            if (skip < 0) {
+                switch (key) {
+                case 'lfx2':                             skip = 8; break;
+                case 'SoCo': case 'GdFl': case 'PtFl':   skip = 4; break;
+                default:                                 skip = 0; break;
+                }
+            }
+            editLayerDescriptor(self, index, key, skip, changes);
+         },
+         py::arg("index"), py::arg("key"), py::arg("changes"), py::arg("skip") = -1,
+         "Generic version of set_effects for an arbitrary descriptor key "
+         "(e.g. 'SoCo'/'GdFl'/'PtFl' fill layers). `skip` = version-prefix "
+         "bytes (-1 = auto for known keys).")
     .def("set_layer_name",
          [](psd::PSDFile &self, int index, const std::string &name) {
             if (!self.setLayerName(index, name.c_str()))

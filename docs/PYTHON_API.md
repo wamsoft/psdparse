@@ -261,8 +261,33 @@ p.set_layer_mask(3, disabled=True, density=200, feather=2.5, default_color=0)
 
 `set_layer_mask` takes any subset of `disabled` (bool), `density` (0..255),
 `feather` (px), `default_color` (0..255). Editing a mask's **geometry** (rectangle)
-or **effect (`lfx2`) values** is not supported yet (effects need a descriptor
-serializer).
+is not supported yet.
+
+### Effect / descriptor values (E3)
+
+Layer effects (`lfx2`) and descriptor-based fill layers are edited by passing a
+**partial** dict of changes, shaped like `layer.effects` (see
+[Descriptor blocks](#descriptor-blocks)). Only the leaf values you include are
+overwritten; structure, class IDs, types and every untouched value are preserved
+(the descriptor is re-serialized byte-for-byte apart from your edits).
+
+```python
+# drop-shadow opacity 100 -> 50 %, turn all effects off:
+p.set_effects(i, {
+    "patternFill": {"Opct": {"value": 50.0}, "enab": False},
+    "masterFXSwitch": False,
+})
+
+# generic form for any descriptor key (fill layers etc.):
+p.set_layer_descriptor(i, "SoCo", {"Clr ": {"Rd  ": 255.0, "Grn ": 0.0, "Bl  ": 0.0}})
+```
+
+Value mapping when merging: numbers → Integer/Double; `{"value": ..}` (or a bare
+number) → UnitFloat; bool → Boolean; str → String; `{"value": ..}` or str →
+Enumerated; nested dict → sub-descriptor (recurse); list → per-index. Unknown
+keys are ignored, and only *existing* keys are edited (you cannot add new effect
+fields this way). `layer.descriptor_bytes(key)` returns a block's raw bytes for
+inspection.
 
 ### Structural edits (methods on `PSDFile`)
 

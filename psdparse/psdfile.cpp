@@ -300,6 +300,25 @@ bool PSDFile::setFillOpacity(int index, int opacity) {
   return true;
 }
 
+bool PSDFile::setAdditionalInfoBytes(int index, int key, const uint8_t *data, int size) {
+  if (index < 0 || index >= (int)layerList.size()) return false;
+  if (size < 0) return false;
+  LayerExtraData &ex = layerList[(size_t)index].extraData;
+  auto buf = std::make_shared<std::vector<uint8_t>>(data, data + size);
+  for (auto &a : ex.additionalLayers) {
+    if (a.key == key) {
+      delete a.data;
+      a.data = new VectorReader(buf);
+      a.size = size;
+      ex.useRawBytes = false;
+      return true;
+    }
+  }
+  ex.additionalLayers.push_back(AdditionalLayerInfo(0, key, size, new VectorReader(buf)));
+  ex.useRawBytes = false;
+  return true;
+}
+
 // --- 構造編集 --------------------------------------------------------------
 
 bool PSDFile::deleteLayer(int index) {

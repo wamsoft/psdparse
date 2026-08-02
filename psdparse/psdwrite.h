@@ -3,9 +3,12 @@
 
 #include "psdbase.h"
 #include "psddata.h"
+#include "psddesc.h"
 
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace psd {
 
@@ -103,6 +106,39 @@ public:
 private:
   FILE *fp_;
 };
+
+// メモリ上の std::vector<uint8_t> に書き込む WriterBase 実装。seek/tell 対応
+// (patch-back や descriptor の直列化に使う)。buf の所有権は呼び出し元。
+class MemoryWriter : public WriterBase {
+public:
+  explicit MemoryWriter(std::vector<uint8_t> &buf) : buf_(buf), pos_(0) {}
+  bool ok() const override { return true; }
+  size_t putData(const void *data, size_t n) override {
+    if (n == 0) return 0;
+    size_t need = pos_ + n;
+    if (need > buf_.size()) buf_.resize(need);
+    std::memcpy(buf_.data() + pos_, data, n);
+    pos_ += n;
+    return n;
+  }
+  int64_t tell() const override { return (int64_t)pos_; }
+  bool seek(int64_t p) override {
+    if (p < 0) return false;
+    pos_ = (size_t)p;
+    if (pos_ > buf_.size()) buf_.resize(pos_);
+    return true;
+  }
+private:
+  std::vector<uint8_t> &buf_;
+  size_t pos_;
+};
+
+// Photoshop の generic descriptor 直列化 (psddesc の load の逆)。
+//   writeDescriptorBody: 先頭 type 無しの本体 (name + classId + count + items)。
+//     lfx2 等トップレベル descriptor はこれで書ける。
+//   writeDescriptorItem: [type 4cc] + 値。nested descriptor / list の要素用。
+void writeDescriptorBody(WriterBase &w, const Descriptor *d);
+void writeDescriptorItem(WriterBase &w, DescriptorItem *it);
 
 // Data 全体を PSD ファイルフォーマットで w に書き出す。ラウンドトリップ
 // (load → save → re-load で構造一致) を目標とする。w.ok() && writePSD()==true

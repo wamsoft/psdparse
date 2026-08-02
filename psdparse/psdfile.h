@@ -104,6 +104,11 @@ namespace psd {
     // 塗り不透明度 (iOpa) の編集。0..255。失敗で false。
     bool setFillOpacity(int index, int opacity);
 
+    // 追加レイヤ情報ブロック (key) の生バイトを差し替える (無ければ末尾に追加)。
+    // 効果 (lfx2) の再直列化バイトの流し込み等に使う。extra data は save 時に
+    // フィールドから再構築される (useRawBytes=false)。失敗で false。
+    bool setAdditionalInfoBytes(int index, int key, const uint8_t *data, int size);
+
     // --- 新規作成 (E5) ------------------------------------------------------
     // この PSDFile を空の 8bit RGB 文書 (幅×高さ, 白の合成画像) として初期化する。
     // 以後 addLayer(...) でレイヤを足して save() できる。成功で true。

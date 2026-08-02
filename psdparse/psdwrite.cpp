@@ -124,11 +124,46 @@ inline void writeImageResources(WriterBase &w, const Data &data) {
   w.seek(bodyEnd);
 }
 
-// 8 バイト double を big-endian で書く (mask feather 用)。
+// 8 バイト double を big-endian で書く (mask feather / descriptor 用)。
 inline void putDoubleBE(WriterBase &w, double d) {
   pun64 v; v.f = d;
   w.putUint32BE((uint32_t)(v.i >> 32));
   w.putUint32BE((uint32_t)(v.i & 0xffffffffu));
+}
+
+// descriptor の 4cc/文字列 ID を書く。readId は size==0 を 4 と解釈するので、
+// 4 文字 ID は size=0 (4cc 形式)、それ以外は size=len で書く。
+inline void writeDescId(WriterBase &w, const std::string &id) {
+  if (id.size() == 4) { w.putUint32BE(0); w.putData(id.data(), 4); }
+  else { w.putUint32BE((uint32_t)id.size());
+         if (!id.empty()) w.putData(id.data(), id.size()); }
+}
+
+// descriptor の Unicode 文字列を書く (charCount(4) + UTF-16BE)。
+inline void writeDescUnicode(WriterBase &w, const u16str &s) {
+  w.putUint32BE((uint32_t)s.size());
+  for (char16_t ch : s) w.putUint16BE((uint16_t)ch);
+}
+
+// DescriptorReference の各参照アイテムを書く (load の逆)。
+inline void writeReferenceItem(WriterBase &w, ReferenceItem *r) {
+  w.putUint32BE((uint32_t)r->type);
+  if (auto *x = dynamic_cast<ReferenceProperty*>(r)) {
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId); writeDescId(w, x->keyId);
+  } else if (auto *x = dynamic_cast<ReferenceClass*>(r)) {
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId);
+  } else if (auto *x = dynamic_cast<ReferenceEnumRef*>(r)) {
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId);
+    writeDescId(w, x->typeId); writeDescId(w, x->enumId);
+  } else if (auto *x = dynamic_cast<ReferenceOffset*>(r)) {
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId); w.putInt32BE(x->offset);
+  } else if (auto *x = dynamic_cast<ReferenceIdentifier*>(r)) {
+    w.putInt32BE(x->identifier);
+  } else if (auto *x = dynamic_cast<ReferenceIndex*>(r)) {
+    w.putInt32BE(x->index);
+  } else if (auto *x = dynamic_cast<ReferenceName*>(r)) {
+    writeDescUnicode(w, x->name);
+  }
 }
 
 // layer mask サブブロックの本体 (4 バイト長の後ろ) をフィールドから直列化する。
@@ -335,6 +370,68 @@ inline void writeImageData(WriterBase &w, const Data &data) {
 }
 
 } // anonymous namespace
+
+// ---- generic descriptor 直列化 (psddesc の load の逆) --------------------
+
+void writeDescriptorBody(WriterBase &w, const Descriptor *d) {
+  writeDescUnicode(w, d->name);
+  writeDescId(w, d->classId);
+  // keyOrder が揃っていれば元のディスク順で、無ければ map 順で書く。
+  if (d->keyOrder.size() == d->itemMap.size()) {
+    w.putUint32BE((uint32_t)d->keyOrder.size());
+    for (const auto &key : d->keyOrder) {
+      auto it = d->itemMap.find(key);
+      if (it == d->itemMap.end()) continue;
+      writeDescId(w, key);
+      writeDescriptorItem(w, it->second);
+    }
+  } else {
+    w.putUint32BE((uint32_t)d->itemMap.size());
+    for (const auto &kv : d->itemMap) {
+      writeDescId(w, kv.first);
+      writeDescriptorItem(w, kv.second);
+    }
+  }
+}
+
+void writeDescriptorItem(WriterBase &w, DescriptorItem *it) {
+  // 型ごとに [type 4cc] + 値。DescriptorReference と DescriptorRawData は type
+  // タグを共有するので dynamic_cast でディスパッチする (descItemToPy と同様)。
+  if (auto *x = dynamic_cast<Descriptor*>(it)) {            // Objc / GlbO
+    w.putUint32BE((uint32_t)x->type);
+    writeDescriptorBody(w, x);
+  } else if (auto *x = dynamic_cast<DescriptorList*>(it)) { // VlLs
+    w.putUint32BE((uint32_t)'VlLs');
+    w.putUint32BE((uint32_t)x->items.size());
+    for (auto *i : x->items) writeDescriptorItem(w, i);
+  } else if (auto *x = dynamic_cast<DescriptorDouble*>(it)) {
+    w.putUint32BE((uint32_t)'doub'); putDoubleBE(w, x->val);
+  } else if (auto *x = dynamic_cast<DescriptorUnitFloat*>(it)) {
+    w.putUint32BE((uint32_t)'UntF'); w.putUint32BE((uint32_t)x->unit); putDoubleBE(w, x->val);
+  } else if (auto *x = dynamic_cast<DescriptorString*>(it)) {
+    w.putUint32BE((uint32_t)'TEXT'); writeDescUnicode(w, x->val);
+  } else if (auto *x = dynamic_cast<DescriptorEnumerated*>(it)) {
+    w.putUint32BE((uint32_t)'enum'); writeDescId(w, x->typeId); writeDescId(w, x->enumId);
+  } else if (auto *x = dynamic_cast<DescriptorInteger*>(it)) {
+    w.putUint32BE((uint32_t)'long'); w.putInt32BE(x->val);
+  } else if (auto *x = dynamic_cast<DescriptorBoolean*>(it)) {
+    w.putUint32BE((uint32_t)'bool'); w.putCh(x->val ? 1 : 0);
+  } else if (auto *x = dynamic_cast<DescriptorClass*>(it)) { // type / GlbC
+    w.putUint32BE((uint32_t)x->type); writeDescUnicode(w, x->name); writeDescId(w, x->classId);
+  } else if (auto *x = dynamic_cast<DescriptorAlias*>(it)) {
+    w.putUint32BE((uint32_t)'alis');
+    w.putUint32BE((uint32_t)x->alias.size());
+    if (!x->alias.empty()) w.putData(x->alias.data(), x->alias.size());
+  } else if (auto *x = dynamic_cast<DescriptorReference*>(it)) {  // 'obj '
+    w.putUint32BE((uint32_t)'obj ');
+    w.putUint32BE((uint32_t)x->items.size());
+    for (auto *r : x->items) writeReferenceItem(w, r);
+  } else if (auto *x = dynamic_cast<DescriptorRawData*>(it)) {    // 'tdta'
+    w.putUint32BE((uint32_t)'tdta');
+    w.putUint32BE((uint32_t)x->bytes.size());
+    if (!x->bytes.empty()) w.putData(x->bytes.data(), x->bytes.size());
+  }
+}
 
 bool writePSD(WriterBase &w, const Data &data) {
   if (!w.ok()) return false;
