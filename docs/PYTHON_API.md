@@ -256,6 +256,7 @@ Quick map of the API (details in the subsections below):
 | set mask pixels + geometry / mask values | `p.set_layer_mask_pixels(...)` / `p.set_layer_mask(...)` |
 | edit effect / descriptor values | `p.set_effects(i, changes)` / `p.set_layer_descriptor(...)` |
 | edit text content | `p.set_text(i, str)` |
+| edit a text run's style | `p.set_run_style(i, run, size_px=…, color=…, …)` |
 | build a new PSD | `p.create_blank(w, h)` then `add_layer(...)` |
 
 **8-bit RGB only** for the pixel/mask/new-document operations. The stored
@@ -392,11 +393,25 @@ p.save("out.psd")
 
 - Non-ASCII and emoji are supported (stored as UTF-16 in EngineData).
 - A trailing newline (`\r`) is added if missing (Photoshop's convention).
-- **Styling collapses to the first run's style**: `set_text` sets a single style
-  run over the whole new text, so per-character formatting is lost. Editing
-  run-level styles (font, size, colour per range) is not supported yet.
+- **`set_text` collapses styling to the first run's style** (single style run
+  over the new text). To keep per-run styling, edit runs individually with
+  `set_run_style` (below) instead of changing the text.
 - Only the *content* changes; the layer's transform, font set and bounds are
   kept. Raises for non-text layers.
+
+Edit an existing run's style in place (text and run lengths unchanged):
+
+```python
+# run indices match layer.text["runs"]
+p.set_run_style(i, run=0, size_px=48.0, color=(1.0, 0.0, 0.0))   # 48px, red
+p.set_run_style(i, run=1, tracking=100, bold=True, underline=True)
+```
+
+- Any subset of: `size_px` (float), `color` ((r,g,b) or (r,g,b,a), each 0..1),
+  `tracking` / `kerning` (int), `bold` / `italic` / `underline` (bool).
+- Keys are added to the run if it inherited them from the default style sheet.
+- **Changing the font by name is not supported** (would require editing the
+  document's font set); re-splitting text into new runs isn't either.
 
 ### New from scratch (E5)
 

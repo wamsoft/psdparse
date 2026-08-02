@@ -450,6 +450,90 @@ namespace {
     return s;
   }
 
+  // dict に数値キーを設定 (無ければ末尾に追加)。
+  static void setNumberNode(Node *dict, const char *key, double v, bool isInt) {
+    std::map<std::string, Node*>::iterator it = dict->dict.find(key);
+    Node *n;
+    if (it != dict->dict.end() && it->second->kind == Node::NUMBER) {
+      n = it->second;
+    } else {
+      if (it != dict->dict.end()) delete it->second;
+      else dict->keyOrder.push_back(key);
+      n = new Node(Node::NUMBER);
+      dict->dict[key] = n;
+    }
+    n->num = v; n->isInt = isInt;
+  }
+
+  // dict に真偽キーを設定 (無ければ末尾に追加)。
+  static void setBoolNode(Node *dict, const char *key, bool v) {
+    std::map<std::string, Node*>::iterator it = dict->dict.find(key);
+    Node *n;
+    if (it != dict->dict.end() && it->second->kind == Node::BOOL) {
+      n = it->second;
+    } else {
+      if (it != dict->dict.end()) delete it->second;
+      else dict->keyOrder.push_back(key);
+      n = new Node(Node::BOOL);
+      dict->dict[key] = n;
+    }
+    n->bl = v;
+  }
+
+  // StyleSheetData に FillColor/Values ([A R G B]) を設定 (無ければ作成)。
+  static void setFillColorNode(Node *ssd, const float rgba[4]) {
+    Node *fc = dget(ssd, "FillColor");
+    if (!fc || fc->kind != Node::DICT) {
+      fc = new Node(Node::DICT);
+      setNumberNode(fc, "Type", 1, true);   // 1 = RGB
+      ssd->dict["FillColor"] = fc;
+      ssd->keyOrder.push_back("FillColor");
+    }
+    Node *vals = dget(fc, "Values");
+    if (!vals || vals->kind != Node::ARRAY) {
+      if (vals) delete vals; else fc->keyOrder.push_back("Values");
+      vals = new Node(Node::ARRAY);
+      fc->dict["Values"] = vals;
+    }
+    for (size_t i = 0; i < vals->arr.size(); i++) delete vals->arr[i];
+    vals->arr.clear();
+    double argb[4] = { rgba[3], rgba[0], rgba[1], rgba[2] };  // [A R G B]
+    for (int i = 0; i < 4; i++) {
+      Node *n = new Node(Node::NUMBER);
+      n->num = argb[i]; n->isInt = false;
+      vals->arr.push_back(n);
+    }
+  }
+
+  bool editEngineDataRunStyle(const char *data, size_t len, int runIndex,
+                              const RunStyleEdit &edit, std::string &out) {
+    Parser ps(data, len);
+    Node *root = ps.parseValue();
+    if (!root || root->kind != Node::DICT) { delete root; return false; }
+    Node *engine   = dget(root, "EngineDict");
+    Node *styleRun = dget(engine, "StyleRun");
+    Node *runArray = dget(styleRun, "RunArray");
+    if (!runArray || runArray->kind != Node::ARRAY ||
+        runIndex < 0 || runIndex >= (int)runArray->arr.size()) {
+      delete root; return false;
+    }
+    Node *ssd = dget(dget(runArray->arr[(size_t)runIndex], "StyleSheet"), "StyleSheetData");
+    if (!ssd || ssd->kind != Node::DICT) { delete root; return false; }
+
+    if (edit.hasSize)      setNumberNode(ssd, "FontSize", edit.size, false);
+    if (edit.hasTracking)  setNumberNode(ssd, "Tracking", (double)edit.tracking, true);
+    if (edit.hasKerning)   setNumberNode(ssd, "Kerning",  (double)edit.kerning,  true);
+    if (edit.hasBold)      setBoolNode(ssd, "FauxBold",   edit.bold);
+    if (edit.hasItalic)    setBoolNode(ssd, "FauxItalic", edit.italic);
+    if (edit.hasUnderline) setBoolNode(ssd, "Underline",  edit.underline);
+    if (edit.hasColor)     setFillColorNode(ssd, edit.color);
+
+    out.clear();
+    emitDict(out, root, 0, true);
+    delete root;
+    return true;
+  }
+
   // EngineData をパースしてそのまま再直列化する (バイト一致検証・編集の土台)。
   bool reserializeEngineData(const char *data, size_t len, std::string &out) {
     Parser ps(data, len);

@@ -51,7 +51,8 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 効果 (lfx2) の値編集 | ✅ | `set_effects(i, changes)` — descriptor シリアライザ byte-exact |
 | 任意 descriptor (塗り SoCo/GdFl/PtFl 等) の値編集 | ✅ | `set_layer_descriptor(i, key, changes)` |
 | テキスト本文の編集 | ✅ | `set_text(i, str)` — EngineData シリアライザ byte-exact |
-| テキストのラン単位スタイル編集 | 🟡 | `set_text` は先頭ランに畳む (範囲別書式は未対応) |
+| テキストのラン単位スタイル編集 | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/bold=…)` (v0.7.0) |
+| テキストのフォント変更 (FontSet 追加) / ラン再構成 | ❌ | 既存ランの値上書きのみ |
 | マスク幾何の単独編集 (画素なし) | 🟡 | `set_layer_mask_pixels` で画素とセットのみ |
 | 効果込みの合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
 
@@ -121,7 +122,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | ラン単位スタイル (font/size/color/tracking/kerning) | ✅ | `text["runs"]` |
 | 段落別の行揃え | ✅ | `text["paragraphs"]` (v0.2.2) |
 | **本文の編集 (save)** | ✅ | `set_text(i, str)` — EngineData を byte-exact に再直列化 (v0.7.0) |
-| ラン単位スタイルの編集 | 🟡 | `set_text` はスタイルを先頭ランに畳む (複数スタイル・書式編集は未対応) |
+| **ラン単位スタイルの編集** | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/kerning=/bold=/italic=/underline=)` (v0.7.0) |
 | ワープ (warp) | ❌ | TySh warp descriptor 未処理 |
 | 非 RGB の FillColor | ❌ | `/Type 1` (RGB) のみ |
 | leading / 疑似ボールド / 下線 等 | 🟡 | EngineData にキーはあるが既定値サンプルのみで未検証 |
@@ -187,7 +188,7 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
   本文の byte-exact な編集、ゼロからの新規作成。未編集部分は byte-identical を維持。
 - **未対応/限定的**: Multichannel ピクセル、調整レイヤの数値パラメータ、ベクタ
   パス、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成 (composite 再描画)、
-  テキストのラン単位スタイル編集。画素編集は 8bit RGB のみ。
+  テキストのフォント名変更/ラン再構成。画素編集は 8bit RGB のみ。
 - Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを
   返すのみ。

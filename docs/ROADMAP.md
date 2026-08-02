@@ -8,7 +8,7 @@ For a feature-by-feature account of what is and isn't supported today, see
 - ✅ Pure C++17 parser (no Boost)
 - ✅ mmap + StreamReader / Source abstraction
 - ✅ Python bindings (pybind11)
-- ✅ pytest regression suite (114 tests)
+- ✅ pytest regression suite (121 tests)
 - ✅ Round-trip PSD save (byte-identical)
 - ✅ Edit & save: structure / pixels / mask / parameters / effects / text / new-from-scratch (E1–E6, byte-exact re-serialization)
 - ✅ UTF-8 path I/F (Win32 conversion internal only)
@@ -32,11 +32,14 @@ The `save()` path started as round-trip-only (correct only when the loaded `Data
 
   The layer mask & blending ranges are otherwise copied through byte-for-byte from `maskRaw`/`blendRaw` (captured at parse). Unmodified layers keep the exact-bytes path so round-trip identity is untouched. Learned the hard way that **layer-record tagged blocks use `padding=1` (no 4-byte alignment)** — only the *global* additional info and the Pascal name pad to 4. Validated with psd-tools reading back disabled/density/feather/bg/fill-opacity and no alignment warnings — see `tests/test_edit_name.py`, `tests/test_edit_mask.py`. **Still to do in E3:** mask *geometry* (rectangle) edits (effect value edits are done — see E3b above).
 
+- ✅ **E6b — per-run text style editing.** *Done 2026-08-02 (0.7.0).* `PSDFile.set_run_style(i, run, size_px=/color=/tracking=/kerning=/bold=/italic=/underline=)` edits an existing style run's `StyleSheetData` values in the embedded EngineData (adding keys the run inherited), leaving text, run lengths and other runs untouched. Reuses the byte-exact EngineData serializer + the shared `editTextLayer` TySh flow. Validated with psd-tools — see `tests/test_edit_run_style.py`. **Not covered:** changing a run's font by name (needs FontSet editing) or re-splitting text into new runs.
 - 🟡 **E6 — text-layer content editing.** *Text content done 2026-08-02 (0.7.0).* A **byte-exact Adobe EngineData serializer** (`psdengine.cpp`, the inverse of the parser — replicating psd-tools/Photoshop formatting: tab indentation by depth, `%.8f` float trimming with `0.`→`.`, inline-vs-multiline arrays, `(BOM …)` string escaping, and `Node.keyOrder`/`isInt` to preserve dict order and int-vs-float). Verified byte-exact on all 6 sample text layers. `PSDFile.set_text(i, str)` rewrites `EngineDict/Editor/Text` + collapses run-length arrays to a single run, updates the `Txt ` descriptor string, and re-serializes the `TySh` block (reusing the E3b descriptor serializer) with the version/transform prefix and warp/bounds suffix preserved verbatim. psd-tools reads the new text (incl. emoji) with no warnings — see `tests/test_edit_text.py`. **Still to do in E6:** per-run style editing (font/size/colour per range) — currently `set_text` collapses to the first run's style.
 
 - ✅ **Mask pixels & geometry editing.** *Done 2026-08-02 (0.7.0).* `PSDFile.set_layer_mask_pixels(i, gray, top, left, w, h)` RLE-encodes a grayscale buffer into the layer's user-mask channel (`-2`) and sets the mask rectangle (creating the mask if absent), so mask geometry is editable together with its pixels. Also fixed `set_layer_pixels` to **preserve** an existing mask channel instead of dropping it. Cross-checked mask pixels + rectangle with psd-tools — see `tests/test_edit_mask_pixels.py`.
 
-**Remaining edit work** (E6 per-run text styling) is described below.
+The image- and text-layer editing suite (E1–E6) is now feature-complete for the
+common cases. Remaining niche gaps are noted per-phase above (font-by-name and
+run re-splitting in text; composite re-rendering; smart-object embedded data).
 
 ### Phase E3 (was 4c) — extra data field re-serialization (enables rename, blend-mode change)
 

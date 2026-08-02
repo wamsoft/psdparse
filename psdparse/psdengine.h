@@ -38,6 +38,22 @@ namespace psd {
   bool editEngineDataText(const char *data, size_t len, const u16str &newText,
                           std::string &out);
 
+  // ラン単位スタイル編集の内容。 has* が true のフィールドだけ上書きする。
+  struct RunStyleEdit {
+    bool   hasSize = false;      double size = 0;         // FontSize (px)
+    bool   hasColor = false;     float  color[4] = {0,0,0,1}; // RGBA 0..1
+    bool   hasTracking = false;  int    tracking = 0;
+    bool   hasKerning = false;   int    kerning = 0;
+    bool   hasBold = false;      bool   bold = false;     // FauxBold
+    bool   hasItalic = false;    bool   italic = false;   // FauxItalic
+    bool   hasUnderline = false; bool   underline = false;// Underline
+  };
+
+  // EngineDict/StyleRun/RunArray[runIndex] のスタイル値を編集して再直列化する。
+  // 継承でキーが無い場合は追加する。 runIndex が範囲外なら false。
+  bool editEngineDataRunStyle(const char *data, size_t len, int runIndex,
+                              const RunStyleEdit &edit, std::string &out);
+
 } // namespace psd
 
 #endif // __psdengine_h__

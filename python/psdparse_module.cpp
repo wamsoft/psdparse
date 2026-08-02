@@ -14,6 +14,7 @@
 #include "psdengine.h"
 
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -484,10 +485,13 @@ void editLayerDescriptor(psd::PSDFile &self, int index, int key, int skip,
   throw std::runtime_error("layer has no descriptor block for that key");
 }
 
-// Replace a text layer's body text: parse the TySh descriptor, rewrite the
-// embedded EngineData text (+ run lengths) and the 'Txt ' string, re-serialize
-// TySh (prefix + descriptor + warp/bounds suffix) and swap it into extra data.
-void setLayerText(psd::PSDFile &self, int index, const psd::u16str &newText) {
+// Edit a text layer's TySh block: parse it (version/transform prefix +
+// descriptor + warp/bounds suffix), transform the embedded EngineData via
+// `editEngine`, optionally rewrite the 'Txt ' string, then re-serialize TySh
+// (prefix + descriptor + suffix) and swap it into the layer's extra data.
+void editTextLayer(psd::PSDFile &self, int index,
+                   const std::function<bool(const std::string &, std::string &)> &editEngine,
+                   const psd::u16str *newTxt) {
   if (index < 0 || index >= (int)self.layerList.size())
     throw std::out_of_range("layer index out of range");
   psd::LayerInfo &lay = self.layerList[(size_t)index];
@@ -508,11 +512,13 @@ void setLayerText(psd::PSDFile &self, int index, const psd::u16str &newText) {
     auto *eng = dynamic_cast<psd::DescriptorRawData*>(td.findItem("EngineData"));
     if (!eng) throw std::runtime_error("text layer has no EngineData");
     std::string newEngine;
-    if (!psd::editEngineDataText(eng->bytes.data(), eng->bytes.size(), newText, newEngine))
+    if (!editEngine(eng->bytes, newEngine))
       throw std::runtime_error("failed to edit EngineData");
     eng->bytes = newEngine;
-    if (auto *txt = dynamic_cast<psd::DescriptorString*>(td.findItem("Txt ")))
-      txt->val = newText;
+    if (newTxt) {
+      if (auto *txt = dynamic_cast<psd::DescriptorString*>(td.findItem("Txt ")))
+        txt->val = *newTxt;
+    }
 
     std::vector<uint8_t> buf;
     psd::MemoryWriter w(buf);
@@ -523,6 +529,23 @@ void setLayerText(psd::PSDFile &self, int index, const psd::u16str &newText) {
     return;
   }
   throw std::runtime_error("layer is not a text layer (no TySh block)");
+}
+
+// Replace a text layer's body text (+ collapse run lengths, update 'Txt ').
+void setLayerText(psd::PSDFile &self, int index, const psd::u16str &newText) {
+  editTextLayer(self, index,
+    [&](const std::string &in, std::string &out) {
+      return psd::editEngineDataText(in.data(), in.size(), newText, out);
+    }, &newText);
+}
+
+// Edit an existing run's style values (no text/length change).
+void setLayerRunStyle(psd::PSDFile &self, int index, int runIndex,
+                      const psd::RunStyleEdit &edit) {
+  editTextLayer(self, index,
+    [&](const std::string &in, std::string &out) {
+      return psd::editEngineDataRunStyle(in.data(), in.size(), runIndex, edit, out);
+    }, nullptr);
 }
 
 // Raw bytes of an additional-layer-info block (payload after the size field),
@@ -924,6 +947,44 @@ PYBIND11_MODULE(psdparse, m) {
          "Replace a text layer's body text (rewrites the embedded EngineData + "
          "'Txt '). Multi-run styling collapses to the first run's style; a "
          "trailing newline is added if missing. Raises for non-text layers.")
+    .def("set_run_style",
+         [](psd::PSDFile &self, int index, int run_index,
+            py::object size_px, py::object color, py::object tracking,
+            py::object kerning, py::object bold, py::object italic,
+            py::object underline) {
+            psd::RunStyleEdit e;
+            bool any = false;
+            if (!size_px.is_none())  { e.hasSize = true; e.size = size_px.cast<double>(); any = true; }
+            if (!tracking.is_none()) { e.hasTracking = true; e.tracking = tracking.cast<int>(); any = true; }
+            if (!kerning.is_none())  { e.hasKerning = true; e.kerning = kerning.cast<int>(); any = true; }
+            if (!bold.is_none())     { e.hasBold = true; e.bold = bold.cast<bool>(); any = true; }
+            if (!italic.is_none())   { e.hasItalic = true; e.italic = italic.cast<bool>(); any = true; }
+            if (!underline.is_none()){ e.hasUnderline = true; e.underline = underline.cast<bool>(); any = true; }
+            if (!color.is_none()) {
+                auto seq = color.cast<py::sequence>();
+                size_t n = py::len(seq);
+                if (n < 3 || n > 4)
+                    throw std::invalid_argument("color must be (r,g,b) or (r,g,b,a), each 0..1");
+                e.hasColor = true;
+                e.color[0] = seq[0].cast<float>(); e.color[1] = seq[1].cast<float>();
+                e.color[2] = seq[2].cast<float>(); e.color[3] = (n == 4) ? seq[3].cast<float>() : 1.0f;
+                any = true;
+            }
+            if (!any)
+                throw std::invalid_argument("set_run_style: pass at least one of "
+                    "size_px/color/tracking/kerning/bold/italic/underline");
+            setLayerRunStyle(self, index, run_index, e);
+         },
+         py::arg("index"), py::arg("run_index"),
+         py::arg("size_px") = py::none(), py::arg("color") = py::none(),
+         py::arg("tracking") = py::none(), py::arg("kerning") = py::none(),
+         py::arg("bold") = py::none(), py::arg("italic") = py::none(),
+         py::arg("underline") = py::none(),
+         "Edit style values of an existing style run (see text['runs']). Any of: "
+         "size_px (float), color ((r,g,b[,a]) 0..1), tracking (int), kerning "
+         "(int), bold/italic/underline (bool). Text and run lengths are "
+         "unchanged; keys are added to the run if inherited. Raises for "
+         "non-text layers or an out-of-range run index.")
     .def("set_layer_name",
          [](psd::PSDFile &self, int index, const std::string &name) {
             if (!self.setLayerName(index, name.c_str()))
