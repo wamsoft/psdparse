@@ -287,6 +287,8 @@ namespace psd {
 	};
 
 	struct LayerMask {
+    bool present = false;  // マスクブロック (size>0) が存在したか
+    bool hasReal = false;  // real/user mask (size>20) を含むか
     int width;
     int height;
 		int top;
@@ -309,6 +311,7 @@ namespace psd {
 	};
 
 	struct LayerBlendingRange {
+		bool present = false;  // blending range ブロック (size>0) が存在したか
 		int grayBlendSource;
 		int grayBlendDest;
 		std::vector<LayerBlendingChannel> channels;
@@ -477,6 +480,8 @@ namespace psd {
 
     // 親フォルダレイヤ
     LayerInfo *parent;
+    // 親フォルダの layerList インデックス (-1 = トップレベル)。processParsed で設定。
+    int parentIndex = -1;
 
     bool isTransparencyProtected() const { return (flag & (1 << 0)) != 0; }
     bool isVisible()               const { return (flag & (1 << 1)) == 0; }

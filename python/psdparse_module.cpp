@@ -74,6 +74,144 @@ py::object layerText(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+// Layer mask ('layer mask / adjustment layer data') as a dict, or None when
+// the layer carries no mask.
+py::object layerMask(const psd::LayerInfo &l) {
+  const psd::LayerMask &m = l.extraData.layerMask;
+  if (!m.present) return py::none();
+  py::dict d;
+  d["top"]    = m.top;
+  d["left"]   = m.left;
+  d["bottom"] = m.bottom;
+  d["right"]  = m.right;
+  d["width"]  = m.width;
+  d["height"] = m.height;
+  d["default_color"] = m.defaultColor;   // 0..255
+  d["flags"]      = m.flags;              // raw flag byte
+  d["relative"]   = (bool)(m.flags & 1);  // position relative to layer
+  d["disabled"]   = (bool)(m.flags & 2);  // mask disabled
+  d["inverted"]   = (bool)(m.flags & 4);  // invert (obsolete)
+  d["from_render"] = (bool)(m.flags & 8); // mask from rendering other data
+  d["has_parameters"] = (bool)(m.flags & 16); // density/feather present (not decoded yet)
+  if (m.hasReal) {                         // real/user mask (block size > 20)
+    py::dict rd;
+    rd["flags"]      = m.realFlags;
+    rd["background"] = m.realUserMaskBackground;
+    rd["top"]    = m.enclosingTop;
+    rd["left"]   = m.enclosingLeft;
+    rd["bottom"] = m.enclosingBottom;
+    rd["right"]  = m.enclosingRight;
+    d["real"] = rd;
+  } else {
+    d["real"] = py::none();
+  }
+  return std::move(d);
+}
+
+// Layer blending ranges as a dict, or None when absent. source/dest are the
+// raw 32-bit packed values (each holds two 16-bit black/white sub-ranges).
+py::object layerBlendingRanges(const psd::LayerInfo &l) {
+  const psd::LayerBlendingRange &b = l.extraData.layerBlendingRange;
+  if (!b.present) return py::none();
+  py::dict d;
+  d["gray"] = py::make_tuple(b.grayBlendSource, b.grayBlendDest);
+  py::list ch;
+  for (const auto &c : b.channels)
+    ch.append(py::make_tuple(c.source, c.dest));
+  d["channels"] = ch;
+  return std::move(d);
+}
+
+// Grid & guides image resource (1032) as a dict, or None when the PSD has none.
+py::object psdGuides(psd::PSDFile &self) {
+  const psd::GridGuideResource &g = self.gridGuide;
+  if (!g.isEnabled) return py::none();
+  py::dict d;
+  d["horizontal_grid"] = g.horizontalGrid;
+  d["vertical_grid"]   = g.verticalGrid;
+  py::list gl;
+  for (const auto &gi : g.guides) {
+    py::dict gd;
+    gd["location"]  = gi.location;   // 1/32 px from origin
+    gd["direction"] = (gi.direction == psd::GUIDE_DIR_VERTICAL) ? "vertical"
+                                                                : "horizontal";
+    gl.append(gd);
+  }
+  d["guides"] = gl;
+  return std::move(d);
+}
+
+// Slices image resource (1050, v6) as a dict, or None when absent.
+py::object psdSlices(psd::PSDFile &self) {
+  const psd::SliceResource &s = self.slice;
+  if (!s.isEnabled) return py::none();
+  py::dict d;
+  d["group_name"] = py::cast(s.groupName);
+  py::dict bb;
+  bb["left"]   = s.boundingLeft;
+  bb["top"]    = s.boundingTop;
+  bb["right"]  = s.boundingRight;
+  bb["bottom"] = s.boundingBottom;
+  d["bounding"] = bb;
+  py::list items;
+  for (const auto &it : s.slices) {
+    py::dict id;
+    id["id"]       = it.id;
+    id["group_id"] = it.groupId;
+    id["origin"]   = it.origin;
+    id["associated_layer_id"] = it.associatedLayerId;
+    id["name"]     = py::cast(it.name);
+    id["type"]     = it.type;
+    id["left"]     = it.left;
+    id["top"]      = it.top;
+    id["right"]    = it.right;
+    id["bottom"]   = it.bottom;
+    id["url"]      = py::cast(it.url);
+    id["target"]   = py::cast(it.target);
+    id["message"]  = py::cast(it.message);
+    id["alt_tag"]  = py::cast(it.altTag);
+    id["cell_text"] = py::cast(it.cellText);
+    id["is_cell_text_html"] = it.isCellTextHtml;
+    id["horizontal_align"]  = it.horizontalAlign;
+    id["vertical_align"]    = it.verticalAlign;
+    id["color"] = py::make_tuple(it.colorR, it.colorG, it.colorB, it.colorA);
+    items.append(id);
+  }
+  d["slices"] = items;
+  return std::move(d);
+}
+
+// Layer comps image resource (1065) as a list of dicts (empty list if none).
+py::list psdLayerComps(psd::PSDFile &self) {
+  py::list out;
+  for (const auto &c : self.layerComps) {
+    py::dict d;
+    d["id"]      = c.id;
+    d["name"]    = py::cast(c.name);
+    d["comment"] = py::cast(c.comment);
+    d["record_visibility"] = c.isRecordVisibility;
+    d["record_position"]   = c.isRecordPosition;
+    d["record_appearance"] = c.isRecordAppearance;
+    out.append(d);
+  }
+  return out;
+}
+
+// Indexed-color palette (from color mode data) as a dict, or None for
+// non-indexed PSDs.
+py::object psdColorTable(psd::PSDFile &self) {
+  const psd::ColorTable &t = self.colorTable;
+  if (t.colors.empty()) return py::none();
+  py::dict d;
+  d["valid_count"]        = t.validCount;
+  d["transparency_index"] = t.transparencyIndex;
+  py::list cols;
+  for (const auto &c : t.colors)
+    cols.append(py::make_tuple(c.r, c.g, c.b, c.a));
+  d["colors"] = cols;
+  return std::move(d);
+}
+
 py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
   if (!self.isLoaded) throw std::runtime_error("PSD not loaded");
   if (index < 0 || index >= (int)self.layerList.size())
@@ -172,9 +310,17 @@ PYBIND11_MODULE(psdparse, m) {
     .def_property_readonly("name_unicode", [](const psd::LayerInfo &l) {
         return u16ToStr(l.layerNameUnicode);
     })
+    .def_readonly("parent_index", &psd::LayerInfo::parentIndex,
+        "Index into PSDFile.layers of the enclosing folder layer, or -1 for "
+        "top-level layers. Build the layer tree from these.")
     .def_property_readonly("text", &layerText,
         "Text-layer content/style as a dict (keys: text, orientation, "
         "justification, transform, runs[]), or None for non-text layers.")
+    .def_property_readonly("mask", &layerMask,
+        "Layer mask as a dict (bbox, default_color, flags, disabled, real{}), "
+        "or None when the layer has no mask.")
+    .def_property_readonly("blending_ranges", &layerBlendingRanges,
+        "Layer blending ranges as a dict (gray, channels[]), or None.")
     .def_property_readonly("visible",                [](const psd::LayerInfo &l){ return l.isVisible(); })
     .def_property_readonly("transparency_protected", [](const psd::LayerInfo &l){ return l.isTransparencyProtected(); })
     .def_property_readonly("obsolete",               [](const psd::LayerInfo &l){ return l.isObsolete(); })
@@ -232,7 +378,19 @@ PYBIND11_MODULE(psdparse, m) {
     .def("layer_image", &layerImage,
          py::arg("index"), py::arg("mode") = "masked",
          "Extract pixels for layer `index` as BGRA bytes. "
-         "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).");
+         "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).")
+    .def_property_readonly("guides", &psdGuides,
+         "Grid & guides (image resource 1032) as a dict "
+         "(horizontal_grid, vertical_grid, guides[]), or None.")
+    .def_property_readonly("slices", &psdSlices,
+         "Slices (image resource 1050 v6) as a dict "
+         "(group_name, bounding, slices[]), or None.")
+    .def_property_readonly("layer_comps", &psdLayerComps,
+         "Document layer comps (image resource 1065) as a list of dicts "
+         "(id, name, comment, record_*). Empty list when there are none.")
+    .def_property_readonly("color_table", &psdColorTable,
+         "Indexed-color palette as a dict (colors[], valid_count, "
+         "transparency_index), or None for non-indexed PSDs.");
 
   // Enum-like ints exposed as module attributes for convenience
   m.attr("LAYER_TYPE_NORMAL") = (int)psd::LAYER_TYPE_NORMAL;

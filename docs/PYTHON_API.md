@@ -101,7 +101,10 @@ Read-only view of one layer.
 | `channels` | `list[ChannelInfo]` | per-channel id+length |
 | `name` | `str` | raw Pascal-string name (CP932 etc on Japanese PSDs — pybind11 may raise UnicodeDecodeError when read) |
 | `name_unicode` | `str` | UTF-16 Unicode name from `luni` record (preferred) |
+| `parent_index` | `int` | index into `PSDFile.layers` of the enclosing folder, or `-1` for top level — see [Layer hierarchy](#layer-hierarchy) |
 | `text` | `dict` \| `None` | text-layer content & style (`None` for non-text layers) — see below |
+| `mask` | `dict` \| `None` | layer mask geometry & flags (`None` when the layer has no mask) — see below |
+| `blending_ranges` | `dict` \| `None` | "Blend If" ranges (`None` when absent) — see below |
 | `visible` | `bool` | flag bit 1 inverted |
 | `transparency_protected` | `bool` | flag bit 0 |
 | `obsolete` | `bool` | flag bit 2 |
@@ -154,6 +157,79 @@ for layer in p.layers:
         continue
     print(t["text"], "→", {r["font"] for r in t["runs"]})
 ```
+
+### `layer.mask` — layer mask geometry & flags
+
+`None` for layers without a mask. When present:
+
+```python
+{
+  "top": 8, "left": 10, "bottom": 40, "right": 50,   # mask bbox on canvas
+  "width": 40, "height": 32,
+  "default_color": 0,        # 0..255, area outside the stored mask rect
+  "flags": 0,                # raw flag byte
+  "relative": False,         # bit0: position relative to layer
+  "disabled": False,         # bit1: mask disabled
+  "inverted": False,         # bit2: invert (obsolete)
+  "from_render": False,      # bit3: mask from rendering other data
+  "has_parameters": False,   # bit4: density/feather present (not decoded yet)
+  "real": None,              # or a nested dict (below) for a real/user mask
+}
+```
+
+When the record carries a *real* (user + vector combined) mask, `real` is a dict
+with `flags`, `background`, and the enclosing `top/left/bottom/right`. The mask
+**pixels** are unchanged from before — fetch them with
+`p.layer_image(i, "mask")`.
+
+### `layer.blending_ranges` — "Blend If" ranges
+
+`None` when absent. `gray` is the composite range; `channels` has one entry per
+channel. Each value is the raw 32-bit packed range (two 16-bit black/white
+sub-ranges — split yourself if you need the individual sliders):
+
+```python
+{
+  "gray": (65535, 65535),                 # (source, dest)
+  "channels": [(0, 65535), (0, 65535), ...],
+}
+```
+
+## Layer hierarchy
+
+Layers are a **flat list in file order**; folder structure is recovered from
+`layer.parent_index` (`-1` = top level, otherwise the index of the enclosing
+`FOLDER` layer). To build a tree:
+
+```python
+children = {i: [] for i in range(len(p.layers))}
+roots = []
+for i, l in enumerate(p.layers):
+    (roots if l.parent_index == -1 else children[l.parent_index]).append(i)
+```
+
+`FOLDER` marks a group's start and the matching `HIDDEN` layer marks its end
+(these are Photoshop's `lsct` section dividers).
+
+## Document resources
+
+Read-only accessors on `PSDFile` for whole-document metadata. Each returns
+`None` (or an empty list) when the PSD lacks that resource.
+
+```python
+p.guides        # dict|None : {"horizontal_grid", "vertical_grid", "guides":[{"location","direction"}]}
+p.slices        # dict|None : {"group_name", "bounding":{...}, "slices":[{...}]}
+p.layer_comps   # list[dict]: [{"id","name","comment","record_visibility","record_position","record_appearance"}]
+p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparency_index"} for indexed-color PSDs
+```
+
+- **`guides`** — grid spacing (in 1/32 px) and each guide's `location` (1/32 px
+  from origin) and `direction` (`"vertical"` / `"horizontal"`).
+- **`slices`** — Photoshop slices (v6). Each slice has `id`, `name`, bbox
+  (`left/top/right/bottom`), `url`, `target`, `message`, `alt_tag`, `cell_text`,
+  alignment, and an `(r, g, b, a)` `color` tuple.
+- **`color_table`** — only present for `COLOR_MODE_INDEXED` PSDs; `colors` is the
+  palette and `transparency_index` is `-1` when there is no transparent entry.
 
 ## Enums
 

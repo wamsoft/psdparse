@@ -290,16 +290,21 @@ Data::processParsed()
 
   // グループ情報をリンク
   std::stack<LayerInfo*> parent;
+  std::stack<int>        parentIdx;
   parent.push(0);
+  parentIdx.push(-1);
   for (int i = (int)layerList.size() - 1; i >= 0; i--) {
     LayerInfo *layer = &layerList[i];
     layer->parent = parent.top();
+    layer->parentIndex = parentIdx.top();
     switch (layer->layerType) {
     case LAYER_TYPE_FOLDER:
       parent.push(layer);
+      parentIdx.push(i);
       break;
     case LAYER_TYPE_HIDDEN:
       parent.pop();
+      if (parentIdx.size() > 1) parentIdx.pop();
       break;
     default:
       break;
@@ -449,6 +454,7 @@ void parseLayerMask(IteratorBase &r, LayerMask &m, int size) {
   // is realFlags; the original grammar consumed a byte before realFlags too.
   (void)r.getCh();
   if (size > 20) {
+    m.hasReal                = true;
     m.realFlags              = r.getCh();
     m.realUserMaskBackground = r.getCh();
     m.enclosingTop           = r.getInt32(true);
@@ -458,9 +464,11 @@ void parseLayerMask(IteratorBase &r, LayerMask &m, int size) {
   }
   m.width  = m.right  - m.left;
   m.height = m.bottom - m.top;
+  m.present = true;
 }
 
 void parseLayerBlendingRange(IteratorBase &r, LayerBlendingRange &b) {
+  b.present = true;
   b.grayBlendSource = r.getInt32(true);
   b.grayBlendDest   = r.getInt32(true);
   while (r.rest() >= 8) {

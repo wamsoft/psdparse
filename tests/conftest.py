@@ -58,6 +58,18 @@ def sample_text_psd():
     return _find_sample("fontsample.psd")
 
 
+@pytest.fixture(scope="session")
+def sample_group_psd():
+    """A PSD with nested folder groups (for hierarchy / metadata tests)."""
+    return _find_sample("config.psd", "system.psd")
+
+
+@pytest.fixture(scope="session")
+def sample_mask_psd():
+    """A small PSD with a layer mask (synthesized fixture)."""
+    return _find_sample("masktest.psd")
+
+
 @pytest.fixture
 def psd_ui(sample_ui_psd):
     p = psdparse.PSDFile()
@@ -69,6 +81,20 @@ def psd_ui(sample_ui_psd):
 def psd_text(sample_text_psd):
     p = psdparse.PSDFile()
     assert p.load(str(sample_text_psd))
+    return p
+
+
+@pytest.fixture
+def psd_group(sample_group_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_group_psd))
+    return p
+
+
+@pytest.fixture
+def psd_mask(sample_mask_psd):
+    p = psdparse.PSDFile()
+    assert p.load(str(sample_mask_psd))
     return p
 
 
