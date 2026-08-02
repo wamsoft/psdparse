@@ -125,6 +125,24 @@ Tests live under `tests/` and use [pytest](https://docs.pytest.org/). They need 
 python -m pytest -v
 ```
 
+## Examples (composite / variations / sprite extraction)
+
+psdparse gives you the pieces (per-layer pixels, position, opacity, masks) but
+does **not** composite or re-render — the Python imaging ecosystem does that
+better. [`examples/`](examples/) shows the recipes:
+
+- **`composite.py`** — composite layers with Pillow (position + opacity + mask,
+  normal blend), and optionally write the result back as the PSD's stored
+  preview via `set_merged_image`.
+- **`variations.py`** — enumerate tachie/expression combinations by treating
+  layer folders as mutually-exclusive option slots.
+- **`extract_layers.py`** — export per-layer PNGs + a manifest, with alpha edge
+  extension (bleed) so sprites stay clean under rotation/scaling.
+
+See [examples/README.md](examples/README.md). On the sample tachie PSDs
+(all normal blend) `composite.py` matches Photoshop's stored composite to ~0.1
+mean level difference.
+
 ## tools/psd_export.py
 
 ```

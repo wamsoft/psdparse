@@ -1221,6 +1221,28 @@ namespace psd {
     return pos;
   }
 
+  bool PSDFile::setMergedImage(const uint8_t *bgra, int width, int height) {
+    if (!bgra || width <= 0 || height <= 0) return false;
+    if (header.depth != 8 || header.mode != COLOR_MODE_RGB) return false;
+    if (width != header.width || height != header.height) return false;
+    int nch = header.channels;
+    if (nch < 3) nch = 3;
+    if (nch > 4) nch = 4;   // RGB(3) / RGBA(4) のみ
+    int px = width * height;
+    auto buf = std::make_shared<std::vector<uint8_t>>();
+    buf->reserve((size_t)2 + (size_t)px * nch);
+    buf->push_back(0); buf->push_back(0);   // compression = 0 (raw)
+    // merged プレーンは R,G,B(,A) 順。BGRA からその順で取り出す。
+    const int comp[4] = { 2, 1, 0, 3 };     // R,G,B,A の BGRA インデックス
+    for (int c = 0; c < nch; c++) {
+      int s = comp[c];
+      for (int i = 0; i < px; i++) buf->push_back(bgra[(size_t)i * 4 + s]);
+    }
+    delete imageData;
+    imageData = new VectorReader(buf);
+    return true;
+  }
+
   bool PSDFile::setLayerMaskPixels(int index, const uint8_t *gray,
                                    int top, int left, int width, int height) {
     if (index < 0 || index >= (int)layerList.size()) return false;

@@ -258,6 +258,7 @@ Quick map of the API (details in the subsections below):
 | edit text content | `p.set_text(i, str)` |
 | edit a text run's style | `p.set_run_style(i, run, size_px=…, color=…, …)` |
 | build a new PSD | `p.create_blank(w, h)` then `add_layer(...)` |
+| write a composited preview back | `p.set_merged_image(bgra)` |
 
 **8-bit RGB only** for the pixel/mask/new-document operations. The stored
 composite image is **not** re-rendered after edits (see [Saving](#saving)).
@@ -432,6 +433,14 @@ p.save("new.psd")
   — it stays white until an editor recomposites on open.
 
 ### Saving
+
+The stored **composite (merged) image** is not re-rendered after edits. If you
+composite the layers yourself (e.g. with Pillow — see [`examples/`](../examples/)),
+write the result back as the PSD's preview with:
+
+```python
+p.set_merged_image(bgra_bytes)   # canvas-sized BGRA (header.width*header.height*4)
+```
 
 `save(path)` returns `True`/`False`. **Do not save over a file that is currently
 loaded** (by this or any live `PSDFile`): `load()` memory-maps the file

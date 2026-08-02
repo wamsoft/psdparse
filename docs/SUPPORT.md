@@ -54,7 +54,8 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | テキストのラン単位スタイル編集 | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/bold=…)` (v0.7.0) |
 | テキストのフォント変更 (FontSet 追加) / ラン再構成 | ❌ | 既存ランの値上書きのみ |
 | マスク幾何の単独編集 (画素なし) | 🟡 | `set_layer_mask_pixels` で画素とセットのみ |
-| 効果込みの合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
+| 合成済み画像 (composite) の入れ替え | ✅ | `set_merged_image(bgra)` — Python で合成した結果を書き戻せる (v0.7.x) |
+| 効果込みの合成 (composite) の自動再生成 | ❌ | psdparse 自身は再描画しない。合成は Python (Pillow 等, `examples/`) で |
 
 ## 圧縮 / ビット深度
 

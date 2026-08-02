@@ -115,6 +115,12 @@ namespace psd {
     // フィールドから再構築される (useRawBytes=false)。失敗で false。
     bool setAdditionalInfoBytes(int index, int key, const uint8_t *data, int size);
 
+    // 合成済み画像 (merged/composite セクション) を差し替える。入力は BGRA
+    // インターリーブ (width*height*4)、canvas サイズ一致が必須。header.channels に
+    // 応じて RGB(3) か RGBA(4) の raw プレーンで書き出す。8bit RGB のみ。
+    // Python 側で合成した結果を PSD のプレビューに反映するのに使う。失敗で false。
+    bool setMergedImage(const uint8_t *bgra, int width, int height);
+
     // --- 新規作成 (E5) ------------------------------------------------------
     // この PSDFile を空の 8bit RGB 文書 (幅×高さ, 白の合成画像) として初期化する。
     // 以後 addLayer(...) でレイヤを足して save() できる。成功で true。

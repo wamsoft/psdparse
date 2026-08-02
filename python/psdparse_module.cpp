@@ -1041,6 +1041,20 @@ PYBIND11_MODULE(psdparse, m) {
          "layer's left/top are kept; width/height are updated. Channels are "
          "RLE-encoded on the next save(). 8-bit RGB documents only. The layer's "
          "mask/extra data is left unchanged — avoid resizing a masked layer.")
+    .def("set_merged_image",
+         [](psd::PSDFile &self, py::bytes data) {
+            py::buffer_info info(py::buffer(data).request());
+            size_t need = (size_t)self.header.width * (size_t)self.header.height * 4;
+            if ((size_t)info.size != need)
+                throw std::invalid_argument("data must be header.width*header.height*4 BGRA bytes");
+            if (!self.setMergedImage((const uint8_t *)info.ptr,
+                                     self.header.width, self.header.height))
+                throw std::runtime_error("set_merged_image failed (document is not 8-bit RGB)");
+         },
+         py::arg("data"),
+         "Replace the stored composite (merged) image with canvas-sized BGRA "
+         "bytes (header.width*header.height*4). Use this to write a "
+         "Python-composited preview back into the PSD. 8-bit RGB only.")
     .def("set_layer_mask_pixels",
          [](psd::PSDFile &self, int index, py::bytes data,
             int top, int left, int width, int height) {
