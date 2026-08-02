@@ -64,6 +64,25 @@ public:
     }
     return total;
   }
+
+  // Iterator の先頭から最大 n バイトだけコピー。cloneOffset 由来で終端が親
+  // ブロック末尾まで延びている iterator (channel.imageData 等) を、宣言された
+  // 長さ分だけ切り出して書くのに使う。戻り値はコピーしたバイト数。
+  size_t copyNFrom(IteratorBase *it, size_t n) {
+    if (!it || n == 0) return 0;
+    it->init();
+    size_t total = 0;
+    uint8_t buf[8192];
+    while (total < n) {
+      size_t left = n - total;
+      int want = (int)(left < sizeof(buf) ? left : sizeof(buf));
+      int got = it->getData(buf, want);
+      if (got <= 0) break;
+      putData(buf, (size_t)got);
+      total += (size_t)got;
+    }
+    return total;
+  }
 };
 
 // FILE * ベースの WriterBase 実装。fopen/fwrite/_fseeki64/_ftelli64 使用。

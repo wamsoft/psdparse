@@ -164,9 +164,22 @@ inline void writeLayerInfo(WriterBase &w, const Data &data) {
   if (data.mergedAlpha) count = (int16_t)(-count);
   w.putInt16BE(count);
   for (const auto &lay : data.layerList) writeLayerRecord(w, lay);
-  // channel image data (全 layer の全 channel の compression word + bytes
-  // が連結された 1 ブロック)
-  if (data.channelImageData) w.copyAllFrom(data.channelImageData);
+  // channel image data.
+  //   未編集 (layersDirty==false): 元の連結ブロブをそのまま転送 → 末尾パディング
+  //     まで含めてバイト一致のラウンドトリップを保証。
+  //   編集済み (layersDirty==true): 連結ブロブは編集後のレイヤ順/枚数と合わない
+  //     ので、各 channel の imageData (compression word + 圧縮データ, ちょうど
+  //     channel.length バイト) をレイヤ毎に個別に書き出して再構築する。末尾は
+  //     下の even パディングで詰める。
+  if (!data.layersDirty && data.channelImageData) {
+    w.copyAllFrom(data.channelImageData);
+  } else {
+    for (const auto &lay : data.layerList) {
+      for (const auto &ch : lay.channels) {
+        if (ch.imageData && ch.length > 0) w.copyNFrom(ch.imageData, (size_t)ch.length);
+      }
+    }
+  }
   int64_t bodyEnd = w.tell();
   // PSD 仕様: layer info の長さは 2 の倍数 padding が必要。
   if ((bodyEnd - bodyStart) & 1) { w.putZero(1); bodyEnd++; }

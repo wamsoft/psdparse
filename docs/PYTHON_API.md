@@ -223,6 +223,64 @@ for i, l in enumerate(p.layers):
 `FOLDER` marks a group's start and the matching `HIDDEN` layer marks its end
 (these are Photoshop's `lsct` section dividers).
 
+## Editing & saving
+
+psdparse can make **structural edits** to a loaded PSD and save the result.
+The model is *lazy*: edits only rearrange in-memory references — no pixels are
+copied or re-encoded until `save()`, which re-serializes the layer section.
+
+The original file is never touched (`load()` mmaps it read-only; `save()` writes
+a new path). An **unmodified** file still round-trips byte-identically; the
+per-layer re-serialization only kicks in once you actually edit the layer list.
+
+### Parameter edits (writable properties)
+
+```python
+p = psdparse.PSDFile(); p.load("in.psd")
+p.layers[3].opacity = 128          # 0..255
+p.layers[3].visible = False
+p.layers[3].clipping = 1
+p.layers[3].set_blend_mode("mul ") # 4-char key; note trailing space on 3-letter keys
+p.save("out.psd")
+```
+
+These are record-level fields, re-serialized directly. (Name, mask and effect
+edits live in the extra-data block and are **not** writable yet — planned E3.)
+
+### Structural edits (methods on `PSDFile`)
+
+```python
+p.delete_layer(i)                  # remove layer i
+p.move_layer(from_i, to_i)         # reorder (to_i = index in the post-removal list)
+new_i = p.duplicate_layer(i)       # copy layer i, inserted right after it
+new_i = p.copy_layer_from(src, j, dest_index=-1)  # copy layer j from another PSDFile
+```
+
+Notes:
+- `delete_layer` / `duplicate_layer` on a single layer are exact. Deleting **one
+  half of a group's FOLDER/HIDDEN divider pair unbalances the group** — delete
+  whole groups (both dividers + contents) for clean nesting. (Unbalanced results
+  still load; the hierarchy just looks odd.)
+- **`copy_layer_from` copies across files.** The copied layer references the
+  *source's* pixel/extra bytes lazily, so **the source `PSDFile` must stay open
+  until the destination is saved** (and, in fact, until it is garbage-collected).
+  psdparse keeps a reference to the source automatically, so simply saving before
+  discarding both is enough. Source and destination must share color mode and bit
+  depth.
+- **Pixel replacement, new image layers, and brand-new PSDs are not yet
+  supported** (they need an RLE encoder — planned E4/E5). Text-layer editing is
+  planned E6.
+- The stored **composite (merged) image is not regenerated** after edits — it
+  stays as it was until Photoshop (or another editor) recomposites on open.
+
+```python
+# Merge one layer from file B into file A, on top:
+a = psdparse.PSDFile(); a.load("A.psd")
+b = psdparse.PSDFile(); b.load("B.psd")
+a.copy_layer_from(b, 0)            # append B's layer 0
+a.save("merged.psd")              # b is kept alive until here
+```
+
 ## Document resources
 
 Read-only accessors on `PSDFile` for whole-document metadata. Each returns

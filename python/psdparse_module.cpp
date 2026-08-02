@@ -556,10 +556,29 @@ PYBIND11_MODULE(psdparse, m) {
     .def_readonly("right",   &psd::LayerInfo::right)
     .def_readonly("width",   &psd::LayerInfo::width)
     .def_readonly("height",  &psd::LayerInfo::height)
-    .def_readonly("opacity", &psd::LayerInfo::opacity)
+    // --- 書き換え可能なレコード項目 (E1: save() 時にフィールドから再出力) ---
+    .def_readwrite("opacity", &psd::LayerInfo::opacity,
+        "Layer opacity 0..255. Writable — the new value is re-serialized on save().")
+    .def_readwrite("clipping", &psd::LayerInfo::clipping,
+        "Clipping 0=base / 1=non-base. Writable.")
+    .def_property("blend_mode_key",
+        [](const psd::LayerInfo &l) { return l.blendModeKey; },
+        [](psd::LayerInfo &l, int key) {
+            l.blendModeKey = key; l.blendMode = psd::blendKeyToMode(key);
+        },
+        "Blend-mode 4cc as an int (e.g. 0x6D756C20 == 'mul '). Writable; also "
+        "updates blend_mode. Use set_blend_mode(str) for a friendlier setter.")
+    .def("set_blend_mode",
+        [](psd::LayerInfo &l, const std::string &k) {
+            if (k.size() != 4) throw std::invalid_argument("blend mode must be a 4-char key, e.g. 'mul '");
+            int key = ((int)(uint8_t)k[0] << 24) | ((int)(uint8_t)k[1] << 16) |
+                      ((int)(uint8_t)k[2] << 8)  |  (int)(uint8_t)k[3];
+            l.blendModeKey = key; l.blendMode = psd::blendKeyToMode(key);
+        },
+        py::arg("key"),
+        "Set the blend mode from a 4-char key string (e.g. 'norm', 'mul ', "
+        "'scrn'). Note the trailing space on 3-letter keys.")
     .def_readonly("fill_opacity",  &psd::LayerInfo::fill_opacity)
-    .def_readonly("clipping",      &psd::LayerInfo::clipping)
-    .def_readonly("blend_mode_key",&psd::LayerInfo::blendModeKey)
     .def_readonly("blend_mode",    &psd::LayerInfo::blendMode)
     .def_readonly("layer_type",    &psd::LayerInfo::layerType)
     .def_readonly("layer_id",      &psd::LayerInfo::layerId)
@@ -597,7 +616,13 @@ PYBIND11_MODULE(psdparse, m) {
         "Parse an arbitrary additional-info `key` (4-char str) as a Photoshop "
         "descriptor dict. `skip` = version-prefix bytes before the descriptor "
         "(-1 = auto for known keys, else 0). Returns None if absent/unparseable.")
-    .def_property_readonly("visible",                [](const psd::LayerInfo &l){ return l.isVisible(); })
+    .def_property("visible",
+        [](const psd::LayerInfo &l){ return l.isVisible(); },
+        [](psd::LayerInfo &l, bool v){
+            if (v) l.flag &= ~(1 << 1);   // visible = clear "hidden" bit
+            else   l.flag |=  (1 << 1);
+        },
+        "Layer visibility. Writable — toggles flag bit 1 and is re-serialized on save().")
     .def_property_readonly("transparency_protected", [](const psd::LayerInfo &l){ return l.isTransparencyProtected(); })
     .def_property_readonly("obsolete",               [](const psd::LayerInfo &l){ return l.isObsolete(); })
     .def_property_readonly("pixel_data_irrelevant",  [](const psd::LayerInfo &l){ return l.isPixelDataIrrelevant(); });
@@ -645,7 +670,47 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("path"),
          "Save the currently loaded data as a PSD file at `path` (UTF-8). "
          "Round-trip-fidelity is the target: load(p) -> save(q) yields a PSD "
-         "with structurally identical layers/header/image data.")
+         "with structurally identical layers/header/image data. Structural "
+         "edits (delete/move/duplicate/copy_layer_from) are re-serialized here.")
+    .def("delete_layer",
+         [](psd::PSDFile &self, int index) {
+            if (!self.deleteLayer(index))
+                throw std::out_of_range("layer index out of range");
+         },
+         py::arg("index"),
+         "Delete the layer at `index`. Pixels are dropped on the next save(). "
+         "Note: deleting one half of a folder's FOLDER/HIDDEN divider pair "
+         "unbalances the group — delete whole groups for clean results.")
+    .def("move_layer",
+         [](psd::PSDFile &self, int from_index, int to_index) {
+            if (!self.moveLayer(from_index, to_index))
+                throw std::out_of_range("layer index out of range");
+         },
+         py::arg("from_index"), py::arg("to_index"),
+         "Move the layer at `from_index` so it lands at `to_index` (index in "
+         "the list after removal). Reorders draw order on the next save().")
+    .def("duplicate_layer",
+         [](psd::PSDFile &self, int index) {
+            int r = self.duplicateLayer(index);
+            if (r < 0) throw std::out_of_range("layer index out of range");
+            return r;
+         },
+         py::arg("index"),
+         "Duplicate the layer at `index` (inserted right after it). Returns the "
+         "new layer's index. The copy shares the source's pixel bytes lazily.")
+    .def("copy_layer_from",
+         [](psd::PSDFile &self, const psd::PSDFile &src, int src_index, int dest_index) {
+            int r = self.copyLayerFrom(src, src_index, dest_index);
+            if (r < 0) throw std::out_of_range("source layer index out of range");
+            return r;
+         },
+         py::arg("source"), py::arg("src_index"), py::arg("dest_index") = -1,
+         py::keep_alive<1, 2>(),   // keep `source` alive as long as self lives
+         "Copy a layer from another loaded PSDFile into this one at "
+         "`dest_index` (default: append). Returns the new index. The copied "
+         "layer references `source`'s pixel/extra bytes lazily, so `source` is "
+         "kept alive until this file is garbage-collected (do not let it close "
+         "before save()). Assumes matching color mode and bit depth.")
     .def_readonly("is_loaded", &psd::PSDFile::isLoaded)
     .def_readonly("header",    &psd::PSDFile::header)
     .def_readonly("layers",    &psd::PSDFile::layerList)

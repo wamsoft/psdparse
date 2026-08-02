@@ -53,6 +53,27 @@ namespace psd {
     // 失敗 (open エラー / 未ロード) で false。
     bool save(const char *filename);
 
+    // --- 構造編集 (E1/E2) ---------------------------------------------------
+    // いずれも layerList を操作するだけの軽量操作で、実バイトの再構築は
+    // save() 時に遅延実行される (channel.imageData / extraData.rawBytes の参照を
+    // 保持したまま並べ替え、書き出し時にそれぞれを個別に転送する)。
+    //
+    // 注意: 合成画像 (composite) は編集後は古いままになる。ファイルは正しく
+    // 開けるが、プレビューは編集後の状態を反映せず、Photoshop が開いて再合成
+    // するまで旧状態のままとなる。
+
+    // レイヤを 1 枚削除。index は layerList のインデックス。範囲外で false。
+    bool deleteLayer(int index);
+    // レイヤを from から to へ移動する (to は削除後リストでの挿入位置)。
+    bool moveLayer(int from, int to);
+    // レイヤを複製し、複製 (元の直後に挿入) の新インデックスを返す。失敗 -1。
+    int  duplicateLayer(int index);
+    // 別の PSD からレイヤをこのファイルへコピー挿入する。destIndex<0 で末尾。
+    // コピーしたレイヤの画素/追加情報は src のストレージを参照するので、
+    // src はこのファイルの save() が終わるまで生存している必要がある。
+    // 色モード/ビット深度が一致している前提。新インデックスを返す。失敗 -1。
+    int  copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex = -1);
+
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);
     bool getLayerImage(const LayerInfo &layer, void *buf, const ColorFormat &format,

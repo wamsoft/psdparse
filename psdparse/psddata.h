@@ -555,6 +555,12 @@ namespace psd {
 		// レイヤ情報一覧
 		std::vector<LayerInfo> layerList;
 
+		// レイヤの構造編集 (削除/並べ替え/複製/他ファイルからのコピー) が行われたか。
+		// false のうちは channelImageData の連結ブロブをそのまま書き出してバイト
+		// 一致のラウンドトリップを保つ。true になると save() 時にチャンネルを
+		// レイヤ毎に個別再構築する (連結ブロブは編集後のレイヤ順と合わないため)。
+		bool layersDirty = false;
+
 		// チャンネル画像データ
 		IteratorBase *channelImageData;
 		

@@ -25,8 +25,14 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | ヘッダ (幅/高さ/チャンネル/深度/モード/版) | ✅ | `PSDFile.header` |
 | 解像度 (dpi, image resource 1005) | ✅ | `header.hres` / `header.vres` |
 | PSB (large document, version 2) | ❌ | `version` は読めるが、PSB 特有の 8 byte 長フィールドの分岐が無く未対応 |
-| ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 |
-| 編集して保存 (レイヤ追加/削除/差し替え) | ❌ | ROADMAP Phase 4b–4e。RLE エンコーダ未実装 |
+| ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
+| 編集保存: パラメータ変更 | ✅ | `layer.opacity`/`visible`/`set_blend_mode()` (v0.7.0) |
+| 編集保存: レイヤ削除/並べ替え/複製 | ✅ | `delete_layer`/`move_layer`/`duplicate_layer` (v0.7.0) |
+| 編集保存: 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる (v0.7.0) |
+| 編集保存: 画素差し替え/画像レイヤ新規追加 | ❌ | RLE エンコーダ未実装 (ROADMAP Phase E4) |
+| 編集保存: 完全新規 PSD 作成 | ❌ | ROADMAP Phase E5 |
+| 編集保存: テキストレイヤ編集 | ❌ | Descriptor/EngineData シリアライザ未実装 (ROADMAP Phase E6) |
+| 編集後の合成画像 (composite) 再生成 | ❌ | 編集後は旧合成のまま (開いた Photoshop が再合成) |
 
 ## 圧縮 / ビット深度
 

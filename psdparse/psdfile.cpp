@@ -217,6 +217,46 @@ bool PSDFile::save(const char *filename) {
   return writePSD(w, *this);
 }
 
+// --- 構造編集 --------------------------------------------------------------
+
+bool PSDFile::deleteLayer(int index) {
+  if (index < 0 || index >= (int)layerList.size()) return false;
+  layerList.erase(layerList.begin() + index);
+  layersDirty = true;
+  return true;
+}
+
+bool PSDFile::moveLayer(int from, int to) {
+  int n = (int)layerList.size();
+  if (from < 0 || from >= n || to < 0 || to >= n) return false;
+  if (from == to) return true;
+  LayerInfo tmp = layerList[(size_t)from];   // deep copy (iterator を clone)
+  layerList.erase(layerList.begin() + from);
+  layerList.insert(layerList.begin() + to, tmp);
+  layersDirty = true;
+  return true;
+}
+
+int PSDFile::duplicateLayer(int index) {
+  if (index < 0 || index >= (int)layerList.size()) return -1;
+  LayerInfo copy = layerList[(size_t)index];
+  layerList.insert(layerList.begin() + index + 1, copy);
+  layersDirty = true;
+  return index + 1;
+}
+
+int PSDFile::copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex) {
+  if (srcIndex < 0 || srcIndex >= (int)src.layerList.size()) return -1;
+  LayerInfo copy = src.layerList[(size_t)srcIndex]; // channel/extra は src を参照
+  copy.owner  = this;   // owner はどこからも参照されないが整合のため付け替え
+  copy.parent = nullptr;
+  int pos = (destIndex < 0 || destIndex > (int)layerList.size())
+              ? (int)layerList.size() : destIndex;
+  layerList.insert(layerList.begin() + pos, copy);
+  layersDirty = true;
+  return pos;
+}
+
 bool PSDFile::loadFromStream(std::unique_ptr<std::istream> stream) {
   // clearData() を先にやってから ownedStream_ にセットする。
   // 順序を逆にすると委譲先の clearData が握ったばかりの stream を消す (旧バグ)。

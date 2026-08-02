@@ -303,7 +303,10 @@ Data::processParsed()
       parentIdx.push(i);
       break;
     case LAYER_TYPE_HIDDEN:
-      parent.pop();
+      // 両スタックとも番兵 (sentinel) を残してガードする。編集で FOLDER/HIDDEN
+      // の対応が崩れた PSD (グループ区切りの片方だけ削除等) でも underflow で
+      // クラッシュしないように。
+      if (parent.size()    > 1) parent.pop();
       if (parentIdx.size() > 1) parentIdx.pop();
       break;
     default:

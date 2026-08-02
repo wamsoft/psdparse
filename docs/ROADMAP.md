@@ -14,22 +14,14 @@ For a feature-by-feature account of what is and isn't supported today, see
 
 ## Save: from round-trip to edit-and-save
 
-The current `save()` implementation works correctly only when the loaded `Data` structure is **unmodified** between load and save. Supporting structural edits (delete, insert, rename, replace pixels) breaks down into three independent layers of work.
+The `save()` path started as round-trip-only (correct only when the loaded `Data` is unmodified). Structural editing is being added incrementally. The編集 API is split into phases E1–E6; each builds on the last.
 
-### Phase 4b — per-channel save (enables delete, duplicate)
+- ✅ **E1 — parameter edits.** *Done 2026-08-02 (0.7.0).* Record-level fields are re-serialized from the struct, so `layer.opacity` / `layer.clipping` / `layer.visible` are writable properties and `layer.set_blend_mode("mul ")` / `layer.blend_mode_key` set the blend mode. No file-format work was needed — `writeLayerRecord` already emitted these from fields.
+- ✅ **E2 — delete / move / duplicate / cross-file copy.** *Done 2026-08-02 (0.7.0).* `writeLayerInfo` now serializes channel data **per-layer/per-channel** (bounded `copyNFrom`) when the layer list is dirty, instead of dumping the original concatenated blob — so `PSDFile.delete_layer` / `move_layer` / `duplicate_layer` / `copy_layer_from(src, i)` all produce correct pixel data. A `Data::layersDirty` flag keeps unmodified files on the exact-blob path so byte-identical round-trip is preserved. Cross-file copy holds the source alive via pybind11 `keep_alive`. Also fixed a **pre-existing crash**: the group-linking loop in `processParsed` under-flowed its `parent` stack on unbalanced FOLDER/HIDDEN dividers (now guarded) — exposed by deleting one half of a divider pair. Validated against psd-tools (all edited files open + composite) — see `tests/test_edit.py`.
 
-**Problem:** `writeLayerInfo` currently dumps `Data::channelImageData` as one blob. This blob is the concatenated pre-RLE channel bytes for *every* channel of *every* layer in the original file. Deleting a `LayerInfo` from `layerList` doesn't shrink the blob — you'd write out the right number of layer records but the wrong amount of pixel data.
+**Remaining edit phases** (E3 rename/mask/effect edits, E4 pixel replacement + new image layers via an RLE encoder, E5 new-from-scratch PSD, E6 text-layer editing) are described below (originally drafted as Phase 4c–4e).
 
-**Approach:**
-- Replace the blob dump with a per-layer / per-channel loop that uses `LayerInfo::channels[i].imageData` (each is already a `cloneOffset` into the blob).
-- Each `channel.imageData->size()` is exactly the right number of bytes; copy them through.
-- The order of `LayerInfo` in `layerList` (after edits) determines the order of the channel data block — perfect for delete/duplicate.
-
-**Estimated size:** ~50 lines in `psdwrite.cpp`.
-
-**Test plan:** add a `test_save_after_delete` that loads, removes layer N, saves, reloads, asserts layer count -1 and remaining layer pixels match.
-
-### Phase 4c — extra data field re-serialization (enables rename, blend-mode change)
+### Phase E3 (was 4c) — extra data field re-serialization (enables rename, blend-mode change)
 
 **Problem:** `LayerExtraData::rawBytes` is the raw bytes of the entire extra-data block (layer mask, blending range, Pascal name, additional info entries). Changing `lay.extraData.layerName` doesn't update `rawBytes`. Save would emit the stale name.
 
@@ -42,9 +34,9 @@ The current `save()` implementation works correctly only when the loaded `Data` 
 - Add a per-layer flag `LayerExtraData::useRawBytes` (default true). When the user mutates a field, drop to false; `writeLayerRecord` picks the reconstruction path.
 - For `luni` (Unicode name) records specifically, expose a setter that updates `layerNameUnicode` AND drops `rawBytes`-based emission.
 
-**Estimated size:** ~300 lines + 5 tests for rename / blend-mode change / clipping toggle.
+**Estimated size:** ~300 lines + tests for rename / mask edit. (Blend mode, opacity and clipping already land via E1's record-level setters, so E3 is specifically the *extra-data*-resident fields: Unicode name, mask geometry/params, fill opacity, effects.)
 
-### Phase 4d — RLE encoder + new layer / pixel replacement
+### Phase E4 (was 4d) — RLE encoder + new layer / pixel replacement
 
 **Problem:** No way to construct new channel data. Existing layers' `channel.imageData` iterators point into the loaded file; we have no encoder that takes raw BGRA in and produces RLE-compressed channel bytes.
 
@@ -59,9 +51,9 @@ The current `save()` implementation works correctly only when the loaded `Data` 
 
 **Estimated size:** ~500 lines (mostly encoder) + a fixture-based round-trip test (encode, then decode through `getLayerImage`, then compare with input).
 
-### Phase 4e — new-from-scratch PSD construction
+### Phase E5 (was 4e) — new-from-scratch PSD construction
 
-Once 4d lands, the user can do:
+Once E4 lands, the user can do:
 
 ```python
 p = psdparse.PSDFile.create_blank(width=1024, height=768, mode=psdparse.COLOR_MODE_RGB)
@@ -71,6 +63,10 @@ p.save("out.psd")
 ```
 
 This is mostly a constructor that fills `Data` with a minimal-but-valid skeleton (default header, empty image resources, empty color mode data, sentinel `channelImageData`, etc.).
+
+### Phase E6 — text-layer editing
+
+Editing text content/style means writing the `TySh` block back: re-serializing the type-tool **descriptor** (currently read-only in `psddesc.*`) and, harder, re-emitting the embedded Adobe **EngineData** mini-language (`psdengine.cpp` only parses it). Needs a Descriptor serializer + an EngineData writer. Deferred until the image-layer editing set (E3–E5) is complete, per the stated priority (image first, then text).
 
 ## Other future work
 
