@@ -3,12 +3,13 @@
 For a feature-by-feature account of what is and isn't supported today, see
 [SUPPORT.md](SUPPORT.md). This file tracks planned work.
 
-## Current state (2026-08-02, v0.7.0)
+## Current state (2026-08-02, v0.8.0)
 
 - ✅ Pure C++17 parser (no Boost)
 - ✅ mmap + StreamReader / Source abstraction
 - ✅ Python bindings (pybind11)
-- ✅ pytest regression suite (121 tests)
+- ✅ pytest regression suite (137 tests)
+- ✅ Python composite recipes (`examples/`) + `set_merged_image`; layer comps exposed (`layer.comp_states`)
 - ✅ Round-trip PSD save (byte-identical)
 - ✅ Edit & save: structure / pixels / mask / parameters / effects / text / new-from-scratch (E1–E6, byte-exact re-serialization)
 - ✅ UTF-8 path I/F (Win32 conversion internal only)
