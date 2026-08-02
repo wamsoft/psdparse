@@ -23,7 +23,9 @@ The `save()` path started as round-trip-only (correct only when the loaded `Data
 
 - ✅ **E5 — new-from-scratch PSD construction.** *Done 2026-08-02 (0.7.0).* `PSDFile.create_blank(width, height, mode=RGB)` fills a minimal valid skeleton — header (v1, 3ch, 8-bit RGB), empty color-mode/resources, empty dirty layer list, and a white raw composite (`VectorReader`) — so you can `create_blank()` → `add_layer()` → `save()` with no source file. Validated empty and multi-layer, cross-checked with psd-tools `composite()` — see `tests/test_create.py`.
 
-**Remaining edit phases** (E3 rename/mask/effect *extra-data* edits, E6 text-layer editing) are described below (E3 was originally drafted as Phase 4c).
+- 🟡 **E3 — extra-data field edits (rename done).** *Rename done 2026-08-02 (0.7.0).* Layer **renaming** is implemented: `layer.name_unicode = "..."` / `PSDFile.set_layer_name(i, name)` update the Pascal + `luni` names and set a per-layer `LayerExtraData::useRawBytes=false` flag; on save, `writeLayerExtraFromFields` reconstructs the extra-data block from fields while copying the **layer mask and blending ranges through byte-for-byte** (captured at parse as `maskRaw`/`blendRaw`). Unmodified layers keep the exact-bytes path, so round-trip identity is untouched. Validated incl. renaming a *masked* layer (mask bbox/params/real preserved) and psd-tools readback — see `tests/test_edit_name.py`. **Still to do in E3:** editing mask geometry/params, fill opacity (`iOpa`), and effect (`lfx2`) values — the reconstruction path exists, these just need field-level setters + serializers.
+
+**Remaining edit work** (E3 mask/effect value edits, E6 text-layer editing) is described below.
 
 ### Phase E3 (was 4c) — extra data field re-serialization (enables rename, blend-mode change)
 

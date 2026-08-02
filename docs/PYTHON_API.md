@@ -100,7 +100,7 @@ Read-only view of one layer.
 | `layer_id` | `int` | -1 if unset |
 | `channels` | `list[ChannelInfo]` | per-channel id+length |
 | `name` | `str` | raw Pascal-string name (CP932 etc on Japanese PSDs — pybind11 may raise UnicodeDecodeError when read) |
-| `name_unicode` | `str` | UTF-16 Unicode name from `luni` record (preferred) |
+| `name_unicode` | `str` | UTF-16 Unicode name from `luni` record (preferred). **Writable** — assigning renames the layer (see [Editing](#editing--saving)) |
 | `parent_index` | `int` | index into `PSDFile.layers` of the enclosing folder, or `-1` for top level — see [Layer hierarchy](#layer-hierarchy) |
 | `text` | `dict` \| `None` | text-layer content & style (`None` for non-text layers) — see below |
 | `mask` | `dict` \| `None` | layer mask geometry & flags (`None` when the layer has no mask) — see below |
@@ -241,11 +241,16 @@ p.layers[3].opacity = 128          # 0..255
 p.layers[3].visible = False
 p.layers[3].clipping = 1
 p.layers[3].set_blend_mode("mul ") # 4-char key; note trailing space on 3-letter keys
+p.layers[3].name_unicode = "新しい名前"   # rename (also: p.set_layer_name(3, "..."))
 p.save("out.psd")
 ```
 
-These are record-level fields, re-serialized directly. (Name, mask and effect
-edits live in the extra-data block and are **not** writable yet — planned E3.)
+`opacity` / `clipping` / `visible` / `blend_mode_key` are record-level fields,
+re-serialized directly. **Renaming** (`name_unicode = ...` or
+`set_layer_name(i, name)`) edits the extra-data block instead: it updates both the
+Pascal and Unicode (`luni`) names and reconstructs the extra data on save, copying
+the layer mask and blending ranges through byte-for-byte. Other extra-data fields
+(mask geometry, fill opacity, effects) are **not** writable yet.
 
 ### Structural edits (methods on `PSDFile`)
 

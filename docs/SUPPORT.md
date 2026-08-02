@@ -27,6 +27,8 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | PSB (large document, version 2) | ❌ | `version` は読めるが、PSB 特有の 8 byte 長フィールドの分岐が無く未対応 |
 | ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
 | 編集保存: パラメータ変更 | ✅ | `layer.opacity`/`visible`/`set_blend_mode()` (v0.7.0) |
+| 編集保存: レイヤ改名 | ✅ | `layer.name_unicode = ...` / `set_layer_name()` — mask/blend は生バイト保持 (v0.7.0) |
+| 編集保存: マスク/効果の値編集 | ❌ | 改名以外の extra-data 項目編集は未実装 (ROADMAP E3 の続き) |
 | 編集保存: レイヤ削除/並べ替え/複製 | ✅ | `delete_layer`/`move_layer`/`duplicate_layer` (v0.7.0) |
 | 編集保存: 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる (v0.7.0) |
 | 編集保存: 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` — 8bit RGB のみ (v0.7.0) |

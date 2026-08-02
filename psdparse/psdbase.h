@@ -134,6 +134,33 @@ namespace psd {
   }
 #endif
 
+  // UTF-8 (std::string) → UTF-16 (host-order u16str)。luni 名の生成等に使う。
+  // 不正バイトはスキップ。BMP 外はサロゲートペアに分解。
+  inline u16str utf8ToU16(const std::string &s) {
+    u16str out;
+    size_t i = 0, n = s.size();
+    while (i < n) {
+      unsigned char c = (unsigned char)s[i];
+      uint32_t cp; int len;
+      if (c < 0x80)             { cp = c;        len = 1; }
+      else if ((c >> 5) == 0x6) { cp = c & 0x1f; len = 2; }
+      else if ((c >> 4) == 0xe) { cp = c & 0x0f; len = 3; }
+      else if ((c >> 3) == 0x1e){ cp = c & 0x07; len = 4; }
+      else { i++; continue; }
+      if (i + (size_t)len > n) break;
+      for (int k = 1; k < len; k++)
+        cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3f);
+      i += (size_t)len;
+      if (cp <= 0xffff) out.push_back((char16_t)cp);
+      else {
+        cp -= 0x10000;
+        out.push_back((char16_t)(0xd800 + (cp >> 10)));
+        out.push_back((char16_t)(0xdc00 + (cp & 0x3ff)));
+      }
+    }
+    return out;
+  }
+
   inline uint64_t byteSwap64(uint64_t x) {
     return ((x >> 56) |
             ((x >> 40) & 0xff00) |

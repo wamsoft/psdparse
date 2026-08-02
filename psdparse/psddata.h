@@ -357,14 +357,17 @@ namespace psd {
 	};
 
 	struct LayerExtraData {
-		LayerExtraData() : rawBytes(0) {}
-		~LayerExtraData() { delete rawBytes; }
+		LayerExtraData() : rawBytes(0), maskRaw(0), blendRaw(0), useRawBytes(true) {}
+		~LayerExtraData() { delete rawBytes; delete maskRaw; delete blendRaw; }
 		LayerExtraData(const LayerExtraData &self)
 		  : layerMask(self.layerMask),
 		    layerBlendingRange(self.layerBlendingRange),
 		    layerName(self.layerName),
 		    additionalLayers(self.additionalLayers),
-		    rawBytes(self.rawBytes ? self.rawBytes->clone() : 0) {}
+		    rawBytes(self.rawBytes ? self.rawBytes->clone() : 0),
+		    maskRaw(self.maskRaw ? self.maskRaw->clone() : 0),
+		    blendRaw(self.blendRaw ? self.blendRaw->clone() : 0),
+		    useRawBytes(self.useRawBytes) {}
 		LayerExtraData &operator=(const LayerExtraData &self) {
 		    if (this == &self) return *this;
 		    layerMask = self.layerMask;
@@ -373,6 +376,11 @@ namespace psd {
 		    additionalLayers = self.additionalLayers;
 		    delete rawBytes;
 		    rawBytes = self.rawBytes ? self.rawBytes->clone() : 0;
+		    delete maskRaw;
+		    maskRaw = self.maskRaw ? self.maskRaw->clone() : 0;
+		    delete blendRaw;
+		    blendRaw = self.blendRaw ? self.blendRaw->clone() : 0;
+		    useRawBytes = self.useRawBytes;
 		    return *this;
 		}
 
@@ -383,6 +391,14 @@ namespace psd {
 		// extraSize 全域の生バイト (ラウンドトリップ save 用)。parse 時に
 		// cloneRange(0, extraSize) でキャプチャ。
 		IteratorBase *rawBytes;
+		// layer mask / blending ranges サブブロックの生バイト (4byte 長の後の本体)。
+		// extra data をフィールドから再構築 (改名等) する際、マスク/ブレンド範囲は
+		// これをそのまま転送してバイト一致を保つ。空ブロックのときは 0。
+		IteratorBase *maskRaw;
+		IteratorBase *blendRaw;
+		// true: rawBytes をそのまま書き出す (未編集)。
+		// false: フィールド (名前 + maskRaw/blendRaw + additionalLayers) から再構築。
+		bool useRawBytes;
 	};
 
 	// チャンネル情報

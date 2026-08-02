@@ -586,9 +586,17 @@ PYBIND11_MODULE(psdparse, m) {
     .def_property_readonly("name", [](const psd::LayerInfo &l) {
         return l.extraData.layerName;  // std::string (raw bytes, original encoding)
     })
-    .def_property_readonly("name_unicode", [](const psd::LayerInfo &l) {
-        return u16ToStr(l.layerNameUnicode);
-    })
+    .def_property("name_unicode",
+        [](const psd::LayerInfo &l) { return u16ToStr(l.layerNameUnicode); },
+        [](psd::LayerInfo &l, const std::string &s) {
+            l.layerName            = s;                 // pascal (UTF-8 bytes)
+            l.layerNameUnicode     = psd::utf8ToU16(s); // luni (Unicode)
+            l.extraData.layerName  = s;
+            l.extraData.useRawBytes = false;            // reconstruct extra data on save
+        },
+        "Unicode layer name (luni). Writable — assigning renames the layer "
+        "(updates both the Pascal name and the luni block; extra data is "
+        "reconstructed on save with mask/blending ranges preserved).")
     .def_readonly("parent_index", &psd::LayerInfo::parentIndex,
         "Index into PSDFile.layers of the enclosing folder layer, or -1 for "
         "top-level layers. Build the layer tree from these.")
@@ -711,6 +719,14 @@ PYBIND11_MODULE(psdparse, m) {
          "layer references `source`'s pixel/extra bytes lazily, so `source` is "
          "kept alive until this file is garbage-collected (do not let it close "
          "before save()). Assumes matching color mode and bit depth.")
+    .def("set_layer_name",
+         [](psd::PSDFile &self, int index, const std::string &name) {
+            if (!self.setLayerName(index, name.c_str()))
+                throw std::out_of_range("layer index out of range");
+         },
+         py::arg("index"), py::arg("name"),
+         "Rename layer `index` (updates Pascal + luni names). Equivalent to "
+         "`layer.name_unicode = name`. Re-serialized on save().")
     .def("create_blank",
          [](psd::PSDFile &self, int width, int height, int mode) {
             if (!self.createBlank(width, height, mode))

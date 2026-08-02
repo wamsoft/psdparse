@@ -89,6 +89,12 @@ namespace psd {
                   const uint8_t *bgra, int width, int height,
                   int blendModeKey = 'norm', int opacity = 255, int destIndex = -1);
 
+    // --- extra data 項目編集 (E3) -------------------------------------------
+    // レイヤ index を改名する。pascal 名 (UTF-8 バイト) と luni (Unicode) の
+    // 両方を更新し、save() 時に extra data をフィールドから再構築する
+    // (mask/blending ranges は生バイトを保持するので不変)。失敗で false。
+    bool setLayerName(int index, const char *nameUtf8);
+
     // --- 新規作成 (E5) ------------------------------------------------------
     // この PSDFile を空の 8bit RGB 文書 (幅×高さ, 白の合成画像) として初期化する。
     // 以後 addLayer(...) でレイヤを足して save() できる。成功で true。

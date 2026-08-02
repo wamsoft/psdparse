@@ -1108,31 +1108,6 @@ namespace psd {
     v.push_back((uint8_t)(x >> 8));  v.push_back((uint8_t)(x & 0xff));
   }
 
-  // UTF-8 → UTF-16 (host-order u16str)。luni ブロック用。不正バイトはスキップ。
-  u16str utf8ToU16(const std::string &s) {
-    u16str out;
-    size_t i = 0, n = s.size();
-    while (i < n) {
-      unsigned char c = (unsigned char)s[i];
-      uint32_t cp; int len;
-      if (c < 0x80)            { cp = c;        len = 1; }
-      else if ((c >> 5) == 0x6){ cp = c & 0x1f; len = 2; }
-      else if ((c >> 4) == 0xe){ cp = c & 0x0f; len = 3; }
-      else if ((c >> 3) == 0x1e){cp = c & 0x07; len = 4; }
-      else { i++; continue; }
-      if (i + (size_t)len > n) break;
-      for (int k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3f);
-      i += (size_t)len;
-      if (cp <= 0xffff) out.push_back((char16_t)cp);
-      else {
-        cp -= 0x10000;
-        out.push_back((char16_t)(0xd800 + (cp >> 10)));
-        out.push_back((char16_t)(0xdc00 + (cp & 0x3ff)));
-      }
-    }
-    return out;
-  }
-
   // BGRA を 4 チャンネル (-1:A, 0:R, 1:G, 2:B) に分解して RLE 符号化し lay に設定。
   void buildLayerChannels(LayerInfo &lay, const uint8_t *bgra, int w, int h) {
     int px = w * h;
@@ -1239,6 +1214,17 @@ namespace psd {
     layerList.insert(layerList.begin() + pos, lay);
     layersDirty = true;
     return pos;
+  }
+
+  bool PSDFile::setLayerName(int index, const char *nameUtf8) {
+    if (index < 0 || index >= (int)layerList.size()) return false;
+    LayerInfo &lay = layerList[(size_t)index];
+    std::string s = nameUtf8 ? nameUtf8 : "";
+    lay.layerName            = s;
+    lay.layerNameUnicode     = utf8ToU16(s);
+    lay.extraData.layerName  = s;
+    lay.extraData.useRawBytes = false;   // save 時にフィールドから再構築
+    return true;
   }
 
   bool PSDFile::getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte)

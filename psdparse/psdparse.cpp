@@ -500,12 +500,14 @@ void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex) {
   // layer mask
   {
     uint32_t s = (uint32_t)r.getInt32(true);
+    if (s > 0) ex.maskRaw = r.cloneRange(0, (int)s);   // 生バイトを保持 (再構築用)
     SubBlock blk(r, (int)s);
     parseLayerMask(blk.reader(), ex.layerMask, (int)s);
   }
   // layer blending ranges
   {
     uint32_t s = (uint32_t)r.getInt32(true);
+    if (s > 0) ex.blendRaw = r.cloneRange(0, (int)s);  // 生バイトを保持 (再構築用)
     SubBlock blk(r, (int)s);
     if (s > 0) parseLayerBlendingRange(blk.reader(), ex.layerBlendingRange);
     else       std::memset(&ex.layerBlendingRange, 0, sizeof(LayerBlendingRange));

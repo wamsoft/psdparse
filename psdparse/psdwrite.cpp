@@ -124,6 +124,53 @@ inline void writeImageResources(WriterBase &w, const Data &data) {
   w.seek(bodyEnd);
 }
 
+// luni (Unicode layer name) 追加情報ブロックを書く。
+inline void writeLuniBlock(WriterBase &w, const u16str &name) {
+  w.putData("8BIM", 4);
+  w.putUint32BE((uint32_t)'luni');
+  uint32_t dataLen = 4 + 2 * (uint32_t)name.size();  // charCount(4) + UTF16BE (常に偶数)
+  w.putUint32BE(dataLen);
+  w.putUint32BE((uint32_t)name.size());
+  for (char16_t ch : name) w.putUint16BE((uint16_t)ch);
+}
+
+// extra data をフィールドから再構築する (改名等で useRawBytes==false のとき)。
+// mask / blending ranges は生バイト (maskRaw/blendRaw) をそのまま転送し、
+// pascal 名を書き直し、additional info は各エントリを複製する。ただし 'luni' は
+// lay.layerNameUnicode で置き換える (無ければ末尾に追加)。
+inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
+  const LayerExtraData &ex = lay.extraData;
+  // layer mask
+  if (ex.maskRaw) { w.putUint32BE((uint32_t)ex.maskRaw->size()); w.copyAllFrom(ex.maskRaw); }
+  else            { w.putUint32BE(0); }
+  // blending ranges
+  if (ex.blendRaw) { w.putUint32BE((uint32_t)ex.blendRaw->size()); w.copyAllFrom(ex.blendRaw); }
+  else             { w.putUint32BE(0); }
+  // pascal 名 (長さバイト込みで 4 バイト境界へパディング)
+  std::string pn = ex.layerName;
+  if (pn.size() > 255) pn.resize(255);
+  w.putCh((int)pn.size());
+  if (!pn.empty()) w.putData(pn.data(), pn.size());
+  int total = 1 + (int)pn.size();
+  int pad = (4 - (total & 3)) & 3;
+  w.putZero((size_t)pad);
+  // additional layer info
+  bool wroteLuni = false;
+  for (const auto &a : ex.additionalLayers) {
+    if (a.key == 'luni') {
+      writeLuniBlock(w, lay.layerNameUnicode);   // 新しい名前で置換
+      wroteLuni = true;
+    } else {
+      w.putData(a.sigType == 1 ? "8B64" : "8BIM", 4);
+      w.putUint32BE((uint32_t)a.key);
+      w.putUint32BE((uint32_t)a.size);
+      if (a.data) w.copyAllFrom(a.data);
+    }
+  }
+  if (!wroteLuni && !lay.layerNameUnicode.empty())
+    writeLuniBlock(w, lay.layerNameUnicode);
+}
+
 inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {
   w.putInt32BE(lay.top);
   w.putInt32BE(lay.left);
@@ -147,8 +194,10 @@ inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {
   int64_t extraSizePos = w.tell();
   w.putUint32BE(0); // placeholder
   int64_t extraStart = w.tell();
-  if (lay.extraData.rawBytes) {
-    w.copyAllFrom(lay.extraData.rawBytes);
+  if (lay.extraData.useRawBytes && lay.extraData.rawBytes) {
+    w.copyAllFrom(lay.extraData.rawBytes);       // 未編集: 生バイトをそのまま
+  } else {
+    writeLayerExtraFromFields(w, lay);           // 編集済み: フィールドから再構築
   }
   int64_t extraEnd = w.tell();
   w.seek(extraSizePos);
