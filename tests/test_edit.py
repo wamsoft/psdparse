@@ -91,6 +91,41 @@ def test_duplicate_layer(psd_group, tmp_path):
     assert _hash(q.layer_image(6, "image")) == src_hash
 
 
+def _assert_ids_distinct(p):
+    """All positive layer IDs in the document must be unique."""
+    ids = [l.layer_id for l in p.layers if l.layer_id > 0]
+    assert len(ids) == len(set(ids)), f"duplicate layer ids: {sorted(ids)}"
+
+
+def test_duplicate_layer_assigns_fresh_id(psd_group, tmp_path):
+    # Photoshop assigns a NEW lyid when duplicating; copying it verbatim breaks
+    # downstream tools that use lyid as a persistent layer identity.
+    src_id = psd_group.layers[5].layer_id
+    new_index = psd_group.duplicate_layer(5)
+    new_id = psd_group.layers[new_index].layer_id
+    assert new_id != src_id
+    _assert_ids_distinct(psd_group)
+    q = _reload(psd_group, tmp_path)          # lyid block must be rewritten too
+    assert q.layers[new_index].layer_id == new_id
+    assert q.layers[5].layer_id == src_id
+    _assert_ids_distinct(q)
+
+
+def test_duplicate_layer_ids_distinct_psd_tools(psd_group, tmp_path):
+    import pytest
+    PSDImage = pytest.importorskip("psd_tools").PSDImage
+    psd_group.duplicate_layer(5)
+    psd_group.duplicate_layer(5)              # two copies of the same source
+    dst = tmp_path / "dup.psd"
+    assert psd_group.save(str(dst))
+    from psd_tools.constants import Tag
+    img = PSDImage.open(str(dst))
+    records = img._record.layer_and_mask_information.layer_info.layer_records
+    ids = [r.tagged_blocks.get_data(Tag.LAYER_ID, None) for r in records]
+    ids = [i for i in ids if i is not None and i > 0]
+    assert len(ids) == len(set(ids)), f"duplicate layer ids: {sorted(ids)}"
+
+
 # --- E2: move --------------------------------------------------------------
 
 def test_move_layer(psd_group, tmp_path):
@@ -114,6 +149,16 @@ def test_copy_layer_from(psd_group, psd_maskparams, tmp_path):
     assert len(q.layers) == n0 + 1
     assert q.layers[new_index].name_unicode == src_name
     assert _hash(q.layer_image(new_index, "image")) == src_hash
+
+
+def test_copy_layer_from_assigns_fresh_id(psd_group, psd_maskparams, tmp_path):
+    # The imported layer's lyid must be unique within the DESTINATION document,
+    # regardless of what id it carried in the source.
+    new_index = psd_group.copy_layer_from(psd_maskparams, 0)
+    _assert_ids_distinct(psd_group)
+    q = _reload(psd_group, tmp_path)
+    assert q.layers[new_index].layer_id == psd_group.layers[new_index].layer_id
+    _assert_ids_distinct(q)
 
 
 def test_copy_survives_source_gc(psd_group, sample_maskparams_psd, tmp_path):

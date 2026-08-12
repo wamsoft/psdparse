@@ -3,12 +3,12 @@
 For a feature-by-feature account of what is and isn't supported today, see
 [SUPPORT.md](SUPPORT.md). This file tracks planned work.
 
-## Current state (2026-08-02, v0.8.0)
+## Current state (2026-08-12, v0.8.1)
 
 - ✅ Pure C++17 parser (no Boost)
 - ✅ mmap + StreamReader / Source abstraction
 - ✅ Python bindings (pybind11)
-- ✅ pytest regression suite (137 tests)
+- ✅ pytest regression suite (140 tests)
 - ✅ Python composite recipes (`examples/`) + `set_merged_image`; layer comps exposed (`layer.comp_states`)
 - ✅ Round-trip PSD save (byte-identical)
 - ✅ Edit & save: structure / pixels / mask / parameters / effects / text / new-from-scratch (E1–E6, byte-exact re-serialization)
@@ -91,6 +91,20 @@ Editing text content/style means writing the `TySh` block back: re-serializing t
 
 ## Other future work
 
+- ✅ **`duplicate_layer` assigns a fresh `lyid`.** *Done 2026-08-12.* The
+  duplicated layer used to copy the source's `lyid` (layer ID) verbatim, so the
+  output PSD contained duplicate layer IDs — Photoshop itself assigns a *new*
+  ID when duplicating. Downstream tools that use `lyid` as a persistent layer
+  identity (e.g. elements_console's uitool reference resolution) then saw
+  ambiguous matches. Fix (`psdfile.cpp`): `assignFreshLayerId` sets
+  `layerId = max existing lyid + 1` and replaces (or appends) the `lyid`
+  additional-info entry on the copy, flipping `useRawBytes=false` so save
+  re-serializes it; applied in both `duplicateLayer` and `copyLayerFrom` (the
+  latter picks an ID unique within the *destination* document). `add_layer`
+  already picked max+1 — verified. Tests (`tests/test_edit.py`): duplicate →
+  all `layer.layer_id` distinct → save → reload → still distinct; double
+  duplicate cross-checked via psd-tools tagged blocks; `copy_layer_from`
+  uniqueness in the destination.
 - ✅ **Text layer content extraction (`TySh` type-tool additional info).** *Done 2026-07-27.* `lay.text` returns `{"text", "orientation", "justification", "transform", "runs":[{"length","font","size_px","color","tracking","kerning","auto_kerning"}]}` (or `None` for non-text layers). Implementation: `psddesc` now reads `tdta` raw data (length-prefixed), `loadLayerTypeTool` (`psdlayer.cpp`) parses the `TySh` header + text descriptor, and `psdengine.cpp` parses the embedded Adobe *EngineData* mini-language (FontSet / StyleRun / ParagraphRun) into per-run styling. Validated against `tests/data/fontsample.psd` (multi-font/size/color, **vertical**, emoji, tracking) — see `tests/test_text.py`.
 
   **Deferred (need targeted sample PSDs, next turn):**

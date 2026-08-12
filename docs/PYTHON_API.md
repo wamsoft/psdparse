@@ -331,6 +331,9 @@ new_i = p.copy_layer_from(src, j, dest_index=-1)  # copy layer j from another PS
 ```
 
 Notes:
+- `duplicate_layer` / `copy_layer_from` assign the copy a **fresh `layer_id`**
+  (max existing lyid + 1, like Photoshop) so layer IDs stay unique within the
+  document; the `lyid` additional-info block is rewritten on save.
 - `delete_layer` / `duplicate_layer` on a single layer are exact. Deleting **one
   half of a group's FOLDER/HIDDEN divider pair unbalances the group** — delete
   whole groups (both dividers + contents) for clean nesting. (Unbalanced results

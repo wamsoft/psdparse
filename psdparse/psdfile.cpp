@@ -321,6 +321,38 @@ bool PSDFile::setAdditionalInfoBytes(int index, int key, const uint8_t *data, in
 
 // --- 構造編集 --------------------------------------------------------------
 
+namespace {
+
+// 文書内の既存 lyid の最大値 + 1 (lyid 無しレイヤは layerId<=0 なので無視される)。
+int nextLayerId(const std::vector<LayerInfo> &layers) {
+  int maxId = 0;
+  for (const auto &l : layers) if (l.layerId > maxId) maxId = l.layerId;
+  return maxId + 1;
+}
+
+// レイヤに新しい lyid を割り当て、extra data の 'lyid' ブロックも新値で置き換える。
+// Photoshop は複製時に新 ID を振るので、複製系 API はこれを通す。
+void assignFreshLayerId(LayerInfo &lay, int newId) {
+  lay.layerId = newId;
+  auto buf = std::make_shared<std::vector<uint8_t>>();
+  buf->push_back((uint8_t)(newId >> 24)); buf->push_back((uint8_t)(newId >> 16));
+  buf->push_back((uint8_t)(newId >> 8));  buf->push_back((uint8_t)(newId & 0xff));
+  LayerExtraData &ex = lay.extraData;
+  for (auto &a : ex.additionalLayers) {
+    if (a.key == 'lyid') {
+      delete a.data;
+      a.data = new VectorReader(buf);
+      a.size = 4;
+      ex.useRawBytes = false;
+      return;
+    }
+  }
+  ex.additionalLayers.push_back(AdditionalLayerInfo(0, 'lyid', 4, new VectorReader(buf)));
+  ex.useRawBytes = false;
+}
+
+}  // anonymous namespace
+
 bool PSDFile::deleteLayer(int index) {
   if (index < 0 || index >= (int)layerList.size()) return false;
   layerList.erase(layerList.begin() + index);
@@ -342,6 +374,7 @@ bool PSDFile::moveLayer(int from, int to) {
 int PSDFile::duplicateLayer(int index) {
   if (index < 0 || index >= (int)layerList.size()) return -1;
   LayerInfo copy = layerList[(size_t)index];
+  assignFreshLayerId(copy, nextLayerId(layerList));  // Photoshop 同様、複製は新 ID
   layerList.insert(layerList.begin() + index + 1, copy);
   layersDirty = true;
   return index + 1;
@@ -352,6 +385,7 @@ int PSDFile::copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex) {
   LayerInfo copy = src.layerList[(size_t)srcIndex]; // channel/extra は src を参照
   copy.owner  = this;   // owner はどこからも参照されないが整合のため付け替え
   copy.parent = nullptr;
+  assignFreshLayerId(copy, nextLayerId(layerList)); // 取り込み先の文書内で一意な ID
   int pos = (destIndex < 0 || destIndex > (int)layerList.size())
               ? (int)layerList.size() : destIndex;
   layerList.insert(layerList.begin() + pos, copy);

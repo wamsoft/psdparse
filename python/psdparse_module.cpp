@@ -922,7 +922,8 @@ PYBIND11_MODULE(psdparse, m) {
          },
          py::arg("index"),
          "Duplicate the layer at `index` (inserted right after it). Returns the "
-         "new layer's index. The copy shares the source's pixel bytes lazily.")
+         "new layer's index. The copy shares the source's pixel bytes lazily "
+         "but gets a fresh layer_id (max existing lyid + 1, like Photoshop).")
     .def("copy_layer_from",
          [](psd::PSDFile &self, const psd::PSDFile &src, int src_index, int dest_index) {
             int r = self.copyLayerFrom(src, src_index, dest_index);
@@ -935,7 +936,8 @@ PYBIND11_MODULE(psdparse, m) {
          "`dest_index` (default: append). Returns the new index. The copied "
          "layer references `source`'s pixel/extra bytes lazily, so `source` is "
          "kept alive until this file is garbage-collected (do not let it close "
-         "before save()). Assumes matching color mode and bit depth.")
+         "before save()). The copy gets a layer_id unique within this document. "
+         "Assumes matching color mode and bit depth.")
     .def("set_effects",
          [](psd::PSDFile &self, int index, py::dict changes) {
             editLayerDescriptor(self, index, 'lfx2', 8, changes);
