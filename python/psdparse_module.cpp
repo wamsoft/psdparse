@@ -508,67 +508,26 @@ void editLayerDescriptor(psd::PSDFile &self, int index, int key, int skip,
   throw std::runtime_error("layer has no descriptor block for that key");
 }
 
-// Edit a text layer's TySh block: parse it (version/transform prefix +
-// descriptor + warp/bounds suffix), transform the embedded EngineData via
-// `editEngine`, optionally rewrite the 'Txt ' string, then re-serialize TySh
-// (prefix + descriptor + suffix) and swap it into the layer's extra data.
-void editTextLayer(psd::PSDFile &self, int index,
-                   const std::function<bool(const std::string &, std::string &)> &editEngine,
-                   const psd::u16str *newTxt) {
-  if (index < 0 || index >= (int)self.layerList.size())
-    throw std::out_of_range("layer index out of range");
-  psd::LayerInfo &lay = self.layerList[(size_t)index];
-  for (auto &a : lay.extraData.additionalLayers) {
-    if (a.key != 'TySh' || !a.data) continue;
-    psd::IteratorBase *rd = a.data->clone();
-    rd->init();
-    // prefix: version(2) + transform(6*8) + textVer(2) + descVer(4) = 56
-    std::vector<uint8_t> prefix(56);
-    if (rd->getData(prefix.data(), 56) != 56) { delete rd; throw std::runtime_error("TySh block too short"); }
-    psd::Descriptor td;
-    td.load(rd);
-    int restLen = rd->rest();
-    std::vector<uint8_t> suffix((size_t)(restLen > 0 ? restLen : 0));
-    if (restLen > 0) rd->getData(suffix.data(), restLen);   // warp + bounds
-    delete rd;
-
-    auto *eng = dynamic_cast<psd::DescriptorRawData*>(td.findItem("EngineData"));
-    if (!eng) throw std::runtime_error("text layer has no EngineData");
-    std::string newEngine;
-    if (!editEngine(eng->bytes, newEngine))
-      throw std::runtime_error("failed to edit EngineData");
-    eng->bytes = newEngine;
-    if (newTxt) {
-      if (auto *txt = dynamic_cast<psd::DescriptorString*>(td.findItem("Txt ")))
-        txt->val = *newTxt;
-    }
-
-    std::vector<uint8_t> buf;
-    psd::MemoryWriter w(buf);
-    w.putData(prefix.data(), prefix.size());
-    psd::writeDescriptorBody(w, &td);
-    if (!suffix.empty()) w.putData(suffix.data(), suffix.size());
-    self.setAdditionalInfoBytes(index, 'TySh', buf.data(), (int)buf.size());
-    return;
-  }
-  throw std::runtime_error("layer is not a text layer (no TySh block)");
+// Text-layer editing lives in the C++ library (PSDFile::setLayerText /
+// setLayerRunStyle / editTextLayer, psdfile.cpp). These wrappers only turn the
+// bool + message result into a Python exception.
+void raiseIfFailed(bool ok, const std::string &err) {
+  if (ok) return;
+  if (err == "layer index out of range") throw std::out_of_range(err);
+  throw std::runtime_error(err.empty() ? "text layer edit failed" : err);
 }
 
 // Replace a text layer's body text (+ collapse run lengths, update 'Txt ').
 void setLayerText(psd::PSDFile &self, int index, const psd::u16str &newText) {
-  editTextLayer(self, index,
-    [&](const std::string &in, std::string &out) {
-      return psd::editEngineDataText(in.data(), in.size(), newText, out);
-    }, &newText);
+  std::string err;
+  raiseIfFailed(self.setLayerText(index, newText, &err), err);
 }
 
 // Edit an existing run's style values (no text/length change).
 void setLayerRunStyle(psd::PSDFile &self, int index, int runIndex,
                       const psd::RunStyleEdit &edit) {
-  editTextLayer(self, index,
-    [&](const std::string &in, std::string &out) {
-      return psd::editEngineDataRunStyle(in.data(), in.size(), runIndex, edit, out);
-    }, nullptr);
+  std::string err;
+  raiseIfFailed(self.setLayerRunStyle(index, runIndex, edit, &err), err);
 }
 
 // Raw bytes of an additional-layer-info block (payload after the size field),

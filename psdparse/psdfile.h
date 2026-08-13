@@ -3,9 +3,12 @@
 
 #include "psdbase.h"
 #include "psddata.h"
+#include "psdengine.h"   // RunStyleEdit (setLayerRunStyle 用)
 #include <cstdint>
+#include <functional>
 #include <istream>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace psd {
@@ -114,6 +117,41 @@ namespace psd {
     // 効果 (lfx2) の再直列化バイトの流し込み等に使う。extra data は save 時に
     // フィールドから再構築される (useRawBytes=false)。失敗で false。
     bool setAdditionalInfoBytes(int index, int key, const uint8_t *data, int size);
+
+    // --- テキストレイヤ編集 (E6) --------------------------------------------
+    // テキストレイヤの 'TySh' ブロックは
+    //   prefix (56B: version + transform + textVer + descVer)
+    //   + descriptor ('Txt ' と EngineData を含む)
+    //   + suffix (warp + bounds)
+    // という構造で、本文の実体は descriptor 内の EngineData (Adobe 独自の
+    // ミニ言語) 側にある。以下の API は EngineData を psdengine の
+    // editEngineData* で書き換えてから TySh を再直列化し、
+    // setAdditionalInfoBytes で差し替える。触っていないレイヤのバイトは
+    // そのまま保たれる。
+    //
+    // 失敗時は errorOut (非 null なら) に理由を入れて false を返す。
+
+    // 本文を newText へ差し替える (段落区切りは \r)。スタイルは先頭ランに
+    // 畳まれ、descriptor の 'Txt ' も同じ内容へ更新される。
+    bool setLayerText(int index, const u16str &newText,
+                      std::string *errorOut = nullptr);
+    // UTF-8 版。内部で UTF-16 へ変換する。
+    bool setLayerTextUtf8(int index, const char *utf8,
+                          std::string *errorOut = nullptr);
+
+    // 既存ラン runIndex のスタイル値を編集する (本文と長さは変えない)。
+    // RunStyleEdit の has* が true のフィールドだけ上書きされる。
+    bool setLayerRunStyle(int index, int runIndex, const RunStyleEdit &edit,
+                          std::string *errorOut = nullptr);
+
+    // 上記 2 つの共通実体。EngineData のバイト列を editEngine で変換する。
+    // 独自の EngineData 変換を差し込みたいとき用。newTxt が非 null なら
+    // descriptor の 'Txt ' もその値へ更新する。
+    bool editTextLayer(int index,
+                       const std::function<bool(const std::string &in,
+                                                std::string &out)> &editEngine,
+                       const u16str *newTxt = nullptr,
+                       std::string *errorOut = nullptr);
 
     // 合成済み画像 (merged/composite セクション) を差し替える。入力は BGRA
     // インターリーブ (width*height*4)、canvas サイズ一致が必須。header.channels に

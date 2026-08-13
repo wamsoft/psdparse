@@ -2,6 +2,8 @@
 #include "psdparse.h"
 #include "psdfile.h"
 #include "psdwrite.h"
+#include "psddesc.h"
+#include "psdengine.h"
 
 #include <cstring>
 #include <iostream>
@@ -317,6 +319,92 @@ bool PSDFile::setAdditionalInfoBytes(int index, int key, const uint8_t *data, in
   ex.additionalLayers.push_back(AdditionalLayerInfo(0, key, size, new VectorReader(buf)));
   ex.useRawBytes = false;
   return true;
+}
+
+// --- テキストレイヤ編集 ------------------------------------------------------
+//
+// TySh ブロックの構造:
+//   prefix (56 バイト)  version(2) + transform(6*8) + textVer(2) + descVer(4)
+//   descriptor          'Txt ' (併記される本文) と EngineData (実体) を含む
+//   suffix              warp descriptor + bounds
+//
+// 本文の実体は EngineData 側 (Adobe 独自のミニ言語) にあり、'Txt ' は
+// Photoshop が併せて持っている複製。両方を更新しないと開いたときに食い違う。
+
+bool PSDFile::editTextLayer(int index,
+                            const std::function<bool(const std::string &,
+                                                     std::string &)> &editEngine,
+                            const u16str *newTxt,
+                            std::string *errorOut) {
+  auto fail = [&](const char *msg) {
+    if (errorOut) *errorOut = msg;
+    return false;
+  };
+  if (index < 0 || index >= (int)layerList.size()) return fail("layer index out of range");
+  if (!editEngine) return fail("no edit function given");
+
+  LayerInfo &lay = layerList[(size_t)index];
+  for (auto &a : lay.extraData.additionalLayers) {
+    if (a.key != 'TySh' || !a.data) continue;
+
+    IteratorBase *rd = a.data->clone();
+    rd->init();
+    std::vector<uint8_t> prefix(56);
+    if (rd->getData(prefix.data(), 56) != 56) {
+      delete rd;
+      return fail("TySh block too short");
+    }
+    Descriptor td;
+    td.load(rd);
+    int restLen = rd->rest();
+    std::vector<uint8_t> suffix((size_t)(restLen > 0 ? restLen : 0));
+    if (restLen > 0) rd->getData(suffix.data(), restLen);   // warp + bounds
+    delete rd;
+
+    auto *eng = dynamic_cast<DescriptorRawData *>(td.findItem("EngineData"));
+    if (!eng) return fail("text layer has no EngineData");
+
+    std::string newEngine;
+    if (!editEngine(eng->bytes, newEngine)) return fail("failed to edit EngineData");
+    eng->bytes = newEngine;
+
+    if (newTxt) {
+      if (auto *txt = dynamic_cast<DescriptorString *>(td.findItem("Txt ")))
+        txt->val = *newTxt;
+    }
+
+    std::vector<uint8_t> buf;
+    MemoryWriter w(buf);
+    w.putData(prefix.data(), prefix.size());
+    writeDescriptorBody(w, &td);
+    if (!suffix.empty()) w.putData(suffix.data(), suffix.size());
+    if (!setAdditionalInfoBytes(index, 'TySh', buf.data(), (int)buf.size()))
+      return fail("could not store the rebuilt TySh block");
+
+    // パース済みの textData も追随させる (再ロードなしで参照できるように)
+    if (newTxt) lay.textData.text = *newTxt;
+    return true;
+  }
+  return fail("layer is not a text layer (no TySh block)");
+}
+
+bool PSDFile::setLayerText(int index, const u16str &newText, std::string *errorOut) {
+  return editTextLayer(index,
+    [&](const std::string &in, std::string &out) {
+      return editEngineDataText(in.data(), in.size(), newText, out);
+    }, &newText, errorOut);
+}
+
+bool PSDFile::setLayerTextUtf8(int index, const char *utf8, std::string *errorOut) {
+  return setLayerText(index, utf8ToU16(utf8 ? utf8 : ""), errorOut);
+}
+
+bool PSDFile::setLayerRunStyle(int index, int runIndex, const RunStyleEdit &edit,
+                               std::string *errorOut) {
+  return editTextLayer(index,
+    [&](const std::string &in, std::string &out) {
+      return editEngineDataRunStyle(in.data(), in.size(), runIndex, edit, out);
+    }, nullptr, errorOut);
 }
 
 // --- 構造編集 --------------------------------------------------------------
