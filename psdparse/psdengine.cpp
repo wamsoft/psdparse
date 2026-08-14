@@ -400,6 +400,12 @@ namespace {
             if (krn && krn->kind == Node::NUMBER) r.kerning = (int)krn->num;
             Node *akn = dget(ssd, "AutoKerning");
             if (akn && akn->kind == Node::BOOL) r.autoKerning = akn->bl;
+            Node *fb = dget(ssd, "FauxBold");
+            if (fb && fb->kind == Node::BOOL) r.bold = fb->bl;
+            Node *fi = dget(ssd, "FauxItalic");
+            if (fi && fi->kind == Node::BOOL) r.italic = fi->bl;
+            Node *ul = dget(ssd, "Underline");
+            if (ul && ul->kind == Node::BOOL) r.underline = ul->bl;
             Node *vals = dget(dget(ssd, "FillColor"), "Values");
             if (vals && vals->kind == Node::ARRAY && vals->arr.size() >= 4) {
               // EngineData の FillColor/Values は [A R G B]。RGBA へ並べ替える。

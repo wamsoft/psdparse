@@ -437,13 +437,17 @@ namespace psd {
     int         tracking;    // トラッキング (字送り, 1/1000 em)
     int         kerning;     // 手動カーニング
     bool        autoKerning; // 自動カーニング (メトリクス/オプティカル) 有効
+    bool        bold;        // FauxBold (合成ボールド)
+    bool        italic;      // FauxItalic (合成イタリック)
+    bool        underline;   // Underline
     bool        sizeInherited; // FontSize を既定 StyleSheet から継承したか。
                                // 継承分は nominal pt なので dpi/72 で px 化する
                                // (明示 run の FontSize は既に解決済み px)。内部用。
 
     TextStyleRun()
       : length(0), fontSize(0.0f), color{0,0,0,1}, hasColor(false),
-        tracking(0), kerning(0), autoKerning(false), sizeInherited(false) {}
+        tracking(0), kerning(0), autoKerning(false),
+        bold(false), italic(false), underline(false), sizeInherited(false) {}
   };
 
   // 段落単位の情報 (EngineDict/ParagraphRun)。 段落は本文中の改行 (\r) 区切り。
