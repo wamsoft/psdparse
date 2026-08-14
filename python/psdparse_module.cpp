@@ -60,6 +60,9 @@ py::object layerText(const psd::LayerInfo &l) {
     rd["tracking"]     = r.tracking;       // 1/1000 em
     rd["kerning"]      = r.kerning;        // manual kerning
     rd["auto_kerning"] = r.autoKerning;    // metrics/optical kerning on
+    rd["bold"]         = r.bold;           // FauxBold
+    rd["italic"]       = r.italic;         // FauxItalic
+    rd["underline"]    = r.underline;
     if (r.hasColor)
       rd["color"] = py::make_tuple(r.color[0], r.color[1], r.color[2], r.color[3]); // RGBA 0..1
     else
