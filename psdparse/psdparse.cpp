@@ -288,31 +288,7 @@ Data::processParsed()
     }
   } // end of additionals
 
-  // グループ情報をリンク
-  std::stack<LayerInfo*> parent;
-  std::stack<int>        parentIdx;
-  parent.push(0);
-  parentIdx.push(-1);
-  for (int i = (int)layerList.size() - 1; i >= 0; i--) {
-    LayerInfo *layer = &layerList[i];
-    layer->parent = parent.top();
-    layer->parentIndex = parentIdx.top();
-    switch (layer->layerType) {
-    case LAYER_TYPE_FOLDER:
-      parent.push(layer);
-      parentIdx.push(i);
-      break;
-    case LAYER_TYPE_HIDDEN:
-      // 両スタックとも番兵 (sentinel) を残してガードする。編集で FOLDER/HIDDEN
-      // の対応が崩れた PSD (グループ区切りの片方だけ削除等) でも underflow で
-      // クラッシュしないように。
-      if (parent.size()    > 1) parent.pop();
-      if (parentIdx.size() > 1) parentIdx.pop();
-      break;
-    default:
-      break;
-    }
-  }
+  relinkGroups();
 
   // テキスト run の FontSize を px に正規化する (レイヤ解析後・解像度確定後)。 明示
   // run の FontSize は既に解決済み px だが、 既定 StyleSheet から継承した分は nominal
@@ -646,4 +622,69 @@ bool parsePSD(IteratorBase &reader, Data &data) {
   return true;
 }
 
-} // namespace psd
+// グループ情報 (parent / parentIndex) を layerList の並びから再計算する。
+//
+// layerList は下から上の順で、グループは
+//   [区切り(HIDDEN)] [子...] [フォルダ(FOLDER)]
+// という連続した並びで表現される。末尾から走査して FOLDER で push、
+// HIDDEN で pop することで入れ子を復元する。
+void Data::relinkGroups() {
+  std::stack<LayerInfo*> parent;
+  std::stack<int>        parentIdx;
+  parent.push(0);
+  parentIdx.push(-1);
+  for (int i = (int)layerList.size() - 1; i >= 0; i--) {
+    LayerInfo *layer = &layerList[i];
+    layer->parent = parent.top();
+    layer->parentIndex = parentIdx.top();
+    switch (layer->layerType) {
+    case LAYER_TYPE_FOLDER:
+      parent.push(layer);
+      parentIdx.push(i);
+      break;
+    case LAYER_TYPE_HIDDEN:
+      // 両スタックとも番兵 (sentinel) を残してガードする。編集で FOLDER/HIDDEN
+      // の対応が崩れた PSD (グループ区切りの片方だけ削除等) でも underflow で
+      // クラッシュしないように。
+      if (parent.size()    > 1) parent.pop();
+      if (parentIdx.size() > 1) parentIdx.pop();
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+// index が占める範囲を返す。フォルダなら対応する区切りまで遡る。
+bool Data::groupSpan(int index, int &startOut, int &countOut) const {
+  int n = (int)layerList.size();
+  if (index < 0 || index >= n) return false;
+
+  if (layerList[(size_t)index].layerType != LAYER_TYPE_FOLDER) {
+    startOut = index;
+    countOut = 1;
+    return true;
+  }
+  // 自分より下 (低いインデックス) へ降りて、対応する区切りを探す。
+  // 途中の入れ子グループは FOLDER で深さ +1 / HIDDEN で -1 として読み飛ばす。
+  int depth = 0;
+  for (int i = index - 1; i >= 0; i--) {
+    LayerType t = layerList[(size_t)i].layerType;
+    if (t == LAYER_TYPE_FOLDER) {
+      depth++;
+    } else if (t == LAYER_TYPE_HIDDEN) {
+      if (depth == 0) {
+        startOut = i;
+        countOut = index - i + 1;
+        return true;
+      }
+      depth--;
+    }
+  }
+  // 区切りが見つからない (壊れた PSD)。自分だけを範囲とする。
+  startOut = index;
+  countOut = 1;
+  return true;
+}
+
+}  // namespace psd

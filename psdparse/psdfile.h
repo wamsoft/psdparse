@@ -68,7 +68,21 @@ namespace psd {
     // レイヤを 1 枚削除。index は layerList のインデックス。範囲外で false。
     bool deleteLayer(int index);
     // レイヤを from から to へ移動する (to は削除後リストでの挿入位置)。
+    // フォルダを渡した場合、区切りと中身は付いてこない (塊で動かすなら
+    // moveLayerSibling / moveLayerRange を使う)。
     bool moveLayer(int from, int to);
+
+    // index のレイヤを「同じ階層の隣の兄弟」と入れ替える。
+    // up=true で Photoshop の表示上ひとつ上へ (layerList では後ろへ)。
+    // フォルダは区切り + 中身をまとめた塊として動き、兄弟がフォルダなら
+    // その塊ごと飛び越える。階層をまたぐ移動はしない。
+    // 端まで来ていて動かせない場合や範囲外なら false。
+    // 移動後の自分のインデックスを newIndexOut へ返す。
+    bool moveLayerSibling(int index, bool up, int *newIndexOut = nullptr);
+
+    // layerList 上の [from, from+count) を to の位置へ動かす (低水準)。
+    // to は「取り除く前」のインデックスで指定する。
+    bool moveLayerRange(int from, int count, int to);
     // レイヤを複製し、複製 (元の直後に挿入) の新インデックスを返す。失敗 -1。
     int  duplicateLayer(int index);
     // 別の PSD からレイヤをこのファイルへコピー挿入する。destIndex<0 で末尾。

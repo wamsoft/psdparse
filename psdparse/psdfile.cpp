@@ -521,6 +521,7 @@ bool PSDFile::deleteLayer(int index) {
   if (index < 0 || index >= (int)layerList.size()) return false;
   layerList.erase(layerList.begin() + index);
   layersDirty = true;
+  relinkGroups();          // 並びが変わったので親子関係を貼り直す
   return true;
 }
 
@@ -532,6 +533,90 @@ bool PSDFile::moveLayer(int from, int to) {
   layerList.erase(layerList.begin() + from);
   layerList.insert(layerList.begin() + to, tmp);
   layersDirty = true;
+  relinkGroups();
+  return true;
+}
+
+bool PSDFile::moveLayerRange(int from, int count, int to) {
+  int n = (int)layerList.size();
+  if (from < 0 || count <= 0 || from + count > n) return false;
+  if (to < 0 || to > n) return false;
+  if (to >= from && to <= from + count) return true;   // 自分の中への移動 = 何もしない
+
+  std::vector<LayerInfo> block(layerList.begin() + from,
+                               layerList.begin() + from + count);
+  layerList.erase(layerList.begin() + from, layerList.begin() + from + count);
+  // 取り除いたぶん挿入位置がずれる
+  int dest = (to > from) ? to - count : to;
+  if (dest < 0) dest = 0;
+  if (dest > (int)layerList.size()) dest = (int)layerList.size();
+  layerList.insert(layerList.begin() + dest, block.begin(), block.end());
+  layersDirty = true;
+  relinkGroups();
+  return true;
+}
+
+// 同じ階層の隣の兄弟と入れ替える。
+//
+// layerList は下から上の順で、グループは [区切り][子...][フォルダ] という
+// 連続した並び。自分の塊 (フォルダなら区切りごと) を求め、その外側にある
+// 次の兄弟の塊を求めて、両者を入れ替える。
+bool PSDFile::moveLayerSibling(int index, bool up, int *newIndexOut) {
+  int n = (int)layerList.size();
+  if (index < 0 || index >= n) return false;
+
+  int myStart = 0, myCount = 0;
+  if (!groupSpan(index, myStart, myCount)) return false;
+  const int myEnd = myStart + myCount;            // 半開区間 [myStart, myEnd)
+  const int parentIdx = layerList[(size_t)index].parentIndex;
+
+  int sibStart = 0, sibCount = 0;
+  if (up) {
+    // 上 = layerList の後ろ側。自分の塊の直後を見る。
+    int i = myEnd;
+    if (i >= n) return false;                     // 文書の最上位で行き止まり
+    LayerType t = layerList[(size_t)i].layerType;
+    if (t == LAYER_TYPE_FOLDER && i == parentIdx) return false;  // 親の底に到達
+    if (t == LAYER_TYPE_HIDDEN) {
+      // 兄弟グループの入口。対応するフォルダまでが塊。
+      int depth = 0;
+      int j = i + 1;
+      for (; j < n; j++) {
+        LayerType u = layerList[(size_t)j].layerType;
+        if (u == LAYER_TYPE_HIDDEN) depth++;
+        else if (u == LAYER_TYPE_FOLDER) {
+          if (depth == 0) break;
+          depth--;
+        }
+      }
+      if (j >= n) return false;                   // 壊れた構造
+      sibStart = i;
+      sibCount = j - i + 1;
+    } else {
+      sibStart = i;
+      sibCount = 1;
+    }
+    // 自分の塊を兄弟の後ろへ
+    if (!moveLayerRange(myStart, myCount, sibStart + sibCount)) return false;
+    if (newIndexOut) *newIndexOut = index + sibCount;
+  } else {
+    // 下 = layerList の前側。自分の塊の直前を見る。
+    int i = myStart - 1;
+    if (i < 0) return false;                      // 文書の最下位で行き止まり
+    LayerType t = layerList[(size_t)i].layerType;
+    if (t == LAYER_TYPE_HIDDEN && parentIdx >= 0) return false;  // 親の天井に到達
+    if (t == LAYER_TYPE_FOLDER) {
+      int s2 = 0, c2 = 0;
+      if (!groupSpan(i, s2, c2)) return false;
+      sibStart = s2;
+      sibCount = c2;
+    } else {
+      sibStart = i;
+      sibCount = 1;
+    }
+    if (!moveLayerRange(myStart, myCount, sibStart)) return false;
+    if (newIndexOut) *newIndexOut = index - sibCount;
+  }
   return true;
 }
 
@@ -541,6 +626,7 @@ int PSDFile::duplicateLayer(int index) {
   assignFreshLayerId(copy, nextLayerId(layerList));  // Photoshop 同様、複製は新 ID
   layerList.insert(layerList.begin() + index + 1, copy);
   layersDirty = true;
+  relinkGroups();          // 並びが変わったので親子関係を貼り直す
   return index + 1;
 }
 
@@ -554,6 +640,7 @@ int PSDFile::copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex) {
               ? (int)layerList.size() : destIndex;
   layerList.insert(layerList.begin() + pos, copy);
   layersDirty = true;
+  relinkGroups();
   return pos;
 }
 

@@ -1218,6 +1218,7 @@ namespace psd {
                 ? (int)layerList.size() : destIndex;
     layerList.insert(layerList.begin() + pos, lay);
     layersDirty = true;
+    relinkGroups();          // 並びが変わったので親子関係を貼り直す
     return pos;
   }
 

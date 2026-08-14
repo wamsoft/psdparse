@@ -513,7 +513,8 @@ namespace psd {
 
     // 親フォルダレイヤ
     LayerInfo *parent;
-    // 親フォルダの layerList インデックス (-1 = トップレベル)。processParsed で設定。
+    // 親フォルダの layerList インデックス (-1 = トップレベル)。
+    // processParsed / relinkGroups で設定。
     int parentIndex = -1;
 
     bool isTransparencyProtected() const { return (flag & (1 << 0)) != 0; }
@@ -555,6 +556,19 @@ namespace psd {
 
 		// レイヤをレイヤIDで取得
     LayerInfo *getLayerById(int layerId);
+
+    // レイヤの親子関係 (parent / parentIndex) を layerList から再計算する。
+    // 読み込み時は processParsed が呼ぶ。構造編集 (削除 / 移動 / 複製 / 挿入)
+    // を行うと layerList の並びが変わって古くなるので、編集 API はこれを
+    // 呼んでから戻る。
+    void relinkGroups();
+
+    // index のレイヤが占める layerList 上の範囲を返す。
+    // 通常のレイヤは [index, index]。フォルダは対応する区切り (LAYER_TYPE_HIDDEN)
+    // から自分自身までの塊 [divider, index] を返す (入れ子も内側に含む)。
+    // 移動 / 削除でグループを 1 つの塊として扱うために使う。
+    // 範囲外なら false。
+    bool groupSpan(int index, int &startOut, int &countOut) const;
 
 		// ---------------------------------------
 		// イメージリソース
