@@ -97,3 +97,53 @@ def test_fill_opacity_valid_for_psd_tools(psd_group, tmp_path):
     pt.composite()
     rec = pt._record.layer_and_mask_information.layer_info.layer_records[7]
     assert rec.tagged_blocks.get_data(Tag.BLEND_FILL_OPACITY) == 88
+
+
+# --- テキストレイヤ + マスク -------------------------------------------------
+# 多言語版を作るときは「テキストレイヤを言語ぶん複製し、書き出し範囲をマスクで
+# 切る」形になりやすい。複製や本文の書き換えでマスクが落ちると、書き出しの
+# たびに手でマスクを付け直すことになるので、ここで押さえておく。
+
+def _mask_channel(layer):
+    for c in layer.channels:
+        if c.id == -2:
+            return c
+    return None
+
+
+def test_textmask_sample_has_masked_text_layers(psd_textmask):
+    for i in (1, 2):
+        assert psd_textmask.layers[i].text, "layer %d should be a text layer" % i
+        assert psd_textmask.layers[i].mask, "layer %d should carry a mask" % i
+
+
+def test_duplicate_keeps_mask(psd_textmask, tmp_path):
+    src = psd_textmask.layers[1]
+    before = dict(src.mask)
+    before_len = _mask_channel(src).length
+
+    ni = psd_textmask.duplicate_layer(1)
+    assert ni >= 0
+    q = _reload(psd_textmask, tmp_path, "dup.psd")
+
+    copy = q.layers[ni]
+    assert copy.text, "the duplicate should still be a text layer"
+    m = copy.mask
+    assert m, "the duplicate lost its mask"
+    for k in ("top", "left", "bottom", "right", "default_color"):
+        assert m[k] == before[k], "mask %s changed on duplicate" % k
+    assert _mask_channel(copy).length == before_len, "mask pixels changed on duplicate"
+
+
+def test_set_text_keeps_mask(psd_textmask, tmp_path):
+    before = dict(psd_textmask.layers[1].mask)
+    before_len = _mask_channel(psd_textmask.layers[1]).length
+
+    psd_textmask.set_text(1, "translated")
+    q = _reload(psd_textmask, tmp_path, "txt.psd")
+
+    m = q.layers[1].mask
+    assert m, "editing the text dropped the mask"
+    for k in ("top", "left", "bottom", "right"):
+        assert m[k] == before[k]
+    assert _mask_channel(q.layers[1]).length == before_len
