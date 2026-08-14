@@ -144,6 +144,23 @@ namespace psd {
     bool setLayerRunStyle(int index, int runIndex, const RunStyleEdit &edit,
                           std::string *errorOut = nullptr);
 
+    // 本文とラン構成 / 段落構成をまとめて差し替える (書式付きテキストの編集)。
+    // setLayerText はランを 1 つに畳んでしまうので、部分ごとに書式を変えたい
+    // 場合はこちらを使う。詳細は psdengine.h の editEngineDataRichText 参照。
+    bool setLayerRichText(int index, const u16str &newText,
+                          const std::vector<TextRunSpec> &runs,
+                          const std::vector<TextParagraphSpec> &paragraphs,
+                          std::string *errorOut = nullptr);
+
+    // 段落の行揃えだけ変える (paraIndex < 0 で全段落)。0=左 1=右 2=中央。
+    bool setLayerJustification(int index, int paraIndex, int justification,
+                               std::string *errorOut = nullptr);
+
+    // このテキストレイヤの EngineData が持つフォント名 (ResourceDict/FontSet)。
+    // UI のフォント候補に使う。テキストレイヤでなければ false。
+    bool getLayerFonts(int index, std::vector<std::string> &outUtf8Names,
+                       std::string *errorOut = nullptr) const;
+
     // 上記 2 つの共通実体。EngineData のバイト列を editEngine で変換する。
     // 独自の EngineData 変換を差し込みたいとき用。newTxt が非 null なら
     // descriptor の 'Txt ' もその値へ更新する。

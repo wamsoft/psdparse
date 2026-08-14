@@ -407,6 +407,82 @@ bool PSDFile::setLayerRunStyle(int index, int runIndex, const RunStyleEdit &edit
     }, nullptr, errorOut);
 }
 
+bool PSDFile::setLayerRichText(int index, const u16str &newText,
+                               const std::vector<TextRunSpec> &runs,
+                               const std::vector<TextParagraphSpec> &paragraphs,
+                               std::string *errorOut) {
+  bool ok = editTextLayer(index,
+    [&](const std::string &in, std::string &out) {
+      return editEngineDataRichText(in.data(), in.size(), newText, runs, paragraphs, out);
+    }, &newText, errorOut);
+  if (ok) {
+    // パース済みの runs / paragraphs も新しい構成に追随させる (再ロード無しで
+    // 参照できるように)。中身の書式までは戻さず、長さだけ合わせる。
+    LayerInfo &lay = layerList[(size_t)index];
+    if (!runs.empty()) {
+      lay.textData.runs.resize(runs.size());
+      for (size_t i = 0; i < runs.size(); i++) lay.textData.runs[i].length = runs[i].length;
+    }
+    if (!paragraphs.empty()) {
+      lay.textData.paragraphs.resize(paragraphs.size());
+      for (size_t i = 0; i < paragraphs.size(); i++) {
+        lay.textData.paragraphs[i].length = paragraphs[i].length;
+        if (paragraphs[i].hasJustification)
+          lay.textData.paragraphs[i].justification = paragraphs[i].justification;
+      }
+      lay.textData.justification = lay.textData.paragraphs[0].justification;
+    }
+  }
+  return ok;
+}
+
+bool PSDFile::setLayerJustification(int index, int paraIndex, int justification,
+                                    std::string *errorOut) {
+  bool ok = editTextLayer(index,
+    [&](const std::string &in, std::string &out) {
+      return editEngineDataJustification(in.data(), in.size(), paraIndex,
+                                         justification, out);
+    }, nullptr, errorOut);
+  if (ok) {
+    LayerInfo &lay = layerList[(size_t)index];
+    for (size_t i = 0; i < lay.textData.paragraphs.size(); i++) {
+      if (paraIndex >= 0 && (size_t)paraIndex != i) continue;
+      lay.textData.paragraphs[i].justification = justification;
+    }
+    if (!lay.textData.paragraphs.empty())
+      lay.textData.justification = lay.textData.paragraphs[0].justification;
+  }
+  return ok;
+}
+
+bool PSDFile::getLayerFonts(int index, std::vector<std::string> &outUtf8Names,
+                            std::string *errorOut) const {
+  outUtf8Names.clear();
+  auto fail = [&](const char *msg) {
+    if (errorOut) *errorOut = msg;
+    return false;
+  };
+  if (index < 0 || index >= (int)layerList.size()) return fail("layer index out of range");
+
+  const LayerInfo &lay = layerList[(size_t)index];
+  for (const auto &a : lay.extraData.additionalLayers) {
+    if (a.key != 'TySh' || !a.data) continue;
+    IteratorBase *rd = a.data->clone();
+    rd->init();
+    std::vector<uint8_t> prefix(56);
+    if (rd->getData(prefix.data(), 56) != 56) { delete rd; return fail("TySh block too short"); }
+    Descriptor td;
+    td.load(rd);
+    delete rd;
+    auto *eng = dynamic_cast<DescriptorRawData *>(td.findItem("EngineData"));
+    if (!eng) return fail("text layer has no EngineData");
+    if (!listEngineDataFonts(eng->bytes.data(), eng->bytes.size(), outUtf8Names))
+      return fail("could not read the font table");
+    return true;
+  }
+  return fail("layer is not a text layer (no TySh block)");
+}
+
 // --- 構造編集 --------------------------------------------------------------
 
 namespace {

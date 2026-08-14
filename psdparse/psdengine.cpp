@@ -505,6 +505,144 @@ namespace {
     }
   }
 
+  // --------------------------------------------------------------------------
+  // リッチテキスト編集の下支え
+  // --------------------------------------------------------------------------
+
+  // ツリーの深いコピー。ラン配列を作り直すとき、元のランを雛形として複製する
+  // のに使う。書式キーを一から組むと Photoshop が受け付けない組み合わせに
+  // なりやすいので、必ず現物を雛形にする。
+  static Node *cloneNode(const Node *src) {
+    if (!src) return 0;
+    Node *n = new Node(src->kind);
+    n->num = src->num; n->isInt = src->isInt; n->bl = src->bl; n->str = src->str;
+    n->keyOrder = src->keyOrder;
+    for (std::map<std::string, Node*>::const_iterator it = src->dict.begin();
+         it != src->dict.end(); ++it) {
+      n->dict[it->first] = cloneNode(it->second);
+    }
+    n->arr.reserve(src->arr.size());
+    for (size_t i = 0; i < src->arr.size(); i++) n->arr.push_back(cloneNode(src->arr[i]));
+    return n;
+  }
+
+  // UTF-8 → EngineData の文字列生バイト (BOM FE FF + UTF-16BE)
+  static std::string buildTextRawFromUtf8(const std::string &utf8) {
+    u16str w = utf8ToU16(utf8);
+    std::string s;
+    s.push_back((char)0xFE); s.push_back((char)0xFF);
+    for (size_t i = 0; i < w.size(); i++) {
+      s.push_back((char)((w[i] >> 8) & 0xff));
+      s.push_back((char)(w[i] & 0xff));
+    }
+    return s;
+  }
+
+  // ResourceDict/FontSet から名前でインデックスを引く。無ければ既存項目を
+  // 雛形に複製して名前だけ差し替えたものを追記し、その位置を返す。
+  // FontSet が無い / 空なら -1 (フォント指定は諦める)。
+  static int fontIndexFor(Node *root, const std::string &utf8Name) {
+    Node *fs = dget(dget(root, "ResourceDict"), "FontSet");
+    if (!fs || fs->kind != Node::ARRAY || fs->arr.empty()) return -1;
+
+    const std::string want = buildTextRawFromUtf8(utf8Name);
+    for (size_t i = 0; i < fs->arr.size(); i++) {
+      Node *nm = dget(fs->arr[i], "Name");
+      if (nm && nm->kind == Node::STRING && nm->str == want) return (int)i;
+    }
+    // 既存項目 (Script / FontType / Synthetic が入っている) を雛形にする
+    Node *entry = cloneNode(fs->arr[0]);
+    Node *nm = dget(entry, "Name");
+    if (!nm || nm->kind != Node::STRING) { delete entry; return -1; }
+    nm->str = want;
+    fs->arr.push_back(entry);
+    return (int)fs->arr.size() - 1;
+  }
+
+  // StyleSheetData へ RunStyleEdit を適用する (has* が立っているものだけ)
+  static void applyRunStyle(Node *root, Node *ssd, const RunStyleEdit &edit) {
+    if (!ssd) return;
+    if (edit.hasFont && !edit.font.empty()) {
+      int idx = fontIndexFor(root, edit.font);
+      if (idx >= 0) setNumberNode(ssd, "Font", (double)idx, true);
+    }
+    if (edit.hasSize)      setNumberNode(ssd, "FontSize", edit.size, false);
+    if (edit.hasTracking)  setNumberNode(ssd, "Tracking", (double)edit.tracking, true);
+    if (edit.hasKerning)   setNumberNode(ssd, "Kerning",  (double)edit.kerning,  true);
+    if (edit.hasBold)      setBoolNode(ssd, "FauxBold",   edit.bold);
+    if (edit.hasItalic)    setBoolNode(ssd, "FauxItalic", edit.italic);
+    if (edit.hasUnderline) setBoolNode(ssd, "Underline",  edit.underline);
+    if (edit.hasColor)     setFillColorNode(ssd, edit.color);
+  }
+
+  // 指定された長さの並びを本文長へ合わせる。長すぎれば切り詰め、短ければ
+  // 末尾を伸ばす。空 (または全部 0) なら「全体で 1 つ」にする。
+  // kept には採用した元インデックスが入る (スタイル指定の対応付け用)。
+  static std::vector<int> fitLengths(const std::vector<int> &want, int textLen,
+                              std::vector<size_t> &kept) {
+    std::vector<int> out;
+    kept.clear();
+    int used = 0;
+    for (size_t i = 0; i < want.size(); i++) {
+      if (used >= textLen) break;
+      int l = want[i];
+      if (l <= 0) continue;
+      if (used + l > textLen) l = textLen - used;
+      out.push_back(l);
+      kept.push_back(i);
+      used += l;
+    }
+    if (out.empty()) {
+      out.push_back(textLen);
+      kept.push_back((size_t)-1);      // 雛形をそのまま使う
+    } else if (used < textLen) {
+      out.back() += textLen - used;    // 端数は末尾へ寄せる
+    }
+    return out;
+  }
+
+  // run の {RunArray, RunLengthArray} を lengths の数だけ作り直す。
+  // 既存のランは順に再利用し、足りない分は先頭ランの複製で埋める。
+  // apply は各ランに対する追加処理 (スタイル / 行揃えの適用)。
+  template <typename ApplyFn>
+  void rebuildRun(Node *run, const std::vector<int> &lengths, ApplyFn apply) {
+    if (!run) return;
+    Node *ra = dget(run, "RunArray");
+    if (!ra || ra->kind != Node::ARRAY || ra->arr.empty()) return;
+
+    // 雛形は先に複製しておく。ループ内で ra->arr[0] の所有権を移すので、
+    // 元の要素をそのまま雛形として使い回すと 2 個目以降で解放済みを読む。
+    Node *tmpl = cloneNode(ra->arr[0]);
+
+    std::vector<Node*> built;
+    built.reserve(lengths.size());
+    for (size_t i = 0; i < lengths.size(); i++) {
+      Node *item;
+      if (i < ra->arr.size() && ra->arr[i]) {
+        item = ra->arr[i];
+        ra->arr[i] = 0;                 // 所有権を built へ移す
+      } else {
+        item = cloneNode(tmpl);
+      }
+      apply(item, i);
+      built.push_back(item);
+    }
+    for (size_t i = 0; i < ra->arr.size(); i++) delete ra->arr[i];   // 余り
+    ra->arr = built;
+    delete tmpl;
+
+    Node *rla = dget(run, "RunLengthArray");
+    if (rla && rla->kind == Node::ARRAY) {
+      for (size_t i = 0; i < rla->arr.size(); i++) delete rla->arr[i];
+      rla->arr.clear();
+      for (size_t i = 0; i < lengths.size(); i++) {
+        Node *num = new Node(Node::NUMBER);
+        num->num = lengths[i]; num->isInt = true;
+        rla->arr.push_back(num);
+      }
+    }
+  }
+
   bool editEngineDataRunStyle(const char *data, size_t len, int runIndex,
                               const RunStyleEdit &edit, std::string &out) {
     Parser ps(data, len);
@@ -520,13 +658,7 @@ namespace {
     Node *ssd = dget(dget(runArray->arr[(size_t)runIndex], "StyleSheet"), "StyleSheetData");
     if (!ssd || ssd->kind != Node::DICT) { delete root; return false; }
 
-    if (edit.hasSize)      setNumberNode(ssd, "FontSize", edit.size, false);
-    if (edit.hasTracking)  setNumberNode(ssd, "Tracking", (double)edit.tracking, true);
-    if (edit.hasKerning)   setNumberNode(ssd, "Kerning",  (double)edit.kerning,  true);
-    if (edit.hasBold)      setBoolNode(ssd, "FauxBold",   edit.bold);
-    if (edit.hasItalic)    setBoolNode(ssd, "FauxItalic", edit.italic);
-    if (edit.hasUnderline) setBoolNode(ssd, "Underline",  edit.underline);
-    if (edit.hasColor)     setFillColorNode(ssd, edit.color);
+    applyRunStyle(root, ssd, edit);
 
     out.clear();
     emitDict(out, root, 0, true);
@@ -585,6 +717,135 @@ namespace {
 
     out.clear();
     emitDict(out, root, 0, true);
+    delete root;
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // リッチテキスト差し替え
+  // --------------------------------------------------------------------------
+  bool editEngineDataRichText(const char *data, size_t len, const u16str &newText,
+                              const std::vector<TextRunSpec> &runs,
+                              const std::vector<TextParagraphSpec> &paragraphs,
+                              std::string &out) {
+    Parser ps(data, len);
+    Node *root = ps.parseValue();
+    if (!root || root->kind != Node::DICT) { delete root; return false; }
+
+    u16str text = newText;
+    if (text.empty() || text[text.size() - 1] != u'\r') text.push_back(u'\r');
+    const int textLen = (int)text.size();
+
+    Node *engine = dget(root, "EngineDict");
+    Node *tnode  = dget(dget(engine, "Editor"), "Text");
+    if (tnode && tnode->kind == Node::STRING) tnode->str = buildTextRaw(text);
+
+    // --- スタイルラン ---
+    {
+      std::vector<int> want;
+      want.reserve(runs.size());
+      for (size_t i = 0; i < runs.size(); i++) want.push_back(runs[i].length);
+      std::vector<size_t> kept;
+      std::vector<int> lengths = fitLengths(want, textLen, kept);
+
+      rebuildRun(dget(engine, "StyleRun"), lengths, [&](Node *item, size_t i) {
+        if (i >= kept.size() || kept[i] == (size_t)-1) return;   // 雛形のまま
+        Node *ssd = dget(dget(item, "StyleSheet"), "StyleSheetData");
+        applyRunStyle(root, ssd, runs[kept[i]].style);
+      });
+    }
+
+    // --- 段落ラン ---
+    {
+      std::vector<int> want;
+      want.reserve(paragraphs.size());
+      for (size_t i = 0; i < paragraphs.size(); i++) want.push_back(paragraphs[i].length);
+      std::vector<size_t> kept;
+      std::vector<int> lengths = fitLengths(want, textLen, kept);
+
+      rebuildRun(dget(engine, "ParagraphRun"), lengths, [&](Node *item, size_t i) {
+        if (i >= kept.size() || kept[i] == (size_t)-1) return;
+        const TextParagraphSpec &p = paragraphs[kept[i]];
+        if (!p.hasJustification) return;
+        Node *props = dget(dget(item, "ParagraphSheet"), "Properties");
+        if (props) setNumberNode(props, "Justification", (double)p.justification, true);
+      });
+    }
+
+    out.clear();
+    emitDict(out, root, 0, true);
+    delete root;
+    return true;
+  }
+
+  bool editEngineDataJustification(const char *data, size_t len, int paraIndex,
+                                   int justification, std::string &out) {
+    Parser ps(data, len);
+    Node *root = ps.parseValue();
+    if (!root || root->kind != Node::DICT) { delete root; return false; }
+
+    Node *paraArr = dget(dget(dget(root, "EngineDict"), "ParagraphRun"), "RunArray");
+    if (!paraArr || paraArr->kind != Node::ARRAY || paraArr->arr.empty()) {
+      delete root; return false;
+    }
+    if (paraIndex >= (int)paraArr->arr.size()) { delete root; return false; }
+
+    bool any = false;
+    for (size_t i = 0; i < paraArr->arr.size(); i++) {
+      if (paraIndex >= 0 && (size_t)paraIndex != i) continue;
+      Node *props = dget(dget(paraArr->arr[i], "ParagraphSheet"), "Properties");
+      if (!props) continue;
+      setNumberNode(props, "Justification", (double)justification, true);
+      any = true;
+    }
+    if (!any) { delete root; return false; }
+
+    out.clear();
+    emitDict(out, root, 0, true);
+    delete root;
+    return true;
+  }
+
+  bool listEngineDataFonts(const char *data, size_t len,
+                           std::vector<std::string> &outUtf8Names) {
+    outUtf8Names.clear();
+    Parser ps(data, len);
+    Node *root = ps.parseValue();
+    if (!root || root->kind != Node::DICT) { delete root; return false; }
+
+    Node *fs = dget(dget(root, "ResourceDict"), "FontSet");
+    if (fs && fs->kind == Node::ARRAY) {
+      for (size_t i = 0; i < fs->arr.size(); i++) {
+        u16str w = toU16(dget(fs->arr[i], "Name"));
+        // u16 → UTF-8 (BMP 外はサロゲートペアを結合)
+        std::string s;
+        for (size_t k = 0; k < w.size(); k++) {
+          unsigned cp = (unsigned)w[k];
+          if (cp >= 0xD800 && cp <= 0xDBFF && k + 1 < w.size()) {
+            unsigned lo = (unsigned)w[k + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+              cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+              k++;
+            }
+          }
+          if (cp < 0x80) s += (char)cp;
+          else if (cp < 0x800) {
+            s += (char)(0xC0 | (cp >> 6));
+            s += (char)(0x80 | (cp & 0x3F));
+          } else if (cp < 0x10000) {
+            s += (char)(0xE0 | (cp >> 12));
+            s += (char)(0x80 | ((cp >> 6) & 0x3F));
+            s += (char)(0x80 | (cp & 0x3F));
+          } else {
+            s += (char)(0xF0 | (cp >> 18));
+            s += (char)(0x80 | ((cp >> 12) & 0x3F));
+            s += (char)(0x80 | ((cp >> 6) & 0x3F));
+            s += (char)(0x80 | (cp & 0x3F));
+          }
+        }
+        outUtf8Names.push_back(s);
+      }
+    }
     delete root;
     return true;
   }
