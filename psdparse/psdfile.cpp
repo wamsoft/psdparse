@@ -5,6 +5,7 @@
 #include "psddesc.h"
 #include "psdengine.h"
 
+#include <cmath>
 #include <cstring>
 #include <iostream>
 
@@ -331,17 +332,18 @@ bool PSDFile::setAdditionalInfoBytes(int index, int key, const uint8_t *data, in
 // 本文の実体は EngineData 側 (Adobe 独自のミニ言語) にあり、'Txt ' は
 // Photoshop が併せて持っている複製。両方を更新しないと開いたときに食い違う。
 
-bool PSDFile::editTextLayer(int index,
-                            const std::function<bool(const std::string &,
-                                                     std::string &)> &editEngine,
-                            const u16str *newTxt,
+// TySh ブロックを prefix / descriptor / suffix に分解して fn へ渡し、書き換わった
+// ものを再直列化して差し戻す。テキスト関連の編集は全部これを土台にしている。
+bool PSDFile::editTyShBlock(int index,
+                            const std::function<bool(std::vector<uint8_t> &,
+                                                     Descriptor &)> &fn,
                             std::string *errorOut) {
   auto fail = [&](const char *msg) {
     if (errorOut) *errorOut = msg;
     return false;
   };
   if (index < 0 || index >= (int)layerList.size()) return fail("layer index out of range");
-  if (!editEngine) return fail("no edit function given");
+  if (!fn) return fail("no edit function given");
 
   LayerInfo &lay = layerList[(size_t)index];
   for (auto &a : lay.extraData.additionalLayers) {
@@ -361,17 +363,7 @@ bool PSDFile::editTextLayer(int index,
     if (restLen > 0) rd->getData(suffix.data(), restLen);   // warp + bounds
     delete rd;
 
-    auto *eng = dynamic_cast<DescriptorRawData *>(td.findItem("EngineData"));
-    if (!eng) return fail("text layer has no EngineData");
-
-    std::string newEngine;
-    if (!editEngine(eng->bytes, newEngine)) return fail("failed to edit EngineData");
-    eng->bytes = newEngine;
-
-    if (newTxt) {
-      if (auto *txt = dynamic_cast<DescriptorString *>(td.findItem("Txt ")))
-        txt->val = *newTxt;
-    }
+    if (!fn(prefix, td)) return fail("text layer edit failed");
 
     std::vector<uint8_t> buf;
     MemoryWriter w(buf);
@@ -380,12 +372,183 @@ bool PSDFile::editTextLayer(int index,
     if (!suffix.empty()) w.putData(suffix.data(), suffix.size());
     if (!setAdditionalInfoBytes(index, 'TySh', buf.data(), (int)buf.size()))
       return fail("could not store the rebuilt TySh block");
-
-    // パース済みの textData も追随させる (再ロードなしで参照できるように)
-    if (newTxt) lay.textData.text = *newTxt;
     return true;
   }
   return fail("layer is not a text layer (no TySh block)");
+}
+
+bool PSDFile::editTextLayer(int index,
+                            const std::function<bool(const std::string &,
+                                                     std::string &)> &editEngine,
+                            const u16str *newTxt,
+                            std::string *errorOut) {
+  if (!editEngine) {
+    if (errorOut) *errorOut = "no edit function given";
+    return false;
+  }
+  bool noEngine = false;
+  bool ok = editTyShBlock(index, [&](std::vector<uint8_t> &, Descriptor &td) {
+    auto *eng = dynamic_cast<DescriptorRawData *>(td.findItem("EngineData"));
+    if (!eng) { noEngine = true; return false; }
+    std::string newEngine;
+    if (!editEngine(eng->bytes, newEngine)) return false;
+    eng->bytes = newEngine;
+    if (newTxt) {
+      if (auto *txt = dynamic_cast<DescriptorString *>(td.findItem("Txt ")))
+        txt->val = *newTxt;
+    }
+    return true;
+  }, errorOut);
+  if (!ok && noEngine && errorOut) *errorOut = "text layer has no EngineData";
+  // パース済みの textData も追随させる (再ロードなしで参照できるように)
+  if (ok && newTxt) layerList[(size_t)index].textData.text = *newTxt;
+  return ok;
+}
+
+// --- テキストの配置と流し込み枠 ---------------------------------------------
+
+namespace {
+// TySh prefix の transform は byte 2 から big-endian の double が 6 つ。
+double readBEDouble(const uint8_t *p) {
+  uint8_t b[8];
+  for (int i = 0; i < 8; ++i) b[i] = p[7 - i];
+  double d;
+  std::memcpy(&d, b, 8);
+  return d;
+}
+void writeBEDouble(uint8_t *p, double v) {
+  uint8_t b[8];
+  std::memcpy(b, &v, 8);
+  for (int i = 0; i < 8; ++i) p[i] = b[7 - i];
+}
+// bounds / boundingBox の 4 辺 (UnitFloat か Double のどちらかで入っている)
+bool boundsValue(Descriptor *d, const char *key, double &out) {
+  if (!d) return false;
+  DescriptorItem *it = d->findItem(key);
+  if (DescriptorUnitFloat *u = dynamic_cast<DescriptorUnitFloat *>(it)) { out = u->val; return true; }
+  if (DescriptorDouble *f = dynamic_cast<DescriptorDouble *>(it))       { out = f->val; return true; }
+  return false;
+}
+bool setBoundsValue(Descriptor *d, const char *key, double v) {
+  if (!d) return false;
+  DescriptorItem *it = d->findItem(key);
+  if (DescriptorUnitFloat *u = dynamic_cast<DescriptorUnitFloat *>(it)) { u->val = v; return true; }
+  if (DescriptorDouble *f = dynamic_cast<DescriptorDouble *>(it))       { f->val = v; return true; }
+  return false;
+}
+} // anonymous
+
+bool PSDFile::getLayerTextTransform(int index, double m[6], std::string *errorOut) const {
+  if (index < 0 || index >= (int)layerList.size()) {
+    if (errorOut) *errorOut = "layer index out of range";
+    return false;
+  }
+  const LayerInfo &lay = layerList[(size_t)index];
+  for (const auto &a : lay.extraData.additionalLayers) {
+    if (a.key != 'TySh' || !a.data) continue;
+    IteratorBase *rd = a.data->clone();
+    rd->init();
+    uint8_t prefix[56];
+    bool ok = (rd->getData(prefix, 56) == 56);
+    delete rd;
+    if (!ok) { if (errorOut) *errorOut = "TySh block too short"; return false; }
+    for (int i = 0; i < 6; ++i) m[i] = readBEDouble(prefix + 2 + i * 8);
+    return true;
+  }
+  if (errorOut) *errorOut = "layer is not a text layer (no TySh block)";
+  return false;
+}
+
+bool PSDFile::setLayerTextTransform(int index, const double m[6], std::string *errorOut) {
+  bool ok = editTyShBlock(index, [&](std::vector<uint8_t> &prefix, Descriptor &) {
+    for (int i = 0; i < 6; ++i) writeBEDouble(prefix.data() + 2 + i * 8, m[i]);
+    return true;
+  }, errorOut);
+  if (ok) {
+    TextLayerData &td = layerList[(size_t)index].textData;
+    for (int i = 0; i < 6; ++i) td.transform[i] = m[i];
+  }
+  return ok;
+}
+
+bool PSDFile::moveTextLayer(int index, double dx, double dy, std::string *errorOut) {
+  double m[6];
+  if (!getLayerTextTransform(index, m, errorOut)) return false;
+  m[4] += dx;
+  m[5] += dy;
+  if (!setLayerTextTransform(index, m, errorOut)) return false;
+
+  // レイヤ矩形も同じだけずらす。ずらさないと PSD 内蔵のラスタが元の位置に
+  // 残り、Photoshop で開き直すまで見た目が二重にずれる。
+  LayerInfo &lay = layerList[(size_t)index];
+  const int idx = (int)std::lround(dx);
+  const int idy = (int)std::lround(dy);
+  lay.left += idx;   lay.right  += idx;
+  lay.top  += idy;   lay.bottom += idy;
+  // マスクを持っていれば一緒に動かす
+  LayerMask &mk = lay.extraData.layerMask;
+  if (mk.present) {
+    mk.left += idx; mk.right  += idx;
+    mk.top  += idy; mk.bottom += idy;
+    mk.enclosingLeft += idx; mk.enclosingRight  += idx;
+    mk.enclosingTop  += idy; mk.enclosingBottom += idy;
+    mk.edited = true;                    // マスク矩形はフィールドから再直列化する
+    lay.extraData.useRawBytes = false;
+  }
+  layersDirty = true;
+  return true;
+}
+
+bool PSDFile::getLayerTextBounds(int index, double &l, double &t, double &r, double &b,
+                                 std::string *errorOut) const {
+  if (index < 0 || index >= (int)layerList.size()) {
+    if (errorOut) *errorOut = "layer index out of range";
+    return false;
+  }
+  const LayerInfo &lay = layerList[(size_t)index];
+  for (const auto &a : lay.extraData.additionalLayers) {
+    if (a.key != 'TySh' || !a.data) continue;
+    IteratorBase *rd = a.data->clone();
+    rd->init();
+    uint8_t prefix[56];
+    if (rd->getData(prefix, 56) != 56) {
+      delete rd;
+      if (errorOut) *errorOut = "TySh block too short";
+      return false;
+    }
+    Descriptor td;
+    td.load(rd);
+    delete rd;
+    Descriptor *bd = dynamic_cast<Descriptor *>(td.findItem("bounds"));
+    if (!bd) { if (errorOut) *errorOut = "text layer has no bounds"; return false; }
+    bool ok = boundsValue(bd, "Left", l) && boundsValue(bd, "Top ", t) &&
+              boundsValue(bd, "Rght", r) && boundsValue(bd, "Btom", b);
+    if (!ok && errorOut) *errorOut = "could not read the bounds values";
+    return ok;
+  }
+  if (errorOut) *errorOut = "layer is not a text layer (no TySh block)";
+  return false;
+}
+
+bool PSDFile::setLayerTextBounds(int index, double l, double t, double r, double b,
+                                 std::string *errorOut) {
+  return editTyShBlock(index, [&](std::vector<uint8_t> &, Descriptor &td) {
+    Descriptor *bd = dynamic_cast<Descriptor *>(td.findItem("bounds"));
+    if (!bd) return false;
+    if (!setBoundsValue(bd, "Left", l) || !setBoundsValue(bd, "Top ", t) ||
+        !setBoundsValue(bd, "Rght", r) || !setBoundsValue(bd, "Btom", b))
+      return false;
+    // boundingBox (実際の字形の範囲) は Photoshop が開いたときに計算し直すが、
+    // 枠からはみ出したままだと表示がおかしくなるので枠の中へ丸めておく。
+    if (Descriptor *bb = dynamic_cast<Descriptor *>(td.findItem("boundingBox"))) {
+      double v;
+      if (boundsValue(bb, "Left", v) && v < l) setBoundsValue(bb, "Left", l);
+      if (boundsValue(bb, "Top ", v) && v < t) setBoundsValue(bb, "Top ", t);
+      if (boundsValue(bb, "Rght", v) && v > r) setBoundsValue(bb, "Rght", r);
+      if (boundsValue(bb, "Btom", v) && v > b) setBoundsValue(bb, "Btom", b);
+    }
+    return true;
+  }, errorOut);
 }
 
 bool PSDFile::setLayerText(int index, const u16str &newText, std::string *errorOut) {

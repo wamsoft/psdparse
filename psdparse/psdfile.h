@@ -175,6 +175,38 @@ namespace psd {
     bool getLayerFonts(int index, std::vector<std::string> &outUtf8Names,
                        std::string *errorOut = nullptr) const;
 
+    // --- テキストの配置と流し込み枠 -----------------------------------------
+    // 位置は TySh prefix のアフィン変換 (xx, xy, yx, yy, tx, ty) が持ち、
+    // 流し込み枠は descriptor の 'bounds' が「変換のローカル座標」で持つ。
+    // 文書上の見た目の位置は tx/ty + bounds になる。
+
+    // 変換行列を取り出す / 差し替える。
+    bool getLayerTextTransform(int index, double m[6],
+                               std::string *errorOut = nullptr) const;
+    bool setLayerTextTransform(int index, const double m[6],
+                               std::string *errorOut = nullptr);
+
+    // テキストレイヤを平行移動する。変換の tx/ty と、レイヤ矩形 (とマスク矩形)
+    // を同じだけずらすので、PSD 内蔵のラスタも一緒に動く。
+    // Photoshop で開き直せば新しい位置で描き直される。
+    bool moveTextLayer(int index, double dx, double dy,
+                       std::string *errorOut = nullptr);
+
+    // 流し込み枠 (descriptor の 'bounds')。変換のローカル座標。
+    // 枠を変えて実際に流し込みが変わるのは段落テキスト (box text) のみで、
+    // ポイントテキストでは Photoshop 側が字形から枠を作り直す。
+    bool getLayerTextBounds(int index, double &l, double &t, double &r, double &b,
+                            std::string *errorOut = nullptr) const;
+    bool setLayerTextBounds(int index, double l, double t, double r, double b,
+                            std::string *errorOut = nullptr);
+
+    // TySh ブロック全体 (prefix + descriptor) を触る低水準口。
+    // 上記の配置 / 枠の API はこれを土台にしている。
+    bool editTyShBlock(int index,
+                       const std::function<bool(std::vector<uint8_t> &prefix,
+                                                Descriptor &desc)> &fn,
+                       std::string *errorOut = nullptr);
+
     // 上記 2 つの共通実体。EngineData のバイト列を editEngine で変換する。
     // 独自の EngineData 変換を差し込みたいとき用。newTxt が非 null なら
     // descriptor の 'Txt ' もその値へ更新する。
