@@ -194,14 +194,14 @@ private:
 // StreamReader::Source) and a small per-reader cache.  Sub-readers created
 // via cloneOffset / cloneRange share the same source but track their own
 // [start, end) and pos with private caches.  Use this for stream-only
-// providers (kirikiri iTJSBinaryStream, network-backed seekable streams,
-// std::ifstream when mmap is unavailable, ...).
+// providers (network-backed seekable streams, host-application stream
+// objects, std::ifstream when mmap is unavailable, ...).
 //
 // Lifetime contract: every sub-reader holds a shared_ptr to the source, so
 // the source stays alive as long as any reader points into it.
 class StreamReader : public IteratorBase {
 public:
-  // Abstract byte source. Subclass to wrap iTJSBinaryStream etc.
+  // Abstract byte source. Subclass to wrap your own stream type.
   // size() returns total source size; read() copies up to len bytes at offset.
   class Source {
   public:

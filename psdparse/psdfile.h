@@ -29,8 +29,8 @@ namespace psd {
   //   loadFromReader(reader): 汎用エントリ。任意の IteratorBase 実装を受ける。
   //                           reader が指す storage は PSDFile のライフタイム
   //                           中、呼び出し元が維持する責任を負う。
-  //                           (kirikiri プラグインは iTJSBinaryStream をラップ
-  //                            した自前 StreamReader をここに流し込む)
+  //                           (組み込み先の独自ストリームは
+  //                            StreamReader::Source でラップして流し込む)
   class PSDFile : public Data {
   public:
     PSDFile();

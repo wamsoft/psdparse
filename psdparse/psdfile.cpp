@@ -155,7 +155,7 @@ bool PSDFile::loadFromMemory(const uint8_t *data, size_t size) {
 
 bool PSDFile::loadFromReader(IteratorBase &reader) {
   // 汎用エントリ。reader が指す storage の維持責任は呼び出し元。
-  // (kirikiri は iTJSBinaryStream をラップした StreamReader をここに渡す)
+  // (組み込み先の独自ストリームは StreamReader::Source でラップして渡す)
   clearData();
   isLoaded = false;
   if (!parsePSD(reader, *this)) {

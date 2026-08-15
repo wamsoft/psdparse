@@ -16,7 +16,7 @@ if(PSDPARSE_BUILD_PYTHON)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# C++ ライブラリ本体 (吉里吉里非依存、pure C++17)
+# C++ ライブラリ本体 (外部フレームワーク非依存、pure C++17)
 add_subdirectory(psdparse)
 
 if(PSDPARSE_BUILD_PYTHON)
