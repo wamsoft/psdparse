@@ -533,6 +533,88 @@ void setLayerRunStyle(psd::PSDFile &self, int index, int runIndex,
   raiseIfFailed(self.setLayerRunStyle(index, runIndex, edit, &err), err);
 }
 
+// --- run style: Python の値 -> RunStyleEdit -------------------------------
+// 指定された (None でない) フィールドだけ has* を立てる。返り値は「ひとつでも
+// 指定されたか」。set_run_style (キーワード引数) と set_rich_text (runs[] の
+// 辞書) の両方から使う。
+bool fillRunStyleEdit(psd::RunStyleEdit &e, py::handle font, py::handle size_px,
+                      py::handle color, py::handle tracking, py::handle kerning,
+                      py::handle bold, py::handle italic, py::handle underline) {
+  bool any = false;
+  auto given = [](py::handle h) { return (bool)h && !h.is_none(); };
+  if (given(font))      { e.hasFont = true; e.font = font.cast<std::string>(); any = true; }
+  if (given(size_px))   { e.hasSize = true; e.size = size_px.cast<double>(); any = true; }
+  if (given(tracking))  { e.hasTracking = true; e.tracking = tracking.cast<int>(); any = true; }
+  if (given(kerning))   { e.hasKerning = true; e.kerning = kerning.cast<int>(); any = true; }
+  if (given(bold))      { e.hasBold = true; e.bold = bold.cast<bool>(); any = true; }
+  if (given(italic))    { e.hasItalic = true; e.italic = italic.cast<bool>(); any = true; }
+  if (given(underline)) { e.hasUnderline = true; e.underline = underline.cast<bool>(); any = true; }
+  if (given(color)) {
+    auto seq = color.cast<py::sequence>();
+    size_t n = py::len(seq);
+    if (n < 3 || n > 4)
+      throw std::invalid_argument("color must be (r,g,b) or (r,g,b,a), each 0..1");
+    e.hasColor = true;
+    e.color[0] = seq[0].cast<float>(); e.color[1] = seq[1].cast<float>();
+    e.color[2] = seq[2].cast<float>(); e.color[3] = (n == 4) ? seq[3].cast<float>() : 1.0f;
+    any = true;
+  }
+  return any;
+}
+
+// 辞書から key を引く (無ければ空ハンドル = 未指定)。
+py::handle dictGet(const py::dict &d, const char *key) {
+  return d.contains(key) ? d[key] : py::handle();
+}
+
+// set_rich_text の runs=[{...}] を TextRunSpec[] へ。
+std::vector<psd::TextRunSpec> toRunSpecs(py::handle runs) {
+  std::vector<psd::TextRunSpec> out;
+  if (!runs || runs.is_none()) return out;
+  for (py::handle h : runs.cast<py::sequence>()) {
+    if (!py::isinstance<py::dict>(h))
+      throw std::invalid_argument("set_rich_text: each run must be a dict");
+    py::dict d = py::reinterpret_borrow<py::dict>(h);
+    if (!d.contains("length"))
+      throw std::invalid_argument("set_rich_text: each run needs a 'length' "
+                                  "(UTF-16 code units)");
+    psd::TextRunSpec spec;
+    spec.length = d["length"].cast<int>();
+    fillRunStyleEdit(spec.style, dictGet(d, "font"), dictGet(d, "size_px"),
+                     dictGet(d, "color"), dictGet(d, "tracking"),
+                     dictGet(d, "kerning"), dictGet(d, "bold"),
+                     dictGet(d, "italic"), dictGet(d, "underline"));
+    out.push_back(spec);
+  }
+  return out;
+}
+
+// set_rich_text の paragraphs=[{...}] を TextParagraphSpec[] へ。
+std::vector<psd::TextParagraphSpec> toParagraphSpecs(py::handle paragraphs) {
+  std::vector<psd::TextParagraphSpec> out;
+  if (!paragraphs || paragraphs.is_none()) return out;
+  for (py::handle h : paragraphs.cast<py::sequence>()) {
+    if (!py::isinstance<py::dict>(h))
+      throw std::invalid_argument("set_rich_text: each paragraph must be a dict");
+    py::dict d = py::reinterpret_borrow<py::dict>(h);
+    if (!d.contains("length"))
+      throw std::invalid_argument("set_rich_text: each paragraph needs a 'length' "
+                                  "(UTF-16 code units)");
+    psd::TextParagraphSpec spec;
+    spec.length = d["length"].cast<int>();
+    py::handle j = dictGet(d, "justification");
+    if (j && !j.is_none()) { spec.hasJustification = true; spec.justification = j.cast<int>(); }
+    out.push_back(spec);
+  }
+  return out;
+}
+
+// 構造編集系: 範囲外は IndexError にしたいので事前に見る。
+void checkLayerIndex(const psd::PSDFile &self, int index) {
+  if (index < 0 || index >= (int)self.layerList.size())
+    throw std::out_of_range("layer index out of range");
+}
+
 // Raw bytes of an additional-layer-info block (payload after the size field),
 // or None. Useful for round-trip validation and low-level inspection.
 py::object layerDescriptorBytes(const psd::LayerInfo &l, const std::string &keyStr) {
@@ -649,7 +731,7 @@ py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
 } // namespace
 
 PYBIND11_MODULE(psdparse, m) {
-  m.doc() = "psdparse: PSD reader (Boost-free, no kirikiri deps).";
+  m.doc() = "psdparse: PSD reader/writer (pure C++17, zlib only).";
 
   // Internal: parse + re-serialize EngineData for byte-exact round-trip tests.
   m.def("_reserialize_engine_data", [](py::bytes b) -> py::object {
@@ -848,8 +930,8 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("path"),
          "Open `path` (UTF-8) as a std::ifstream and parse via StreamReader. "
          "Demonstrates that the parser also accepts arbitrary seekable streams "
-         "(this is the code path the kirikiri plugin will use on top of "
-         "iTJSBinaryStream).")
+         "(the same code path an embedder uses to plug in its own stream "
+         "type via StreamReader::Source).")
     .def("save",
          [](psd::PSDFile &self, const std::string &path) {
             return self.save(path.c_str());
@@ -875,7 +957,46 @@ PYBIND11_MODULE(psdparse, m) {
          },
          py::arg("from_index"), py::arg("to_index"),
          "Move the layer at `from_index` so it lands at `to_index` (index in "
-         "the list after removal). Reorders draw order on the next save().")
+         "the list after removal). Reorders draw order on the next save(). "
+         "One entry only — moving a FOLDER this way leaves its divider and "
+         "contents behind; use move_layer_sibling / move_layer_range for "
+         "whole groups.")
+    .def("move_layer_sibling",
+         [](psd::PSDFile &self, int index, bool up) -> py::object {
+            checkLayerIndex(self, index);
+            int newIndex = index;
+            if (!self.moveLayerSibling(index, up, &newIndex))
+                return py::none();          // 端まで来ていて動かせない
+            return py::int_(newIndex);
+         },
+         py::arg("index"), py::arg("up") = true,
+         "Swap the layer at `index` with its next sibling *at the same level*. "
+         "`up=True` moves it one step up in Photoshop's layer panel (later in "
+         "the flat list). A FOLDER moves as a whole block (divider + contents, "
+         "nested groups included) and steps over a sibling folder in one go; "
+         "the move never crosses into another folder. Returns the layer's new "
+         "index, or None when it is already at the end of its level.")
+    .def("move_layer_range",
+         [](psd::PSDFile &self, int from_index, int count, int to_index) {
+            if (!self.moveLayerRange(from_index, count, to_index))
+                throw std::out_of_range("layer range out of range");
+         },
+         py::arg("from_index"), py::arg("count"), py::arg("to_index"),
+         "Low-level block move: relocate [from_index, from_index+count) to "
+         "`to_index`, which is given as an index in the list *before* removal. "
+         "Moving a range onto itself is a no-op. Pair it with group_span() to "
+         "move a whole folder.")
+    .def("group_span",
+         [](const psd::PSDFile &self, int index) {
+            checkLayerIndex(self, index);
+            int start = index, count = 1;
+            self.groupSpan(index, start, count);
+            return py::make_tuple(start, count);
+         },
+         py::arg("index"),
+         "The (start, count) span the layer at `index` occupies in the flat "
+         "list. For a FOLDER that is [HIDDEN divider … FOLDER] including any "
+         "nested groups; for anything else it is (index, 1).")
     .def("duplicate_layer",
          [](psd::PSDFile &self, int index) {
             int r = self.duplicateLayer(index);
@@ -942,28 +1063,12 @@ PYBIND11_MODULE(psdparse, m) {
          [](psd::PSDFile &self, int index, int run_index,
             py::object size_px, py::object color, py::object tracking,
             py::object kerning, py::object bold, py::object italic,
-            py::object underline) {
+            py::object underline, py::object font) {
             psd::RunStyleEdit e;
-            bool any = false;
-            if (!size_px.is_none())  { e.hasSize = true; e.size = size_px.cast<double>(); any = true; }
-            if (!tracking.is_none()) { e.hasTracking = true; e.tracking = tracking.cast<int>(); any = true; }
-            if (!kerning.is_none())  { e.hasKerning = true; e.kerning = kerning.cast<int>(); any = true; }
-            if (!bold.is_none())     { e.hasBold = true; e.bold = bold.cast<bool>(); any = true; }
-            if (!italic.is_none())   { e.hasItalic = true; e.italic = italic.cast<bool>(); any = true; }
-            if (!underline.is_none()){ e.hasUnderline = true; e.underline = underline.cast<bool>(); any = true; }
-            if (!color.is_none()) {
-                auto seq = color.cast<py::sequence>();
-                size_t n = py::len(seq);
-                if (n < 3 || n > 4)
-                    throw std::invalid_argument("color must be (r,g,b) or (r,g,b,a), each 0..1");
-                e.hasColor = true;
-                e.color[0] = seq[0].cast<float>(); e.color[1] = seq[1].cast<float>();
-                e.color[2] = seq[2].cast<float>(); e.color[3] = (n == 4) ? seq[3].cast<float>() : 1.0f;
-                any = true;
-            }
-            if (!any)
+            if (!fillRunStyleEdit(e, font, size_px, color, tracking, kerning,
+                                  bold, italic, underline))
                 throw std::invalid_argument("set_run_style: pass at least one of "
-                    "size_px/color/tracking/kerning/bold/italic/underline");
+                    "font/size_px/color/tracking/kerning/bold/italic/underline");
             setLayerRunStyle(self, index, run_index, e);
          },
          py::arg("index"), py::arg("run_index"),
@@ -971,11 +1076,111 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("tracking") = py::none(), py::arg("kerning") = py::none(),
          py::arg("bold") = py::none(), py::arg("italic") = py::none(),
          py::arg("underline") = py::none(),
+         // font は 0.9.0 で後から足したので、既存の位置引数の並びを崩さない
+         // ように末尾に置く。
+         py::arg("font") = py::none(),
          "Edit style values of an existing style run (see text['runs']). Any of: "
-         "size_px (float), color ((r,g,b[,a]) 0..1), tracking (int), kerning "
-         "(int), bold/italic/underline (bool). Text and run lengths are "
-         "unchanged; keys are added to the run if inherited. Raises for "
-         "non-text layers or an out-of-range run index.")
+         "font (str; appended to the document's font set if new), size_px "
+         "(float), color ((r,g,b[,a]) 0..1), tracking (int), kerning (int), "
+         "bold/italic/underline (bool). Text and run lengths are unchanged; "
+         "keys are added to the run if inherited. Raises for non-text layers or "
+         "an out-of-range run index.")
+    .def("set_rich_text",
+         [](psd::PSDFile &self, int index, const std::string &text,
+            py::object runs, py::object paragraphs) {
+            std::vector<psd::TextRunSpec> r = toRunSpecs(runs);
+            std::vector<psd::TextParagraphSpec> p = toParagraphSpecs(paragraphs);
+            std::string err;
+            raiseIfFailed(self.setLayerRichText(index, psd::utf8ToU16(text), r, p, &err), err);
+         },
+         py::arg("index"), py::arg("text"), py::arg("runs") = py::none(),
+         py::arg("paragraphs") = py::none(),
+         "Replace a text layer's body text together with its run / paragraph "
+         "structure (set_text collapses everything to one run instead). "
+         "`runs` is a list of dicts: {'length': int (UTF-16 code units), plus "
+         "any of font/size_px/color/tracking/kerning/bold/italic/underline}; "
+         "unspecified style fields are inherited from the original first run. "
+         "`paragraphs` is a list of {'length': int, 'justification': int}. "
+         "An empty/omitted list collapses to a single run / paragraph. If the "
+         "run lengths don't add up to the text length, the last run absorbs "
+         "the difference. A trailing '\\r' is added if missing.")
+    .def("set_justification",
+         [](psd::PSDFile &self, int index, int justification, int para_index) {
+            std::string err;
+            raiseIfFailed(self.setLayerJustification(index, para_index, justification, &err), err);
+         },
+         py::arg("index"), py::arg("justification"), py::arg("para_index") = -1,
+         "Set paragraph alignment on a text layer: 0=left, 1=right, 2=center. "
+         "`para_index` selects one paragraph (see text['paragraphs']); the "
+         "default -1 applies it to every paragraph. Text and run structure are "
+         "unchanged.")
+    .def("text_fonts",
+         [](const psd::PSDFile &self, int index) {
+            std::vector<std::string> names;
+            std::string err;
+            raiseIfFailed(self.getLayerFonts(index, names, &err), err);
+            return names;
+         },
+         py::arg("index"),
+         "List the font names in this text layer's EngineData font set "
+         "(ResourceDict/FontSet) — the candidates a font picker would show. "
+         "Raises for non-text layers.")
+    .def("text_transform",
+         [](const psd::PSDFile &self, int index) {
+            double m[6];
+            std::string err;
+            raiseIfFailed(self.getLayerTextTransform(index, m, &err), err);
+            return py::make_tuple(m[0], m[1], m[2], m[3], m[4], m[5]);
+         },
+         py::arg("index"),
+         "The text layer's affine placement transform (xx, xy, yx, yy, tx, ty) "
+         "read from the TySh prefix. Same values as layer.text['transform'].")
+    .def("set_text_transform",
+         [](psd::PSDFile &self, int index, py::sequence m) {
+            if (py::len(m) != 6)
+                throw std::invalid_argument("transform must be 6 numbers "
+                                            "(xx, xy, yx, yy, tx, ty)");
+            double v[6];
+            for (int i = 0; i < 6; i++) v[i] = m[i].cast<double>();
+            std::string err;
+            raiseIfFailed(self.setLayerTextTransform(index, v, &err), err);
+         },
+         py::arg("index"), py::arg("transform"),
+         "Replace the text layer's affine transform (xx, xy, yx, yy, tx, ty). "
+         "Only the TySh block changes — the layer rectangle stays put, so use "
+         "move_text_layer() for plain translation.")
+    .def("move_text_layer",
+         [](psd::PSDFile &self, int index, double dx, double dy) {
+            std::string err;
+            raiseIfFailed(self.moveTextLayer(index, dx, dy, &err), err);
+         },
+         py::arg("index"), py::arg("dx"), py::arg("dy"),
+         "Translate a text layer by (dx, dy) pixels: the transform's tx/ty and "
+         "the layer (and mask) rectangle all shift, so the PSD's baked raster "
+         "moves with the text. Photoshop re-renders it at the new position on "
+         "open.")
+    .def("text_bounds",
+         [](const psd::PSDFile &self, int index) {
+            double l, t, r, b;
+            std::string err;
+            raiseIfFailed(self.getLayerTextBounds(index, l, t, r, b, &err), err);
+            return py::make_tuple(l, t, r, b);
+         },
+         py::arg("index"),
+         "The text layer's flow box as (left, top, right, bottom), in the "
+         "transform's local coordinates (the descriptor's 'bounds').")
+    .def("set_text_bounds",
+         [](psd::PSDFile &self, int index, double left, double top,
+            double right, double bottom) {
+            std::string err;
+            raiseIfFailed(self.setLayerTextBounds(index, left, top, right, bottom, &err), err);
+         },
+         py::arg("index"), py::arg("left"), py::arg("top"), py::arg("right"),
+         py::arg("bottom"),
+         "Resize the text layer's flow box (transform-local coordinates). Only "
+         "paragraph (box) text actually re-flows into a new box — for point "
+         "text Photoshop rebuilds the box from the glyphs. 'boundingBox' is "
+         "clamped into the new box so the layer still displays sanely.")
     .def("set_layer_name",
          [](psd::PSDFile &self, int index, const std::string &name) {
             if (!self.setLayerName(index, name.c_str()))
