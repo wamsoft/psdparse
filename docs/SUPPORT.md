@@ -2,8 +2,8 @@
 
 psdparse が PSD のどの機能を、どの水準で扱えるかの一覧です。psdparse は
 **参照 (読み取り) + ラウンドトリップ保存** を土台に、**構造編集 (レイヤの
-追加/削除/並べ替え/複製、画素・マスク・パラメータ・効果・テキスト本文の編集、
-ゼロからの新規作成)** まで対応します (v0.7.0)。未編集のファイルは byte-identical
+追加/削除/並べ替え/複製、画素・マスク・パラメータ・効果・テキストの編集、
+ゼロからの新規作成)** まで対応します (v0.10.0)。未編集のファイルは byte-identical
 に保存され、編集した部分だけがフィールドから再構築されます。効果込みの再合成
 (composite の再描画) は対象外です。
 
@@ -16,7 +16,10 @@ psdparse が PSD のどの機能を、どの水準で扱えるかの一覧です
 | 📦 | 生バイトのみ保持 (ラウンドトリップ用。Python へは未公開) |
 | ❌ | 未対応 — パースしていない |
 
-最終更新: 2026-08-02 (v0.7.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
+API 欄は Python 名です。C++ 側の対応するメソッドは `psdparse/psdfile.h` /
+`psdparse/psdengine.h` を参照 (Python API は C++ の公開編集面を一通り覆っています)。
+
+最終更新: 2026-08-15 (v0.10.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
 Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 
 ---
@@ -30,7 +33,10 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | PSB (large document, version 2) | ❌ | `version` は読めるが、PSB 特有の 8 byte 長フィールドの分岐が無く未対応 |
 | ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
 
-## 編集して保存 (edit & save, v0.7.0)
+## 編集して保存 (edit & save, v0.7.0–v0.10.0)
+
+版の表記は Python API が使えるようになった版です (C++ 側は 0.9.0 で先行、
+Python バインディングが 0.10.0)。
 
 編集は「参照のみ・保存時に再構築」モデル。未編集のレイヤは生バイトをそのまま
 書き出すので byte-identical を維持し、編集した部分だけがフィールドから再構築
@@ -41,7 +47,9 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | パラメータ変更 (不透明度/可視/クリップ/ブレンド) | ✅ | `layer.opacity`/`visible`/`clipping`/`set_blend_mode()` |
 | 塗り不透明度 (fill opacity) | ✅ | `layer.fill_opacity = ...` (iOpa) |
 | レイヤ改名 | ✅ | `layer.name_unicode = ...` / `set_layer_name()` (Pascal + luni) |
-| レイヤ削除 / 並べ替え / 複製 | ✅ | `delete_layer` / `move_layer` / `duplicate_layer` |
+| レイヤ削除 / 並べ替え / 複製 | ✅ | `delete_layer` / `move_layer` / `duplicate_layer` (`move_layer` は 1 枚単位。フォルダは塊で付いてこない) |
+| フォルダを塊で移動 (区切り + 中身) | ✅ | `move_layer_sibling(i, up)` / `group_span(i)` / `move_layer_range(from, count, to)` (v0.10.0) |
+| 構造編集後の親子関係 (`parent_index`) 貼り直し | ✅ | 削除/移動/複製/コピー/追加の後で自動 (`relinkGroups`, v0.10.0) |
 | 別 PSD からレイヤコピー | ✅ | `copy_layer_from(src, i)` — src を save まで生存させる |
 | 画素差し替え | ✅ | `set_layer_pixels(i, bgra, w, h)` (RLE 符号化) |
 | 画像レイヤ新規追加 | ✅ | `add_layer(name, l, t, bgra, w, h)` (名前は luni で Unicode) |
@@ -51,8 +59,13 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | 効果 (lfx2) の値編集 | ✅ | `set_effects(i, changes)` — descriptor シリアライザ byte-exact |
 | 任意 descriptor (塗り SoCo/GdFl/PtFl 等) の値編集 | ✅ | `set_layer_descriptor(i, key, changes)` |
 | テキスト本文の編集 | ✅ | `set_text(i, str)` — EngineData シリアライザ byte-exact |
-| テキストのラン単位スタイル編集 | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/bold=…)` (v0.7.0) |
-| テキストのフォント変更 (FontSet 追加) / ラン再構成 | ❌ | 既存ランの値上書きのみ |
+| テキストのラン単位スタイル編集 | ✅ | `set_run_style(i, run, font=/size_px=/color=/tracking=/kerning=/bold=/italic=/underline=)` (v0.7.0) |
+| テキストのフォント変更 (FontSet へ追記) | ✅ | `set_run_style(i, run, font="Arial")` — FontSet に無ければ追記 (v0.10.0) |
+| 本文 + ラン / 段落構成のまとめ差し替え (リッチテキスト) | ✅ | `set_rich_text(i, text, runs, paragraphs)` (v0.10.0)。未指定の書式は元の先頭ランを踏襲 |
+| 段落の行揃え編集 | ✅ | `set_justification(i, j, para_index=-1)` (v0.10.0)。既定 -1 で全段落 |
+| フォント候補の列挙 (FontSet) | ✅ | `text_fonts(i)` (v0.10.0) |
+| テキストの位置 (TySh 変換行列) 編集 | ✅ | `move_text_layer(i, dx, dy)` / `text_transform(i)` / `set_text_transform(i, m)` (v0.10.0)。move はレイヤ矩形とマスク矩形も同時にずらす |
+| テキストの流し込み枠 (descriptor `bounds`) 編集 | ✅ | `text_bounds(i)` / `set_text_bounds(i, l,t,r,b)` (v0.10.0)。実際に流し込みが変わるのは段落 (box) テキストのみ |
 | マスク幾何の単独編集 (画素なし) | 🟡 | `set_layer_mask_pixels` で画素とセットのみ |
 | 合成済み画像 (composite) の入れ替え | ✅ | `set_merged_image(bgra)` — Python で合成した結果を書き戻せる (v0.7.x) |
 | 効果込みの合成 (composite) の自動再生成 | ❌ | psdparse 自身は再描画しない。合成は Python (Pillow 等, `examples/`) で |
@@ -121,12 +134,15 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 |---|:---:|---|
 | 本文 / 縦横 / 変換行列 | ✅ | `layer.text` (`text`/`orientation`/`transform`) |
 | ラン単位スタイル (font/size/color/tracking/kerning) | ✅ | `text["runs"]` |
+| 疑似ボールド / 疑似イタリック / 下線 | ✅ | `text["runs"]` の `bold`/`italic`/`underline` (FauxBold/FauxItalic/Underline, v0.9.0) |
 | 段落別の行揃え | ✅ | `text["paragraphs"]` (v0.2.2) |
-| **本文の編集 (save)** | ✅ | `set_text(i, str)` — EngineData を byte-exact に再直列化 (v0.7.0) |
-| **ラン単位スタイルの編集** | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/kerning=/bold=/italic=/underline=)` (v0.7.0) |
-| ワープ (warp) | ❌ | TySh warp descriptor 未処理 |
+| 配置 (変換行列) / 流し込み枠 | ✅ | `text["transform"]` / `text_transform(i)` / `text_bounds(i)` |
+| **本文の編集 (save)** | ✅ | `set_text(i, str)` — EngineData を byte-exact に再直列化 (v0.7.0)。スタイルは先頭ランに畳まれる |
+| **ラン単位スタイルの編集** | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/kerning=/bold=/italic=/underline=)` (v0.7.0)、`font=` (v0.10.0) |
+| リッチテキスト差し替え / 行揃え / フォント変更 / 配置 / 枠 | ✅ | 上の「編集して保存」表を参照 (v0.10.0) |
+| ワープ (warp) | ❌ | TySh warp descriptor 未処理 (編集時はバイト列のまま保存される) |
 | 非 RGB の FillColor | ❌ | `/Type 1` (RGB) のみ |
-| leading / 疑似ボールド / 下線 等 | 🟡 | EngineData にキーはあるが既定値サンプルのみで未検証 |
+| leading / 段落インデント / 段落前後アキ | ❌ | EngineData にキーはあるが未抽出・未編集 |
 
 ## Descriptor ブロック (v0.4.0)
 
@@ -185,12 +201,15 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
   レイヤー効果/塗りの descriptor、文書メタデータ (ガイド/スライス/カンプ/global
   layer mask) と image resource の生バイト (ICC/EXIF/XMP/サムネイル)、そして
   **byte-identical なラウンドトリップ**。
-- **得意 (編集, v0.7.0)**: レイヤの追加/削除/並べ替え/複製/他ファイルコピー、
-  画素・マスク画素・パラメータ・改名・fill opacity の編集、効果 (lfx2) とテキスト
-  本文の byte-exact な編集、ゼロからの新規作成。未編集部分は byte-identical を維持。
+- **得意 (編集, v0.10.0)**: レイヤの追加/削除/並べ替え (フォルダは塊のまま移動)
+  /複製/他ファイルコピー、画素・マスク画素・パラメータ・改名・fill opacity の
+  編集、効果 (lfx2) の byte-exact な編集、テキスト (本文 / ラン単位スタイル /
+  リッチテキスト / 行揃え / フォント / 配置 / 流し込み枠) の編集、ゼロからの
+  新規作成。未編集部分は byte-identical を維持。編集 API は C++ / Python の
+  どちらからも同じことができます。
 - **未対応/限定的**: Multichannel ピクセル、調整レイヤの数値パラメータ、ベクタ
   パス、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成 (composite 再描画)、
-  テキストのフォント名変更/ラン再構成。画素編集は 8bit RGB のみ。
+  テキストの warp / leading / 段落インデント。画素編集は 8bit RGB のみ。
 - Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを
   返すのみ。

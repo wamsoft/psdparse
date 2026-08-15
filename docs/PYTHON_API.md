@@ -4,6 +4,9 @@ The Python bindings expose a small surface area focused on **reading** PSDs, **e
 
 All public path arguments are Python `str`. pybind11 transparently encodes them as UTF-8 before reaching the C++ layer.
 
+The bindings cover the C++ library's public editing surface; the authoritative
+C++ headers are `psdparse/psdfile.h` + `psdparse/psdengine.h`.
+
 ```python
 import psdparse
 ```
@@ -137,12 +140,19 @@ layer it returns `None`.
     {
       "length": 8,                            # run length in UTF-16 code units (see note)
       "font": "NotoSansJP-Thin",              # resolved font-set family name
-      "size_px": 75.0,                        # font size (pt)
+      "size_px": 75.0,                        # font size (px)
       "color": (1.0, 0.0, 0.0, 1.0),          # RGBA, each 0..1 (None if unspecified)
       "tracking": -100,                        # letter spacing, 1/1000 em
       "kerning": 0,                            # manual kerning
       "auto_kerning": False,                   # metrics/optical kerning enabled
+      "bold": False,                           # FauxBold
+      "italic": False,                         # FauxItalic
+      "underline": False,                      # Underline
     },
+    ...
+  ],
+  "paragraphs": [                             # paragraphs (split on '\r'), in text order
+    {"length": 8, "justification": 0},        # length in UTF-16 code units
     ...
   ],
 }
@@ -158,6 +168,11 @@ Notes:
 - `color` is decoded from EngineData's `FillColor /Type 1` (RGB) and reordered
   from its on-disk `[A R G B]` to `(R, G, B, A)`. Non-RGB fill types are not yet
   decoded (`color` is `None`).
+- `bold` / `italic` / `underline` are Photoshop's *faux* styles (`FauxBold`,
+  `FauxItalic`, `Underline`) — the same three flags `set_run_style` writes, so
+  what you set reads back here (added in 0.9.0).
+- `paragraphs` splits the body on `\r`; `justification` is per paragraph, while
+  the top-level `justification` is just the first paragraph's value.
 
 ```python
 for layer in p.layers:
@@ -232,9 +247,10 @@ for i, l in enumerate(p.layers):
 
 psdparse can edit a loaded PSD (or build one from scratch) and save the result.
 Editable: layer **parameters** (opacity/visibility/clipping/blend/fill-opacity),
-**names**, **structure** (delete/move/duplicate/cross-file copy), **pixels** and
-**masks**, layer-**effect values**, and **text content** — plus `create_blank`
-for new documents.
+**names**, **structure** (delete/move/duplicate/cross-file copy, folder-aware
+moves), **pixels** and **masks**, layer-**effect values**, and **text**
+(content, per-run style, run/paragraph structure, alignment, placement and flow
+box) — plus `create_blank` for new documents.
 
 The model is *lazy*: edits only touch in-memory fields/references — nothing is
 re-encoded until `save()`, which re-serializes just the parts you changed. The
@@ -252,12 +268,17 @@ Quick map of the API (details in the subsections below):
 | rename a layer | `layer.name_unicode = …` / `p.set_layer_name(i, …)` |
 | change fill opacity | `layer.fill_opacity = …` |
 | delete / move / duplicate | `p.delete_layer(i)` / `p.move_layer(a,b)` / `p.duplicate_layer(i)` |
+| move a layer or a whole folder within its level | `p.move_layer_sibling(i, up=True)` / `p.group_span(i)` / `p.move_layer_range(...)` |
 | copy a layer from another file | `p.copy_layer_from(src, j)` |
 | replace layer pixels / add an image layer | `p.set_layer_pixels(...)` / `p.add_layer(...)` |
 | set mask pixels + geometry / mask values | `p.set_layer_mask_pixels(...)` / `p.set_layer_mask(...)` |
 | edit effect / descriptor values | `p.set_effects(i, changes)` / `p.set_layer_descriptor(...)` |
 | edit text content | `p.set_text(i, str)` |
-| edit a text run's style | `p.set_run_style(i, run, size_px=…, color=…, …)` |
+| edit a text run's style | `p.set_run_style(i, run, font=…, size_px=…, color=…, …)` |
+| replace text *and* its run / paragraph structure | `p.set_rich_text(i, str, runs, paragraphs)` |
+| change paragraph alignment | `p.set_justification(i, 2)` |
+| list a text layer's fonts | `p.text_fonts(i)` |
+| move a text layer / resize its flow box | `p.move_text_layer(i, dx, dy)` / `p.set_text_bounds(i, l,t,r,b)` |
 | build a new PSD | `p.create_blank(w, h)` then `add_layer(...)` |
 | write a composited preview back | `p.set_merged_image(bgra)` |
 
@@ -331,6 +352,13 @@ new_i = p.copy_layer_from(src, j, dest_index=-1)  # copy layer j from another PS
 ```
 
 Notes:
+- **`move_layer` moves one entry of the flat list.** Moving a `FOLDER` layer
+  does *not* drag its divider and contents along — the group comes apart. Use
+  the folder-aware moves below for whole groups.
+- **`layer.parent_index` is refreshed after every structural edit** (delete /
+  move / duplicate / copy / add re-link the hierarchy, 0.9.0), so the tree you
+  read back matches the edited list. Before 0.9.0 it kept the values computed at
+  load time and went stale.
 - `duplicate_layer` / `copy_layer_from` assign the copy a **fresh `layer_id`**
   (max existing lyid + 1, like Photoshop) so layer IDs stay unique within the
   document; the `lyid` additional-info block is rewritten on save.
@@ -348,6 +376,33 @@ Notes:
   (`set_text`) are covered in their own subsections below.
 - The stored **composite (merged) image is not regenerated** after edits — it
   stays as it was until Photoshop (or another editor) recomposites on open.
+
+### Folder-aware moves
+
+```python
+start, count = p.group_span(i)         # the block layer i occupies
+new_i = p.move_layer_sibling(i, up=True)   # -> int, or None if it can't move
+p.move_layer_range(start, count, to_index)
+```
+
+- **`group_span(i)`** returns `(start, count)`. For a `FOLDER` that is the whole
+  `[HIDDEN divider … FOLDER]` block including nested groups; for anything else
+  it is `(i, 1)`.
+- **`move_layer_sibling(i, up=True)`** swaps the layer with its next sibling
+  *at the same level*. `up=True` is one step up in Photoshop's layer panel
+  (later in the flat list). A folder travels with its contents and steps over a
+  sibling folder in one move; the move never crosses into another folder.
+  Returns the layer's new index, or `None` when it is already at the end of its
+  level (nothing moves in that case).
+- **`move_layer_range(from_index, count, to_index)`** is the low-level block
+  move; `to_index` is an index in the list *before* removal. Moving a range
+  onto itself is a no-op. Raises `IndexError` on bad arguments.
+
+```python
+# move a folder (with everything inside it) to the bottom of the document
+start, count = p.group_span(folder_index)
+p.move_layer_range(start, count, 0)
+```
 
 ### Pixel edits (E4)
 
@@ -408,15 +463,83 @@ Edit an existing run's style in place (text and run lengths unchanged):
 
 ```python
 # run indices match layer.text["runs"]
-p.set_run_style(i, run=0, size_px=48.0, color=(1.0, 0.0, 0.0))   # 48px, red
-p.set_run_style(i, run=1, tracking=100, bold=True, underline=True)
+p.set_run_style(i, run_index=0, size_px=48.0, color=(1.0, 0.0, 0.0))   # 48px, red
+p.set_run_style(i, run_index=1, tracking=100, bold=True, underline=True)
+p.set_run_style(i, run_index=1, font="Arial")
 ```
 
-- Any subset of: `size_px` (float), `color` ((r,g,b) or (r,g,b,a), each 0..1),
-  `tracking` / `kerning` (int), `bold` / `italic` / `underline` (bool).
+- Any subset of: `font` (str), `size_px` (float), `color` ((r,g,b) or
+  (r,g,b,a), each 0..1), `tracking` / `kerning` (int), `bold` / `italic` /
+  `underline` (bool).
 - Keys are added to the run if it inherited them from the default style sheet.
-- **Changing the font by name is not supported** (would require editing the
-  document's font set); re-splitting text into new runs isn't either.
+- `font` is matched against the document's font set (`p.text_fonts(i)`) and
+  **appended to it** when the name isn't there yet. The name is the PostScript-ish
+  font-set name Photoshop stores (`"NotoSansJP-Regular"`, `"Arial"`), not a
+  display name — Photoshop resolves it when it opens the file, so a name the
+  machine doesn't have falls back to a substitute font.
+
+```python
+p.text_fonts(i)   # -> ['NotoSansJP-Regular', 'HGPKyokashotai', 'AdobeInvisFont', ...]
+```
+
+### Rich text (runs & paragraphs)
+
+`set_text` collapses the whole layer to one style run. To change the text *and*
+keep (or rebuild) per-part formatting, use `set_rich_text`:
+
+```python
+p.set_rich_text(i, "赤い字\r青い字",
+                runs=[{"length": 4, "color": (1.0, 0.0, 0.0), "size_px": 40.0},
+                      {"length": 4, "color": (0.0, 0.0, 1.0), "bold": True}],
+                paragraphs=[{"length": 4, "justification": 0},
+                            {"length": 4, "justification": 2}])
+```
+
+- **`runs`** — a list of dicts, each with `length` (UTF-16 code units,
+  **required**) plus any of the `set_run_style` style keys (`font`, `size_px`,
+  `color`, `tracking`, `kerning`, `bold`, `italic`, `underline`).
+- Every run starts from the **original first run as a template**; only the keys
+  you give are overridden, so unspecified formatting keeps the layer's look.
+- If the run lengths don't add up to the text length, the **last run absorbs
+  the difference** (extended or truncated); zero-length runs are dropped.
+  Omitting `runs` (or passing `[]`) collapses to a single run, like `set_text`.
+- **`paragraphs`** — a list of `{"length": int, "justification": int}`
+  (0=left, 1=right, 2=center); same length-absorbing rule. Omitting it collapses
+  to a single paragraph.
+- A trailing `\r` is appended if missing (Photoshop's convention), so
+  `length` accounting should include it — or just let the last run absorb it.
+- Lengths are **UTF-16 code units**, so astral characters (emoji) count as 2:
+  `len(part.encode("utf-16-le")) // 2`.
+
+Alignment alone, without touching text or runs:
+
+```python
+p.set_justification(i, 2)                  # every paragraph -> center
+p.set_justification(i, 0, para_index=1)    # only the 2nd paragraph -> left
+```
+
+### Text placement & text box
+
+```python
+p.text_transform(i)          # -> (xx, xy, yx, yy, tx, ty), same as text["transform"]
+p.set_text_transform(i, (1, 0, 0, 1, 111.0, 222.0))
+p.move_text_layer(i, dx, dy)
+p.text_bounds(i)             # -> (left, top, right, bottom)
+p.set_text_bounds(i, 0, 0, 300, 200)
+```
+
+- **`move_text_layer(i, dx, dy)`** is the one to use for plain translation: it
+  shifts the transform's `tx`/`ty` **and** the layer rectangle (and the mask
+  rectangle, if any), so the PSD's baked raster travels with the text instead of
+  being left behind. `set_text_transform` only rewrites the `TySh` block.
+- **`text_bounds` / `set_text_bounds`** are the descriptor's `bounds` — the flow
+  box, in the transform's **local** coordinates (add `tx`/`ty` for canvas
+  coordinates). Only paragraph (box) text actually re-flows into a new box; for
+  point text Photoshop rebuilds the box from the glyphs on open. The stored
+  `boundingBox` is clamped into the new box so the layer still displays sanely.
+- psdparse does not re-render text — the layer's pixels are whatever Photoshop
+  last baked. Moving or re-flowing shows up properly once Photoshop reopens the
+  file.
 
 ### New from scratch (E5)
 

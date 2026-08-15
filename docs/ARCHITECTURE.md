@@ -3,9 +3,9 @@
 ## Goals (in priority order)
 
 1. **Lazy I/O.** Loading a PSD must not require reading the full file into memory. Only structural metadata (a few hundred KB) is touched during parse. Pixel data is paged in when the user asks for a specific layer.
-2. **Backend-agnostic.** The parser and the image decoder see one I/O abstraction (`IteratorBase`). mmap and arbitrary seekable streams (std::istream, kirikiri `iTJSBinaryStream`, …) all plug into the same code path.
+2. **Backend-agnostic.** The parser and the image decoder see one I/O abstraction (`IteratorBase`). mmap and arbitrary seekable streams (std::istream, a host application's own stream class, …) all plug into the same code path.
 3. **Round-trip save.** `load(p) -> save(q)` produces a byte-identical PSD. We achieve this by retaining raw-bytes iterators for blocks whose round-trip re-serialization would be painful (layer extra data, global mask info, trailing additional info).
-4. **No Boost. No tp_stub.** Plain C++17 + zlib only.
+4. **No third-party framework dependencies.** Plain C++17 + zlib only (no Boost, no host-application SDK).
 
 ## Read path
 
@@ -20,7 +20,7 @@ IteratorBase             (psdbase.h, pure virtual)
       Used for: any seekable stream
       └── Source (pure virtual, nested in StreamReader)
             ├── IStreamSource              ... std::istream wrapper (psdfile.cpp)
-            └── (your backend)             ... e.g. iTJSBinaryStream wrapper
+            └── (your backend)             ... e.g. a host app's stream class
 ```
 
 `IteratorBase` exposes a tiny interface:
@@ -132,7 +132,17 @@ The round-trip guarantee assumes the user didn't modify the loaded data. Adding/
 - `channelImageData` is the **concatenation** of all channel bytes for all layers. Deleting a `LayerInfo` from `layerList` doesn't shrink this blob.
 - `LayerExtraData::rawBytes` doesn't reflect a mutated layer name. Save would write stale bytes.
 
-The roadmap for supporting structural edits is in [ROADMAP.md](ROADMAP.md). Briefly: per-channel save, then field-based extra-data emission, then an RLE encoder for new pixel data.
+Both are solved by the edit path (E1–E6, done in 0.7.0–0.9.0): when the layer list is dirty, `writeLayerInfo` emits channel data **per layer / per channel** instead of dumping the original blob, and a per-layer `LayerExtraData::useRawBytes=false` routes that layer's extra data through field-based re-serialization. Layers you never touched keep the raw-bytes path, so byte-identical round-trip survives. See [ROADMAP.md](ROADMAP.md) for the phase-by-phase account.
+
+### Editing helpers
+
+| Concern | Where |
+|---|---|
+| Descriptor serializer (inverse of `psddesc`) | `writeDescriptorBody` / `writeDescriptorItem` in `psdwrite.cpp` |
+| EngineData (text) parse + byte-exact serialize / edit | `psdparse/psdengine.{h,cpp}` |
+| `TySh` block rebuild (prefix + descriptor + warp/bounds) | `PSDFile::editTyShBlock` / `editTextLayer` (`psdfile.cpp`) |
+| PackBits(RLE) encoder + owning `VectorReader` | `psdimage.cpp` |
+| Group span / parent re-linking after structural edits | `Data::groupSpan` / `Data::relinkGroups` (`psddata.h`, `psdparse.cpp`) |
 
 ## File / class index
 
@@ -143,7 +153,7 @@ The roadmap for supporting structural edits is in [ROADMAP.md](ROADMAP.md). Brie
 | `psdparse/psddesc.h` | Photoshop Descriptor data |
 | `psdparse/psdparse.h` | `MemoryReader`, `StreamReader` (+ nested `Source`), `parsePSD` decl |
 | `psdparse/psdparse.cpp` | The parser. `SubBlock` RAII, hand-rolled binary reading, `processParsed` post-parse fixup |
-| `psdparse/psdfile.h` | `PSDFile` (load/save public API) |
+| `psdparse/psdfile.h` | `PSDFile` — the public load / save / **edit** API (structure, pixels, mask, extra-data fields, text) |
 | `psdparse/psdfile.cpp` | `PSDFile` impl, Win32 mmap pimpl, `IStreamSource` adapter |
 | `psdparse/psdimage.cpp` | Per-channel and merged-image decoders (RLE / zip / raw) |
 | `psdparse/psdwrite.h` | `WriterBase`, `FileWriter`, `writePSD` decl |
@@ -151,6 +161,8 @@ The roadmap for supporting structural edits is in [ROADMAP.md](ROADMAP.md). Brie
 | `psdparse/psdresource.cpp` | Image resource handlers (slices, grids, color tables, layer comps) |
 | `psdparse/psdlayer.cpp` | Layer-level additional info handlers (luni, lsct, lyid, …) |
 | `psdparse/psddesc.cpp` | Descriptor parser |
+| `psdparse/psdengine.h` | Adobe *EngineData* API: parse / re-serialize / text & run-style / rich-text edits (`RunStyleEdit`, `TextRunSpec`, `TextParagraphSpec`) |
+| `psdparse/psdengine.cpp` | EngineData mini-language parser + byte-exact serializer and the edit transforms |
 | `psdparse/bmp.cpp` | BMP scratch-buffer helper |
 | `psdparse/psd_cli.cpp` | Smoke-test CLI |
 | `python/psdparse_module.cpp` | pybind11 bindings (PSDFile, LayerInfo, Header, enums) |

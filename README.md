@@ -4,7 +4,7 @@ Pure C++17 PSD (Photoshop) reader/writer library, with pybind11-based Python bin
 
 - Lazy I/O: PSD pixel data is **not** copied into memory at parse time. Only the structural metadata (a few hundred KB even for large files) is read upfront; layer pixels are paged in on demand via mmap or stream callbacks.
 - Round-trip save: `load(p) -> save(q)` produces a byte-identical PSD file.
-- **Edit & save**: add / delete / reorder / duplicate layers, copy layers between files, replace layer & mask pixels, edit parameters / names / masks / fill opacity, edit layer-effect (`lfx2`) values and text content, or build a PSD from scratch — all with byte-exact re-serialization of the parts you touch (unedited layers stay byte-identical).
+- **Edit & save**: add / delete / reorder / duplicate layers (folder-aware moves), copy layers between files, replace layer & mask pixels, edit parameters / names / masks / fill opacity, edit layer-effect (`lfx2`) values, and edit text layers (body text, per-run style, rich-text run/paragraph rebuild, placement & text box), or build a PSD from scratch — all with byte-exact re-serialization of the parts you touch (unedited layers stay byte-identical).
 - Python wrapper: `import psdparse` → `PSDFile.load(path) / layer_image(i) / merged_image() / save(path)` plus the editing API.
 
 The library was extracted from the [psdfile](https://github.com/wamsoft/psdfile) kirikiri plugin in 2026. psdfile now consumes this library as a submodule.
@@ -19,7 +19,7 @@ IteratorBase (psdbase.h, pure virtual — parser only sees this)
 └── StreamReader   (psdparse.h)  ... arbitrary seekable stream
     └── Source (pure virtual; subclass per backend)
         ├── IStreamSource              ... std::istream
-        └── (your custom Source)       ... e.g. iTJSBinaryStream wrapper
+        └── (your custom Source)       ... e.g. a host app's stream class
 
 WriterBase (psdwrite.h, pure virtual — symmetric to IteratorBase)
 └── FileWriter (FILE*)
@@ -111,6 +111,20 @@ q.save(r"new.psd")
 
 Full API reference: [docs/PYTHON_API.md](docs/PYTHON_API.md).
 
+Rich text, folder-aware moves and text placement are bound too:
+
+```python
+p.set_rich_text(2, "赤\r青", [{"length": 2, "color": (1, 0, 0)},
+                             {"length": 2, "color": (0, 0, 1), "font": "Arial"}])
+p.set_justification(2, 2)              # center every paragraph
+p.set_run_style(2, 0, font="Times New Roman")
+p.move_text_layer(2, 40, -15)          # transform + layer/mask rect
+p.set_text_bounds(2, 0, 0, 300, 200)   # flow box (paragraph text)
+
+p.move_layer_sibling(i, up=True)       # whole folders move as one block
+start, count = p.group_span(i)
+```
+
 ## PSD feature coverage
 
 What psdparse can and cannot read **and edit**, at a glance:
@@ -118,7 +132,13 @@ What psdparse can and cannot read **and edit**, at a glance:
 
 ## Tests
 
-Tests live under `tests/` and use [pytest](https://docs.pytest.org/). They need sample PSDs placed at the repo root or `tests/data/` (not committed — listed in `.gitignore`); without them the tests skip rather than fail.
+Tests live under `tests/` and use [pytest](https://docs.pytest.org/). The small
+synthesized fixtures are committed under `tests/data/` (`masktest.psd`,
+`maskparams.psd`, `labsample.psd`, `graysample.psd`, `duosample.psd`,
+`textboxsample.psd`, `textmask.psd` — force-added past the `*.psd` ignore rule).
+The larger real-world samples (`fontsample.psd`, `config.psd`, artwork PSDs,
+Adobe's `Layer Comps.psd`) are **not** committed; drop them into `tests/data/`
+or the repo root and the tests that need them stop skipping.
 
 ```powershell
 # after building the Python module (pip install . / preset x64-windows-python):
