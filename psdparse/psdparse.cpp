@@ -655,6 +655,20 @@ void Data::relinkGroups() {
   }
 }
 
+// parentIndex の直下にある子の index を、layerList と同じ順 (下から上) で返す。
+// 区切りレイヤ (LAYER_TYPE_HIDDEN) は PSD の符号化上の都合なので含めない。
+std::vector<int> Data::childIndices(int parentIndex) const {
+  std::vector<int> out;
+  const int n = (int)layerList.size();
+  if (parentIndex >= n) return out;
+  for (int i = 0; i < n; i++) {
+    const LayerInfo &l = layerList[(size_t)i];
+    if (l.layerType == LAYER_TYPE_HIDDEN) continue;
+    if (l.parentIndex == parentIndex) out.push_back(i);
+  }
+  return out;
+}
+
 // index が占める範囲を返す。フォルダなら対応する区切りまで遡る。
 bool Data::groupSpan(int index, int &startOut, int &countOut) const {
   int n = (int)layerList.size();
