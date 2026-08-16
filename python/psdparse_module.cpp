@@ -1294,6 +1294,27 @@ PYBIND11_MODULE(psdparse, m) {
          "Add a new image layer at (left, top) from BGRA bytes "
          "(width*height*4). Returns the new layer index. `blend_mode` is a "
          "4-char key ('norm', 'mul ', ...). 8-bit RGB documents only.")
+    .def("add_folder",
+         [](psd::PSDFile &self, const std::string &name, int from, int count,
+            bool closed, const std::string &blend_mode, int opacity) {
+            if (blend_mode.size() != 4)
+                throw std::invalid_argument("blend_mode must be a 4-char key, e.g. 'pass'");
+            int key = ((int)(uint8_t)blend_mode[0] << 24) | ((int)(uint8_t)blend_mode[1] << 16) |
+                      ((int)(uint8_t)blend_mode[2] << 8)  |  (int)(uint8_t)blend_mode[3];
+            int r = self.addFolder(name.c_str(), from, count, closed, key, opacity);
+            if (r < 0)
+                throw std::runtime_error("add_folder failed (bad range, or document "
+                                         "is not 8-bit RGB)");
+            return r;
+         },
+         py::arg("name"), py::arg("from_index"), py::arg("count"),
+         py::arg("closed") = false, py::arg("blend_mode") = "pass",
+         py::arg("opacity") = 255,
+         "Wrap layers[from_index : from_index+count] in a layer group. Inserts "
+         "the two marker layers PSD uses for a folder (a '</Layer group>' divider "
+         "below the contents and the folder layer above them) and returns the "
+         "folder layer's index. `blend_mode` defaults to 'pass' (pass-through), "
+         "matching Photoshop's new-group default. Pass count=0 for an empty folder.")
     .def_readonly("is_loaded", &psd::PSDFile::isLoaded)
     .def_readonly("header",    &psd::PSDFile::header)
     .def_readonly("layers",    &psd::PSDFile::layerList)
