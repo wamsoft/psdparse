@@ -65,10 +65,15 @@ p.header.version     # int (1 or 2)
 ### Layers
 
 ```python
-p.layers             # list[LayerInfo] -- read-only
+p.layers             # list[LayerInfo] -- read-only, flat, bottom-to-top
+p.roots              # list[int] -- top-level layer indices (tree view)
+p.children(i)        # list[int] -- direct children of layers[i]; i=-1 for roots
 p.merged_alpha       # bool
 p.is_loaded          # bool
 ```
+
+See [Layer hierarchy](#layer-hierarchy) for how the flat list and the tree view
+relate.
 
 ### Image extraction
 
@@ -109,6 +114,8 @@ Read-only view of one layer.
 | `name` | `str` | raw Pascal-string name (CP932 etc on Japanese PSDs — pybind11 may raise UnicodeDecodeError when read) |
 | `name_unicode` | `str` | UTF-16 Unicode name from `luni` record (preferred). **Writable** — assigning renames the layer (see [Editing](#editing--saving)) |
 | `parent_index` | `int` | index into `PSDFile.layers` of the enclosing folder, or `-1` for top level — see [Layer hierarchy](#layer-hierarchy) |
+| `children` | `list[int]` | indices of the direct children, bottom-to-top; empty for non-folders. Dividers excluded — see [Layer hierarchy](#layer-hierarchy) |
+| `is_group` | `bool` | `True` for `FOLDER` layers |
 | `text` | `dict` \| `None` | text-layer content & style (`None` for non-text layers) — see below |
 | `mask` | `dict` \| `None` | layer mask geometry & flags (`None` when the layer has no mask) — see below |
 | `blending_ranges` | `dict` \| `None` | "Blend If" ranges (`None` when absent) — see below |
@@ -229,19 +236,41 @@ sub-ranges — split yourself if you need the individual sliders):
 
 ## Layer hierarchy
 
-Layers are a **flat list in file order**; folder structure is recovered from
-`layer.parent_index` (`-1` = top level, otherwise the index of the enclosing
-`FOLDER` layer). To build a tree:
+Layers are a **flat list in file order** — that is PSD's own encoding, and both
+drawing order and the editing API (`delete_layer(i)`, `move_layer(from, to)`, …)
+are defined on it. A group is a `FOLDER` layer above its contents plus a
+matching `HIDDEN` layer (`</Layer group>`) below them; these are Photoshop's
+`lsct` section dividers.
+
+For walking the structure, use the **tree view** — a derived read-only view that
+hides that encoding:
 
 ```python
-children = {i: [] for i in range(len(p.layers))}
-roots = []
-for i, l in enumerate(p.layers):
-    (roots if l.parent_index == -1 else children[l.parent_index]).append(i)
+def walk(i, depth=0):
+    l = p.layers[i]
+    print("  " * depth + l.name_unicode)
+    for c in l.children:
+        walk(c, depth + 1)
+
+for r in p.roots:          # top-level layers, bottom-to-top
+    walk(r)
 ```
 
-`FOLDER` marks a group's start and the matching `HIDDEN` layer marks its end
-(these are Photoshop's `lsct` section dividers).
+- `p.roots` — indices of the top-level layers, bottom-to-top.
+- `layer.children` — indices of that layer's direct children, bottom-to-top;
+  empty for non-folders. **Dividers are left out** — they are an encoding
+  artifact, not content, so walking the tree reaches every real layer exactly
+  once.
+- `layer.is_group` — `True` for `FOLDER` layers.
+- `p.children(i)` — same as `p.layers[i].children`; `p.children(-1)` is `roots`.
+
+Both views stay in sync: the hierarchy is recomputed after every structural edit
+(add / delete / move / duplicate / copy).
+
+`layer.parent_index` is still there (`-1` = top level, otherwise the index of
+the enclosing `FOLDER` layer) if you would rather build the tree yourself. Note
+it reports the divider as a child of its folder, which is why `children` filters
+dividers out.
 
 ## Editing & saving
 

@@ -854,6 +854,23 @@ PYBIND11_MODULE(psdparse, m) {
     .def_readonly("parent_index", &psd::LayerInfo::parentIndex,
         "Index into PSDFile.layers of the enclosing folder layer, or -1 for "
         "top-level layers. Build the layer tree from these.")
+    .def_property_readonly("is_group",
+        [](const psd::LayerInfo &self) {
+            return self.layerType == psd::LAYER_TYPE_FOLDER;
+        },
+        "True when this layer is a folder (layer group).")
+    .def_property_readonly("children",
+        [](const psd::LayerInfo &self) {
+            if (!self.owner) return std::vector<int>();
+            const auto &list = self.owner->layerList;
+            if (list.empty()) return std::vector<int>();
+            const int idx = int(&self - &list[0]);
+            if (idx < 0 || idx >= (int)list.size()) return std::vector<int>();
+            return self.owner->childIndices(idx);
+        },
+        "Indices of this layer's direct children, bottom-to-top. Empty for "
+        "non-folder layers. The '</Layer group>' divider PSD uses to encode a "
+        "group is left out — it is an encoding artifact, not content.")
     .def_property_readonly("text", &layerText,
         "Text-layer content/style as a dict (keys: text, orientation, "
         "justification, transform, runs[]), or None for non-text layers.")
@@ -1315,6 +1332,16 @@ PYBIND11_MODULE(psdparse, m) {
          "below the contents and the folder layer above them) and returns the "
          "folder layer's index. `blend_mode` defaults to 'pass' (pass-through), "
          "matching Photoshop's new-group default. Pass count=0 for an empty folder.")
+    .def_property_readonly("roots",
+         [](const psd::PSDFile &self) { return self.childIndices(-1); },
+         "Indices of the top-level layers, bottom-to-top. Together with "
+         "LayerInfo.children this gives a tree view over the flat `layers` "
+         "list; the flat list stays canonical for drawing order and editing.")
+    .def("children",
+         [](const psd::PSDFile &self, int index) { return self.childIndices(index); },
+         py::arg("index"),
+         "Indices of the direct children of layers[index], bottom-to-top. "
+         "Pass -1 for the top level (same as `roots`).")
     .def_readonly("is_loaded", &psd::PSDFile::isLoaded)
     .def_readonly("header",    &psd::PSDFile::header)
     .def_readonly("layers",    &psd::PSDFile::layerList)
