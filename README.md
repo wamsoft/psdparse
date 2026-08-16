@@ -106,6 +106,8 @@ p.save(r"edited.psd")
 q = psdparse.PSDFile()                           # or build one from scratch
 q.create_blank(1024, 768)
 q.add_layer("bg", 0, 0, bgra_bytes, 1024, 768)
+q.add_layer("line", 0, 0, bgra_bytes, 1024, 768)
+q.add_folder("group", 1, 1)                      # wrap layers[1:2] in a group
 q.save(r"new.psd")
 ```
 

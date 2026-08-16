@@ -349,9 +349,22 @@ p.delete_layer(i)                  # remove layer i
 p.move_layer(from_i, to_i)         # reorder (to_i = index in the post-removal list)
 new_i = p.duplicate_layer(i)       # copy layer i, inserted right after it
 new_i = p.copy_layer_from(src, j, dest_index=-1)  # copy layer j from another PSDFile
+
+# wrap layers[from_index : from_index+count] in a group;
+# returns the folder layer's index
+f_i = p.add_folder("group name", from_index, count,
+                   closed=False, blend_mode="pass", opacity=255)
 ```
 
 Notes:
+- **`add_folder` inserts the two marker layers PSD uses for a group**: a
+  `</Layer group>` divider (`LayerType.HIDDEN`) below the contents and the
+  folder layer (`LayerType.FOLDER`) above them, both with an empty (0×0) rect.
+  Nest groups by wrapping an outer range that already contains inner ones.
+  `blend_mode` defaults to `"pass"` (pass-through), matching Photoshop's
+  new-group default; `count=0` creates an empty folder at `from_index`.
+  Indices below `from_index` are unaffected, so building bottom-up and wrapping
+  each group as soon as its contents are in place needs no index bookkeeping.
 - **`move_layer` moves one entry of the flat list.** Moving a `FOLDER` layer
   does *not* drag its divider and contents along — the group comes apart. Use
   the folder-aware moves below for whole groups.
