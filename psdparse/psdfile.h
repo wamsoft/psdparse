@@ -112,6 +112,19 @@ namespace psd {
                   const uint8_t *bgra, int width, int height,
                   int blendModeKey = 'norm', int opacity = 255, int destIndex = -1);
 
+    // layerList の [from, from+count) をひとつのフォルダにまとめる。
+    //
+    // PSD のフォルダは「区切りレイヤ (lsct=3, 名前 "</Layer group>") を中身の下に、
+    // フォルダレイヤ (lsct=1 開 / 2 閉) を中身の上に」置いた 2 枚組で表現される。
+    // どちらも矩形が空 (0x0) のダミーレイヤ。この関数はその 2 枚を挿入する。
+    //
+    // closed=true で折り畳んだ状態、blendModeKey は 'pass' (通過) が Photoshop の
+    // 新規グループ既定。成功でフォルダレイヤのインデックスを返す。失敗で -1。
+    // count=0 なら空フォルダを from の位置に作る。
+    int  addFolder(const char *nameUtf8, int from, int count,
+                   bool closed = false, int blendModeKey = 'pass',
+                   int opacity = 255);
+
     // --- extra data 項目編集 (E3) -------------------------------------------
     // レイヤ index を改名する。pascal 名 (UTF-8 バイト) と luni (Unicode) の
     // 両方を更新し、save() 時に extra data をフィールドから再構築する

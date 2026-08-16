@@ -1170,7 +1170,82 @@ namespace psd {
     return buf;
   }
 
+  // フォルダの区切り / フォルダ本体用の extra data。
+  // buildLayerExtra と同じ構成に 'lsct' (section divider setting) を足したもの。
+  //   lsctType : 1=開いたフォルダ / 2=閉じたフォルダ / 3=区切り
+  // フォルダ側は blend key を含めて 12 バイトで書く (通過 'pass' の指定に必要)。
+  std::shared_ptr<std::vector<uint8_t>> buildFolderExtra(const std::string &nameUtf8,
+                                                         int layerId, int lsctType,
+                                                         int blendModeKey) {
+    auto buf = buildLayerExtra(nameUtf8, layerId);
+    std::vector<uint8_t> &v = *buf;
+    const char sig[8] = { '8','B','I','M','l','s','c','t' };
+    v.insert(v.end(), sig, sig + 8);
+    if (lsctType == 3) {
+      putBE32(v, 4);
+      putBE32(v, (uint32_t)lsctType);
+    } else {
+      putBE32(v, 12);
+      putBE32(v, (uint32_t)lsctType);
+      const char bim[4] = { '8','B','I','M' };
+      v.insert(v.end(), bim, bim + 4);
+      putBE32(v, (uint32_t)blendModeKey);
+    }
+    return buf;
+  }
+
   }  // anonymous namespace
+
+  int PSDFile::addFolder(const char *nameUtf8, int from, int count,
+                         bool closed, int blendModeKey, int opacity) {
+    const int n = (int)layerList.size();
+    if (from < 0 || count < 0 || from + count > n) return -1;
+    if (header.depth != 8 || header.mode != COLOR_MODE_RGB) return -1;
+
+    int maxId = 0;
+    for (const auto &l : layerList) if (l.layerId > maxId) maxId = l.layerId;
+
+    // 矩形が空のダミーレイヤを作る。チャンネルは 0 行の RLE (2 バイト) になる。
+    auto makeMarker = [&](const char *name, int lsctType, int blendKey,
+                          int opa, LayerType type, int id) {
+      LayerInfo lay;
+      lay.owner = this;
+      lay.parent = nullptr;
+      lay.parentIndex = -1;
+      lay.top = lay.left = lay.bottom = lay.right = 0;
+      lay.width = lay.height = 0;
+      lay.blendModeKey = blendKey;
+      lay.blendMode = blendKeyToMode(blendKey);
+      lay.opacity = opa & 0xff;
+      lay.clipping = 0;
+      lay.flag = 0;
+      lay.fill_opacity = 255;
+      lay.layerType = type;
+      lay.layerId = id;
+      lay.layerName = name ? name : "";
+      lay.layerNameUnicode = utf8ToU16(lay.layerName);
+      lay.extraData.layerName = lay.layerName;
+      const uint8_t dummy = 0;
+      buildLayerChannels(lay, &dummy, 0, 0);   // 幅高さ 0 → 各チャンネル 2 バイト
+      lay.extraData.rawBytes =
+        new VectorReader(buildFolderExtra(lay.layerName, lay.layerId,
+                                          lsctType, blendKey));
+      return lay;
+    };
+
+    // 中身の下に区切り、上にフォルダ本体。layerList は index 0 が最下層。
+    LayerInfo divider = makeMarker("</Layer group>", 3, 'norm', 255,
+                                   LAYER_TYPE_HIDDEN, maxId + 1);
+    LayerInfo folder  = makeMarker(nameUtf8, closed ? 2 : 1, blendModeKey, opacity,
+                                   LAYER_TYPE_FOLDER, maxId + 2);
+
+    layerList.insert(layerList.begin() + from, divider);
+    const int folderPos = from + count + 1;
+    layerList.insert(layerList.begin() + folderPos, folder);
+    layersDirty = true;
+    relinkGroups();          // 並びが変わったので親子関係を貼り直す
+    return folderPos;
+  }
 
   bool PSDFile::setLayerPixels(int index, const uint8_t *bgra, int width, int height) {
     if (index < 0 || index >= (int)layerList.size()) return false;
