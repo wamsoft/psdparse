@@ -122,6 +122,9 @@ namespace psd {
     case 'scrn': return BLEND_MODE_SCREEN;
     case 'div ': return BLEND_MODE_COLOR_DODGE;
     case 'lddg': return BLEND_MODE_LINEAR_DODGE;
+    // Photoshop が書くキーは 'lgCl' (psd_tools / 仕様書とも一致)。
+    // 'ltCl' は本実装が長らく持っていた誤りで、読み側だけ別名として残す。
+    case 'lgCl': return BLEND_MODE_LIGHTER_COLOR;
     case 'ltCl': return BLEND_MODE_LIGHTER_COLOR;
     case 'over': return BLEND_MODE_OVERLAY;
     case 'sLit': return BLEND_MODE_SOFT_LIGHT;

@@ -46,3 +46,23 @@ def test_layer_unicode_name(psd_large):
     """At least some layers should have a luni-record unicode name."""
     named = [l for l in psd_large.layers if l.name_unicode]
     assert len(named) > 0
+
+
+def test_lighter_color_key_is_lgcl(tmp_path):
+    """Photoshop writes 'lgCl' for Lighter Color, not 'ltCl'.
+
+    This library long had only 'ltCl', so real-world files decoded as
+    BLEND_MODE_INVALID and round-trips silently fell back to Normal.
+    'ltCl' is still accepted on read for files this library wrote.
+    """
+    p = psdparse.PSDFile()
+    p.create_blank(4, 4)
+    p.add_layer("lighter", 0, 0, bytes([0, 0, 0, 255]) * 16, 4, 4)
+    p.layers[0].set_blend_mode("lgCl")
+    out = str(tmp_path / "lgcl.psd")
+    assert p.save(out)
+
+    q = psdparse.PSDFile()
+    assert q.load(out)
+    assert q.layers[0].blend_mode == psdparse.BlendMode.LIGHTER_COLOR
+    assert q.layers[0].blend_mode_key == 0x6C67436C          # 'lgCl'
