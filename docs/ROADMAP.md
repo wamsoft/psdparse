@@ -3,12 +3,12 @@
 For a feature-by-feature account of what is and isn't supported today, see
 [SUPPORT.md](SUPPORT.md). This file tracks planned work.
 
-## Current state (2026-08-15, v0.10.0)
+## Current state (2026-08-18, v0.11.0)
 
 - ✅ Pure C++17 parser (no Boost)
 - ✅ mmap + StreamReader / Source abstraction
 - ✅ Python bindings (pybind11)
-- ✅ pytest regression suite (197 tests)
+- ✅ pytest regression suite (201 tests)
 - ✅ Python composite recipes (`examples/`) + `set_merged_image`; layer comps exposed (`layer.comp_states`)
 - ✅ Round-trip PSD save (byte-identical)
 - ✅ Edit & save: structure / pixels / mask / parameters / effects / text / new-from-scratch (E1–E6, byte-exact re-serialization)
@@ -16,6 +16,7 @@ For a feature-by-feature account of what is and isn't supported today, see
 - ✅ Folder-aware layer moves + `parent_index` re-linking after every structural edit (0.9.0)
 - ✅ UTF-8 path I/F (Win32 conversion internal only)
 
+- ✅ Layer groups from scratch (0.11.0): `add_folder(name, from_index, count, closed=, blend_mode=, opacity=)` inserts the `</Layer group>` divider + folder pair around an existing contiguous run (or an empty folder with `count=0`), so a whole PSD — groups included — can be built or reorganised without Photoshop
 - ✅ Python bindings for the whole editing surface — 0.10.0 closed the last gap (`set_rich_text`, `set_justification`, `text_fonts`, `font=` on `set_run_style`, `move_layer_sibling` / `move_layer_range` / `group_span`, `move_text_layer`, `text_transform` / `set_text_transform`, `text_bounds` / `set_text_bounds`)
 
 ## Save: from round-trip to edit-and-save
