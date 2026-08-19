@@ -310,9 +310,12 @@ Quick map of the API (details in the subsections below):
 | move a text layer / resize its flow box | `p.move_text_layer(i, dx, dy)` / `p.set_text_bounds(i, l,t,r,b)` |
 | build a new PSD | `p.create_blank(w, h)` then `add_layer(...)` |
 | write a composited preview back | `p.set_merged_image(bgra)` |
+| blank the stored composite | `p.set_merged_image_solid()` |
+| choose how `Txt2` is handled | `p.set_text_engine_policy(0/1/2)` / `p.drop_text_engine_data()` |
 
 **8-bit RGB only** for the pixel/mask/new-document operations. The stored
-composite image is **not** re-rendered after edits (see [Saving](#saving)).
+composite image is **not** re-rendered after edits (see [Saving](#saving)); use
+`set_merged_image_solid()` to blank it rather than ship a stale one.
 
 ### Parameter edits (writable properties)
 
@@ -500,6 +503,8 @@ p.save("out.psd")
   `set_run_style` (below) instead of changing the text.
 - Only the *content* changes; the layer's transform, font set and bounds are
   kept. Raises for non-text layers.
+- The document-wide `Txt2` block is kept in step — **without this the edit is
+  invisible in Photoshop**. See [Txt2](#txt2-document-wide-text-engine-data).
 
 Edit an existing run's style in place (text and run lengths unchanged):
 
@@ -523,6 +528,48 @@ p.set_run_style(i, run_index=1, font="Arial")
 ```python
 p.text_fonts(i)   # -> ['NotoSansJP-Regular', 'HGPKyokashotai', 'AdobeInvisFont', ...]
 ```
+
+### `Txt2` (document-wide Text Engine Data)
+
+Photoshop CS3 and later keep the whole document's text engine state in a `Txt2`
+block at the end of the layer & mask section, and **read it in preference to
+each layer's `TySh`**. Rewriting `TySh` alone therefore leaves the edit invisible
+in Photoshop: it shows the *old text*, not merely a stale raster. psdparse keeps
+the two in step for you.
+
+```python
+p.set_text(i, "new body")
+p.text_engine_texts()          # -> ['new body', ...] in TextIndex order
+p.has_text_engine_data()       # -> True
+p.text_engine_dropped          # -> False (nothing had to be given up)
+```
+
+The default policy mirrors what it can and drops the block when it cannot:
+
+```python
+p.set_text_engine_policy(0)    # SYNC   (default)
+p.set_text_engine_policy(1)    # REMOVE — always drop it, TySh wins
+p.set_text_engine_policy(2)    # KEEP   — leave it alone (edits stay invisible)
+p.drop_text_engine_data()      # drop it now
+```
+
+- **Body text and run lengths are mirrored.** Growing, shrinking and changing the
+  number of paragraphs are all fine; Photoshop recomputes its own layout cache.
+- **Style, alignment, text box and placement are not.** Mirroring them would mean
+  rebuilding `Txt2`'s own style sheets (numeric key aliases), so those edits drop
+  the block instead — Photoshop then reads `TySh`, which is correct. Ask with
+  `p.text_engine_dropped` afterwards.
+- `set_rich_text(..., formatting_unchanged=True)` is the escape hatch for callers
+  that always pass **absolute** styles (so "no field given" doesn't mean "keep
+  what was there"): they cannot signal a text-only edit through the presence of
+  style fields, so they declare it.
+- `p.layer_text_index(i)` is the layer's position within `Txt2` (its `TySh`
+  `TextIndex`).
+
+Note that **Photoshop does not re-render a text layer when it opens a file**, so
+the layer's raster stays as it was until Photoshop redraws it. Only Photoshop can
+produce that picture; psdtext ships a `tools/update-text-layers.jsx` that makes it
+redraw every text layer.
 
 ### Rich text (runs & paragraphs)
 
@@ -610,6 +657,17 @@ write the result back as the PSD's preview with:
 ```python
 p.set_merged_image(bgra_bytes)   # canvas-sized BGRA (header.width*header.height*4)
 ```
+
+If you cannot recomposite — text layers can only be rendered by Photoshop — blank
+it instead of shipping a picture that is no longer true:
+
+```python
+p.set_merged_image_solid()       # white by default; RLE-compressed, so it stays
+                                 # small on any canvas
+```
+
+This is what Photoshop itself writes with "Maximize PSD compatibility" off.
+Photoshop composites from the layers, so what it displays is unaffected.
 
 `save(path)` returns `True`/`False`. **Do not save over a file that is currently
 loaded** (by this or any live `PSDFile`): `load()` memory-maps the file

@@ -4,7 +4,7 @@ Pure C++17 PSD (Photoshop) reader/writer library, with pybind11-based Python bin
 
 - Lazy I/O: PSD pixel data is **not** copied into memory at parse time. Only the structural metadata (a few hundred KB even for large files) is read upfront; layer pixels are paged in on demand via mmap or stream callbacks.
 - Round-trip save: `load(p) -> save(q)` produces a byte-identical PSD file.
-- **Edit & save**: add / delete / reorder / duplicate layers (folder-aware moves), copy layers between files, replace layer & mask pixels, edit parameters / names / masks / fill opacity, edit layer-effect (`lfx2`) values, and edit text layers (body text, per-run style, rich-text run/paragraph rebuild, placement & text box), or build a PSD from scratch — all with byte-exact re-serialization of the parts you touch (unedited layers stay byte-identical).
+- **Edit & save**: add / delete / reorder / duplicate layers (folder-aware moves), copy layers between files, replace layer & mask pixels, edit parameters / names / masks / fill opacity, edit layer-effect (`lfx2`) values, and edit text layers (body text, per-run style, rich-text run/paragraph rebuild, placement & text box, **kept in step with the document-wide `Txt2` block so the edit actually reaches Photoshop**), or build a PSD from scratch — all with byte-exact re-serialization of the parts you touch (unedited layers stay byte-identical).
 - Python wrapper: `import psdparse` → `PSDFile.load(path) / layer_image(i) / merged_image() / save(path)` plus the editing API.
 
 The library was extracted from the [psdfile](https://github.com/wamsoft/psdfile) kirikiri plugin in 2026. psdfile now consumes this library as a submodule.
