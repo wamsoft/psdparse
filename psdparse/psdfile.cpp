@@ -465,6 +465,7 @@ bool PSDFile::setLayerTextTransform(int index, const double m[6], std::string *e
     return true;
   }, errorOut);
   if (ok) {
+    invalidateTextEngineData();         // 位置は Txt2 へ写せない
     TextLayerData &td = layerList[(size_t)index].textData;
     for (int i = 0; i < 6; ++i) td.transform[i] = m[i];
   }
@@ -532,7 +533,8 @@ bool PSDFile::getLayerTextBounds(int index, double &l, double &t, double &r, dou
 
 bool PSDFile::setLayerTextBounds(int index, double l, double t, double r, double b,
                                  std::string *errorOut) {
-  return editTyShBlock(index, [&](std::vector<uint8_t> &, Descriptor &td) {
+  // 枠が変われば折り返しも変わる。Txt2 側の枠は写せないので落とす。
+  bool ok = editTyShBlock(index, [&](std::vector<uint8_t> &, Descriptor &td) {
     Descriptor *bd = dynamic_cast<Descriptor *>(td.findItem("bounds"));
     if (!bd) return false;
     if (!setBoundsValue(bd, "Left", l) || !setBoundsValue(bd, "Top ", t) ||
@@ -549,13 +551,18 @@ bool PSDFile::setLayerTextBounds(int index, double l, double t, double r, double
     }
     return true;
   }, errorOut);
+  if (ok) invalidateTextEngineData();
+  return ok;
 }
 
 bool PSDFile::setLayerText(int index, const u16str &newText, std::string *errorOut) {
-  return editTextLayer(index,
+  bool ok = editTextLayer(index,
     [&](const std::string &in, std::string &out) {
       return editEngineDataText(in.data(), in.size(), newText, out);
     }, &newText, errorOut);
+  // TySh 側は単一ランへ畳まれるので、Txt2 も同じ扱い (長さ指定なし) で揃える。
+  if (ok) syncTextEngineData(index, newText, std::vector<int>(), std::vector<int>());
+  return ok;
 }
 
 bool PSDFile::setLayerTextUtf8(int index, const char *utf8, std::string *errorOut) {
@@ -564,21 +571,44 @@ bool PSDFile::setLayerTextUtf8(int index, const char *utf8, std::string *errorOu
 
 bool PSDFile::setLayerRunStyle(int index, int runIndex, const RunStyleEdit &edit,
                                std::string *errorOut) {
-  return editTextLayer(index,
+  bool ok = editTextLayer(index,
     [&](const std::string &in, std::string &out) {
       return editEngineDataRunStyle(in.data(), in.size(), runIndex, edit, out);
     }, nullptr, errorOut);
+  if (ok) invalidateTextEngineData();   // 書式は Txt2 へ写せない
+  return ok;
 }
 
 bool PSDFile::setLayerRichText(int index, const u16str &newText,
                                const std::vector<TextRunSpec> &runs,
                                const std::vector<TextParagraphSpec> &paragraphs,
-                               std::string *errorOut) {
+                               std::string *errorOut, bool formattingUnchanged) {
   bool ok = editTextLayer(index,
     [&](const std::string &in, std::string &out) {
       return editEngineDataRichText(in.data(), in.size(), newText, runs, paragraphs, out);
     }, &newText, errorOut);
   if (ok) {
+    // Txt2 への追随。長さだけなら写せるが、書式 (フォント / サイズ / 色 / 行揃え)
+    // の指定が乗っている場合は Txt2 側のスタイルシートを作り直さないと辻褄が
+    // 合わないので、追随をあきらめて Txt2 を落とす。
+    bool styled = false;
+    for (const TextRunSpec &r : runs) {
+      const RunStyleEdit &e = r.style;
+      if (e.hasFont || e.hasSize || e.hasColor || e.hasTracking || e.hasKerning ||
+          e.hasBold || e.hasItalic || e.hasUnderline) { styled = true; break; }
+    }
+    for (const TextParagraphSpec &p : paragraphs)
+      if (p.hasJustification) { styled = true; break; }
+
+    if (styled && !formattingUnchanged) {
+      dropTextEngineData();
+    } else {
+      std::vector<int> paraLens, styleLens;
+      for (const TextParagraphSpec &p : paragraphs) paraLens.push_back(p.length);
+      for (const TextRunSpec &r : runs)             styleLens.push_back(r.length);
+      syncTextEngineData(index, newText, paraLens, styleLens);
+    }
+
     // パース済みの runs / paragraphs も新しい構成に追随させる (再ロード無しで
     // 参照できるように)。中身の書式までは戻さず、長さだけ合わせる。
     LayerInfo &lay = layerList[(size_t)index];
@@ -607,6 +637,7 @@ bool PSDFile::setLayerJustification(int index, int paraIndex, int justification,
                                          justification, out);
     }, nullptr, errorOut);
   if (ok) {
+    invalidateTextEngineData();         // 行揃えは Txt2 へ写せない
     LayerInfo &lay = layerList[(size_t)index];
     for (size_t i = 0; i < lay.textData.paragraphs.size(); i++) {
       if (paraIndex >= 0 && (size_t)paraIndex != i) continue;
@@ -805,6 +836,178 @@ int PSDFile::copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex) {
   layersDirty = true;
   relinkGroups();
   return pos;
+}
+
+// --- 文書末尾の追加情報 (Txt2 など) ------------------------------------------
+//
+// レイヤ&マスク情報の末尾には、文書ぜんたいに効く追加情報ブロックが
+//   '8BIM' | '8B64' + key(4) + length(4) + data + (4 の倍数への詰め物)
+// の並びで置かれている。psdparse は普段ここを丸ごと素通しするが、Txt2
+// (文書ぜんたいのテキストエンジン状態) だけは書き換え / 削除が要る。
+// Photoshop は Txt2 をレイヤ毎の TySh より優先して読むため、TySh だけ直しても
+// 編集が届かない。
+namespace {
+
+// trailing を先頭から辿って key のブロックを探す。見つかったら
+//   blockOffset … ブロック先頭 ('8BIM' の位置)
+//   blockTotal  … 詰め物まで含めたブロック長
+//   dataOffset  … 中身の先頭
+//   dataLength  … 中身の長さ
+// を返す。
+bool scanTrailingBlock(IteratorBase *t, int key, int &blockOffset, int &blockTotal,
+                       int &dataOffset, int &dataLength) {
+  if (!t) return false;
+  t->init();
+  const int total = t->size();
+  int p = 0;
+  while (p + 12 <= total) {
+    uint8_t hdr[12];
+    t->init();
+    IteratorBase *h = t->cloneRange(p, 12);
+    int got = h ? h->getData(hdr, 12) : 0;
+    delete h;
+    if (got != 12) return false;
+    if (std::memcmp(hdr, "8BIM", 4) != 0 && std::memcmp(hdr, "8B64", 4) != 0) return false;
+    int k = ((int)hdr[4] << 24) | ((int)hdr[5] << 16) | ((int)hdr[6] << 8) | (int)hdr[7];
+    uint32_t len = ((uint32_t)hdr[8] << 24) | ((uint32_t)hdr[9] << 16) |
+                   ((uint32_t)hdr[10] << 8) | (uint32_t)hdr[11];
+    if (len > (uint32_t)(total - p - 12)) return false;
+    int next = p + 12 + (int)len;
+    next += (4 - (next % 4)) % 4;              // 4 の倍数へ詰める
+    if (next > total) next = total;
+    if (k == key) {
+      blockOffset = p;
+      blockTotal  = next - p;
+      dataOffset  = p + 12;
+      dataLength  = (int)len;
+      return true;
+    }
+    p = next;
+  }
+  return false;
+}
+
+} // anonymous namespace
+
+bool PSDFile::getDocumentAdditionalInfo(int key, std::string &out) {
+  // すでに差し替え済みならそちらを返す (編集を積み重ねられるように)。
+  if (trailingPatched && trailingPatchKey == key) {
+    if (trailingPatchBytes.size() < 12) return false;   // 削除済み
+    out.assign(trailingPatchBytes.begin() + 12, trailingPatchBytes.end());
+    // 詰め物を落とす
+    uint32_t len = ((uint32_t)(uint8_t)trailingPatchBytes[8]  << 24) |
+                   ((uint32_t)(uint8_t)trailingPatchBytes[9]  << 16) |
+                   ((uint32_t)(uint8_t)trailingPatchBytes[10] <<  8) |
+                    (uint32_t)(uint8_t)trailingPatchBytes[11];
+    if (len <= out.size()) out.resize(len);
+    return true;
+  }
+  int bo, bt, dof, dlen;
+  if (!scanTrailingBlock(layerAndMaskTrailing, key, bo, bt, dof, dlen)) return false;
+  out.assign((size_t)dlen, '\0');
+  if (dlen > 0) {
+    layerAndMaskTrailing->init();
+    IteratorBase *d = layerAndMaskTrailing->cloneRange(dof, dlen);
+    int got = d ? d->getData(&out[0], dlen) : 0;
+    delete d;
+    if (got != dlen) return false;
+  }
+  return true;
+}
+
+bool PSDFile::setDocumentAdditionalInfo(int key, const char *data, size_t size) {
+  int bo, bt, dof, dlen;
+  if (!scanTrailingBlock(layerAndMaskTrailing, key, bo, bt, dof, dlen)) return false;
+  if (trailingPatched && trailingPatchKey != key) return false;  // 差し替えは 1 キーまで
+
+  std::string blk;
+  if (data) {
+    // '8BIM' + key + length + data + 詰め物
+    blk.append("8BIM", 4);
+    for (int i = 3; i >= 0; i--) blk.push_back((char)((key >> (i * 8)) & 0xff));
+    uint32_t n = (uint32_t)size;
+    for (int i = 3; i >= 0; i--) blk.push_back((char)((n >> (i * 8)) & 0xff));
+    blk.append(data, size);
+    // trailing 先頭からの位置が 4 の倍数になるよう詰める
+    size_t endPos = (size_t)bo + blk.size();
+    blk.append((4 - (endPos % 4)) % 4, '\0');
+  }
+  trailingPatched      = true;
+  trailingPatchKey     = key;
+  trailingPatchOffset  = bo;
+  trailingPatchLength  = bt;
+  trailingPatchBytes   = blk;
+  return true;
+}
+
+bool PSDFile::removeDocumentAdditionalInfo(int key) {
+  return setDocumentAdditionalInfo(key, 0, 0);
+}
+
+bool PSDFile::hasDocumentAdditionalInfo(int key) {
+  if (trailingPatched && trailingPatchKey == key) return trailingPatchBytes.size() >= 12;
+  int bo, bt, dof, dlen;
+  return scanTrailingBlock(layerAndMaskTrailing, key, bo, bt, dof, dlen);
+}
+
+// --- Txt2 (文書ぜんたいの Text Engine Data) の追随 ----------------------------
+
+bool PSDFile::getLayerTextIndex(int index, int &out) const {
+  if (index < 0 || index >= (int)layerList.size()) return false;
+  const LayerInfo &lay = layerList[(size_t)index];
+  for (const auto &a : lay.extraData.additionalLayers) {
+    if (a.key != 'TySh' || !a.data) continue;
+    IteratorBase *rd = a.data->clone();
+    rd->init();
+    std::vector<uint8_t> prefix(56);
+    if (rd->getData(prefix.data(), 56) != 56) { delete rd; return false; }
+    Descriptor td;
+    td.load(rd);
+    delete rd;
+    DescriptorInteger *ti = td.item("TextIndex");
+    if (!ti) return false;
+    out = ti->val;
+    return true;
+  }
+  return false;
+}
+
+void PSDFile::setTextEngineDataPolicy(TextEngineDataPolicy p) {
+  textPolicy_ = p;
+  if (p == TEXTENGINE_REMOVE) dropTextEngineData();
+}
+
+bool PSDFile::dropTextEngineData() {
+  if (!hasDocumentAdditionalInfo('Txt2')) return true;
+  if (!removeDocumentAdditionalInfo('Txt2')) return false;
+  textEngineDropped_ = true;
+  return true;
+}
+
+// 書式 / 位置を変える編集は Txt2 へ写せない。KEEP を明示されていない限り
+// Txt2 を落として TySh へフォールバックさせる。
+void PSDFile::invalidateTextEngineData() {
+  if (textPolicy_ == TEXTENGINE_KEEP) return;
+  dropTextEngineData();
+}
+
+bool PSDFile::syncTextEngineData(int index, const u16str &newText,
+                                 const std::vector<int> &paragraphLengths,
+                                 const std::vector<int> &styleLengths) {
+  if (textPolicy_ == TEXTENGINE_KEEP)   return true;
+  if (textPolicy_ == TEXTENGINE_REMOVE) return dropTextEngineData();
+  if (!hasDocumentAdditionalInfo('Txt2')) return true;   // 元から無い (旧い PSD)
+
+  int textIndex = -1;
+  std::string blob, out;
+  // 追随できない条件に当たったら、黙って古いまま残すのではなく Txt2 を落として
+  // TySh へフォールバックさせる。Photoshop に古い本文を見せるよりは安全。
+  if (!getLayerTextIndex(index, textIndex))            return dropTextEngineData();
+  if (!getDocumentAdditionalInfo('Txt2', blob))        return dropTextEngineData();
+  if (!editTextEngineDataText(blob.data(), blob.size(), textIndex, newText,
+                              paragraphLengths, styleLengths, out))
+    return dropTextEngineData();
+  return setDocumentAdditionalInfo('Txt2', out.data(), out.size());
 }
 
 bool PSDFile::loadFromStream(std::unique_ptr<std::istream> stream) {

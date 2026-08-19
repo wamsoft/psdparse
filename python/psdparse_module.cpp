@@ -742,6 +742,39 @@ PYBIND11_MODULE(psdparse, m) {
       return py::bytes(out);
   }, py::arg("data"));
 
+  // Internal: same, for a Txt2 (document Text Engine Data) blob.
+  m.def("_reserialize_text_engine_data", [](py::bytes b) -> py::object {
+      py::buffer_info info(py::buffer(b).request());
+      std::string out;
+      if (!psd::reserializeTextEngineData((const char *)info.ptr, (size_t)info.size, out))
+          return py::none();
+      return py::bytes(out);
+  }, py::arg("data"));
+
+  // Internal: list the texts a Txt2 blob carries, in TextIndex order.
+  m.def("_list_text_engine_texts", [](py::bytes b) -> py::object {
+      py::buffer_info info(py::buffer(b).request());
+      std::vector<psd::u16str> texts;
+      if (!psd::listTextEngineDataTexts((const char *)info.ptr, (size_t)info.size, texts))
+          return py::none();
+      py::list out;
+      for (const psd::u16str &t : texts) out.append(u16ToStr(t));
+      return out;
+  }, py::arg("data"));
+
+  // Internal: replace one text inside a Txt2 blob.
+  m.def("_edit_text_engine_text", [](py::bytes b, int index, const std::string &text,
+                                     std::vector<int> paras, std::vector<int> styles) -> py::object {
+      py::buffer_info info(py::buffer(b).request());
+      std::string out;
+      if (!psd::editTextEngineDataText((const char *)info.ptr, (size_t)info.size, index,
+                                       psd::utf8ToU16(text), paras, styles, out))
+          return py::none();
+      return py::bytes(out);
+  }, py::arg("data"), py::arg("index"), py::arg("text"),
+     py::arg("paragraph_lengths") = std::vector<int>(),
+     py::arg("style_lengths") = std::vector<int>());
+
   py::enum_<psd::LayerType>(m, "LayerType")
     .value("NORMAL", psd::LAYER_TYPE_NORMAL)
     .value("HIDDEN", psd::LAYER_TYPE_HIDDEN)
@@ -1104,14 +1137,16 @@ PYBIND11_MODULE(psdparse, m) {
          "an out-of-range run index.")
     .def("set_rich_text",
          [](psd::PSDFile &self, int index, const std::string &text,
-            py::object runs, py::object paragraphs) {
+            py::object runs, py::object paragraphs, bool formatting_unchanged) {
             std::vector<psd::TextRunSpec> r = toRunSpecs(runs);
             std::vector<psd::TextParagraphSpec> p = toParagraphSpecs(paragraphs);
             std::string err;
-            raiseIfFailed(self.setLayerRichText(index, psd::utf8ToU16(text), r, p, &err), err);
+            raiseIfFailed(self.setLayerRichText(index, psd::utf8ToU16(text), r, p, &err,
+                                                formatting_unchanged), err);
          },
          py::arg("index"), py::arg("text"), py::arg("runs") = py::none(),
          py::arg("paragraphs") = py::none(),
+         py::arg("formatting_unchanged") = false,
          "Replace a text layer's body text together with its run / paragraph "
          "structure (set_text collapses everything to one run instead). "
          "`runs` is a list of dicts: {'length': int (UTF-16 code units), plus "
@@ -1131,6 +1166,59 @@ PYBIND11_MODULE(psdparse, m) {
          "`para_index` selects one paragraph (see text['paragraphs']); the "
          "default -1 applies it to every paragraph. Text and run structure are "
          "unchanged.")
+    .def("set_text_engine_policy",
+         [](psd::PSDFile &self, int policy) {
+            self.setTextEngineDataPolicy((psd::PSDFile::TextEngineDataPolicy)policy);
+         },
+         py::arg("policy"),
+         "How to treat Txt2, the document-wide Text Engine Data that Photoshop "
+         "reads in preference to each layer's TySh. 0=SYNC (default: mirror text "
+         "and run lengths, drop Txt2 when a change cannot be mirrored), "
+         "1=REMOVE (always drop it so Photoshop falls back to TySh), "
+         "2=KEEP (leave it alone; edits stay invisible to Photoshop).")
+    .def_property_readonly("text_engine_policy",
+         [](const psd::PSDFile &self) { return (int)self.textEngineDataPolicy(); })
+    .def_property_readonly("text_engine_dropped",
+         [](const psd::PSDFile &self) { return self.textEngineDataDropped(); },
+         "True once a change that could not be mirrored made psdparse drop Txt2.")
+    .def("has_text_engine_data",
+         [](psd::PSDFile &self) { return self.hasDocumentAdditionalInfo('Txt2'); },
+         "Whether the document still carries a Txt2 block.")
+    .def("drop_text_engine_data",
+         [](psd::PSDFile &self) { return self.dropTextEngineData(); },
+         "Drop Txt2 so Photoshop falls back to the per-layer TySh.")
+    .def("layer_text_index",
+         [](const psd::PSDFile &self, int index) -> py::object {
+            int v = -1;
+            if (!self.getLayerTextIndex(index, v)) return py::none();
+            return py::cast(v);
+         },
+         py::arg("index"),
+         "TextIndex from the layer's TySh: its position within Txt2.")
+    .def("document_additional_info",
+         [](psd::PSDFile &self, const std::string &key) -> py::object {
+            if (key.size() != 4) return py::none();
+            int k = ((int)(unsigned char)key[0] << 24) | ((int)(unsigned char)key[1] << 16) |
+                    ((int)(unsigned char)key[2] <<  8) |  (int)(unsigned char)key[3];
+            std::string out;
+            if (!self.getDocumentAdditionalInfo(k, out)) return py::none();
+            return py::bytes(out);
+         },
+         py::arg("key"),
+         "Raw bytes of a document-scope additional info block (e.g. 'Txt2'), "
+         "or None when absent.")
+    .def("text_engine_texts",
+         [](psd::PSDFile &self) -> py::object {
+            std::string blob;
+            if (!self.getDocumentAdditionalInfo('Txt2', blob)) return py::none();
+            std::vector<psd::u16str> texts;
+            if (!psd::listTextEngineDataTexts(blob.data(), blob.size(), texts))
+                return py::none();
+            py::list out;
+            for (const psd::u16str &t : texts) out.append(u16ToStr(t));
+            return out;
+         },
+         "Texts carried by Txt2, in TextIndex order (None when absent).")
     .def("text_fonts",
          [](const psd::PSDFile &self, int index) {
             std::vector<std::string> names;
@@ -1268,6 +1356,17 @@ PYBIND11_MODULE(psdparse, m) {
          "Replace the stored composite (merged) image with canvas-sized BGRA "
          "bytes (header.width*header.height*4). Use this to write a "
          "Python-composited preview back into the PSD. 8-bit RGB only.")
+    .def("set_merged_image_solid",
+         [](psd::PSDFile &self, int r, int g, int b) {
+            return self.setMergedImageSolid((uint8_t)r, (uint8_t)g, (uint8_t)b);
+         },
+         py::arg("r") = 255, py::arg("g") = 255, py::arg("b") = 255,
+         "Replace the stored composite with a solid colour, RLE-compressed so "
+         "it stays small on any canvas. This is the shape Photoshop writes when "
+         "'Maximize PSD compatibility' is off: a preview with nothing in it. "
+         "Use it after edits that leave the composite stale, so the file does "
+         "not hand out a picture that is no longer true. Photoshop composites "
+         "from the layers, so what it displays is unaffected.")
     .def("set_layer_mask_pixels",
          [](psd::PSDFile &self, int index, py::bytes data,
             int top, int left, int width, int height) {
@@ -1398,3 +1497,5 @@ PYBIND11_MODULE(psdparse, m) {
   m.attr("COLOR_MODE_DUOTONE")      = (int)psd::COLOR_MODE_DUOTONE;
   m.attr("COLOR_MODE_LAB")          = (int)psd::COLOR_MODE_LAB;
 }
+
+  

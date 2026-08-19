@@ -3,7 +3,7 @@
 psdparse が PSD のどの機能を、どの水準で扱えるかの一覧です。psdparse は
 **参照 (読み取り) + ラウンドトリップ保存** を土台に、**構造編集 (レイヤの
 追加/削除/並べ替え/複製、画素・マスク・パラメータ・効果・テキストの編集、
-ゼロからの新規作成、レイヤグループの作成)** まで対応します (v0.11.0)。未編集のファイルは byte-identical
+ゼロからの新規作成、レイヤグループの作成)** まで対応します (v0.12.0)。未編集のファイルは byte-identical
 に保存され、編集した部分だけがフィールドから再構築されます。効果込みの再合成
 (composite の再描画) は対象外です。
 
@@ -19,7 +19,7 @@ psdparse が PSD のどの機能を、どの水準で扱えるかの一覧です
 API 欄は Python 名です。C++ 側の対応するメソッドは `psdparse/psdfile.h` /
 `psdparse/psdengine.h` を参照 (Python API は C++ の公開編集面を一通り覆っています)。
 
-最終更新: 2026-08-18 (v0.11.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
+最終更新: 2026-08-18 (v0.12.0)。詳細な今後の計画は [ROADMAP.md](ROADMAP.md)、
 Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 
 ---
@@ -66,8 +66,10 @@ Python バインディングが 0.10.0)。
 | フォント候補の列挙 (FontSet) | ✅ | `text_fonts(i)` (v0.10.0) |
 | テキストの位置 (TySh 変換行列) 編集 | ✅ | `move_text_layer(i, dx, dy)` / `text_transform(i)` / `set_text_transform(i, m)` (v0.10.0)。move はレイヤ矩形とマスク矩形も同時にずらす |
 | テキストの流し込み枠 (descriptor `bounds`) 編集 | ✅ | `text_bounds(i)` / `set_text_bounds(i, l,t,r,b)` (v0.10.0)。実際に流し込みが変わるのは段落 (box) テキストのみ |
+| **Txt2 (文書ぜんたいの Text Engine Data) の追随 / 削除** | ✅ | `set_text_engine_policy(0=SYNC/1=REMOVE/2=KEEP)` / `drop_text_engine_data()` (v0.12.0)。**Photoshop は Txt2 を TySh より優先して読む**ので、これが無いと編集が Photoshop に届かない |
 | マスク幾何の単独編集 (画素なし) | 🟡 | `set_layer_mask_pixels` で画素とセットのみ |
 | 合成済み画像 (composite) の入れ替え | ✅ | `set_merged_image(bgra)` — Python で合成した結果を書き戻せる (v0.7.x) |
+| 合成済み画像を単色プレビューにする | ✅ | `set_merged_image_solid(r,g,b)` (v0.12.0) — RLE 圧縮なので巨大キャンバスでも小さい。Photoshop が「PSD 互換を優先」を切ったときと同じ形 |
 | 効果込みの合成 (composite) の自動再生成 | ❌ | psdparse 自身は再描画しない。合成は Python (Pillow 等, `examples/`) で |
 
 ## 圧縮 / ビット深度
@@ -140,6 +142,9 @@ Python バインディングが 0.10.0)。
 | **本文の編集 (save)** | ✅ | `set_text(i, str)` — EngineData を byte-exact に再直列化 (v0.7.0)。スタイルは先頭ランに畳まれる |
 | **ラン単位スタイルの編集** | ✅ | `set_run_style(i, run, size_px=/color=/tracking=/kerning=/bold=/italic=/underline=)` (v0.7.0)、`font=` (v0.10.0) |
 | リッチテキスト差し替え / 行揃え / フォント変更 / 配置 / 枠 | ✅ | 上の「編集して保存」表を参照 (v0.10.0) |
+| Txt2 の本文 / ラン長の追随 | ✅ | 既定で `set_text` / `set_rich_text` が Txt2 も書き換える (v0.12.0)。`text_engine_texts()` で中身を確認できる |
+| Txt2 の書式 (スタイルシート) の追随 | ❌ | 数値エイリアスのシートを作り直す必要があるため。書式が変わる編集では Txt2 を削除して TySh へ倒す |
+| テキストレイヤのラスタ再生成 | ❌ | psdparse も **Photoshop も開いただけでは描き直さない**。Photoshop 側で各テキストレイヤを小突く必要がある (psdtext の `tools/update-text-layers.jsx` 参照) |
 | ワープ (warp) | ❌ | TySh warp descriptor 未処理 (編集時はバイト列のまま保存される) |
 | 非 RGB の FillColor | ❌ | `/Type 1` (RGB) のみ |
 | leading / 段落インデント / 段落前後アキ | ❌ | EngineData にキーはあるが未抽出・未編集 |

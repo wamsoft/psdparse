@@ -12,7 +12,9 @@ namespace {
   // パース済みツリー
   // --------------------------------------------------------------------------
   struct Node {
-    enum Kind { DICT, ARRAY, STRING, NUMBER, BOOL } kind;
+    // NAME: 値の位置に現れる名前トークン (/nil /CoolTypeFont /SimplePaint など)。
+    // キーではなく値なので、DICT のキーとは別に持つ必要がある。
+    enum Kind { DICT, ARRAY, STRING, NUMBER, BOOL, NAME } kind;
     std::map<std::string, Node*> dict;
     std::vector<std::string>     keyOrder;  // dict のキー出現順 (再直列化用)
     std::vector<Node*>           arr;
@@ -20,6 +22,10 @@ namespace {
     double                       num;
     bool                         isInt; // NUMBER: 整数トークン (小数点なし) だったか
     bool                         bl;
+    // NUMBER: 元のトークン文字列。値を書き換えていない限りこれをそのまま出す。
+    // Txt2 は Photoshop が書いた数値表記をそのまま保つ必要があるため
+    // (%.8f 経由で丸めると往復でバイトが変わる)。
+    std::string                  rawTok;
 
     Node(Kind k) : kind(k), num(0), isInt(false), bl(false) {}
     ~Node() {
@@ -62,6 +68,11 @@ namespace {
       if (c == '<' && p + 1 < end && p[1] == '<') return parseDict();
       if (c == '[') return parseArray();
       if (c == '(') return parseString();
+      if (c == '/') {
+        Node *n = new Node(Node::NAME);
+        n->str = parseName();
+        return n;
+      }
       return parseToken();
     }
 
@@ -143,6 +154,7 @@ namespace {
       }
       Node *n = new Node(Node::NUMBER);
       n->num = atof(s.c_str());
+      n->rawTok = s;
       // 小数点も指数もなければ整数トークン ("%d" で書く)。
       n->isInt = (s.find('.') == std::string::npos &&
                   s.find('e') == std::string::npos &&
@@ -213,11 +225,14 @@ namespace {
   void emitScalar(std::string &o, Node *n) {
     switch (n->kind) {
     case Node::NUMBER:
-      if (n->isInt) { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)n->num); o += b; }
+      // 値を触っていなければ元の表記をそのまま返す (往復のバイト一致)。
+      if (!n->rawTok.empty())  o += n->rawTok;
+      else if (n->isInt) { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)n->num); o += b; }
       else          emitFloat(o, n->num);
       break;
     case Node::BOOL:   o += (n->bl ? "true" : "false"); break;
     case Node::STRING: emitString(o, n->str); break;
+    case Node::NAME:   o.push_back('/'); o += n->str; break;
     default: break;
     }
   }
@@ -294,6 +309,70 @@ namespace {
     case Node::ARRAY: emitList(o, n, indent);       break;
     default:          emitScalar(o, n);             break;
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Txt2 (文書全体の Text Engine Data) 用
+  //
+  // TySh の EngineData と同じミニ言語だが、書き方が 2 点違う:
+  //   - 最上位が << >> で囲まれず /key value の並びになっている
+  //   - タブ字下げ + 改行ではなく、全トークンを空白 1 つで区切った 1 行
+  //     (先頭にも空白が 1 つ入る)
+  // キーが数値エイリアス (/0 /5 /98 ...) なのは字面の違いだけで、パースには
+  // 影響しない。
+  // --------------------------------------------------------------------------
+  void emitCompact(std::string &o, Node *n);
+
+  void emitCompactKey(std::string &o, const std::string &key) {
+    o.push_back(' ');
+    o.push_back('/');
+    o += key;
+  }
+
+  void emitCompactMembers(std::string &o, Node *n) {
+    for (const std::string &key : n->keyOrder) {
+      std::map<std::string, Node*>::iterator it = n->dict.find(key);
+      if (it == n->dict.end()) continue;
+      emitCompactKey(o, key);
+      emitCompact(o, it->second);
+    }
+  }
+
+  void emitCompact(std::string &o, Node *n) {
+    switch (n->kind) {
+    case Node::DICT:
+      o += " <<";
+      emitCompactMembers(o, n);
+      o += " >>";
+      break;
+    case Node::ARRAY:
+      o += " [";
+      for (size_t i = 0; i < n->arr.size(); i++) emitCompact(o, n->arr[i]);
+      o += " ]";
+      break;
+    default:
+      o.push_back(' ');
+      emitScalar(o, n);
+      break;
+    }
+  }
+
+  // 最上位が << >> で囲まれていない /key value の並びを 1 つの DICT として読む。
+  Node *parseBareDict(Parser &ps) {
+    Node *n = new Node(Node::DICT);
+    while (true) {
+      ps.skipWs();
+      if (ps.p >= ps.end) break;
+      if (*ps.p != '/') break;
+      std::string key = ps.parseName();
+      Node *v = ps.parseValue();
+      if (!v) break;
+      std::map<std::string, Node*>::iterator it = n->dict.find(key);
+      if (it != n->dict.end()) delete it->second;
+      else n->keyOrder.push_back(key);
+      n->dict[key] = v;
+    }
+    return n;
   }
 
 } // anonymous namespace
@@ -468,7 +547,7 @@ namespace {
       n = new Node(Node::NUMBER);
       dict->dict[key] = n;
     }
-    n->num = v; n->isInt = isInt;
+    n->num = v; n->isInt = isInt; n->rawTok.clear();
   }
 
   // dict に真偽キーを設定 (無ければ末尾に追加)。
@@ -522,6 +601,7 @@ namespace {
     if (!src) return 0;
     Node *n = new Node(src->kind);
     n->num = src->num; n->isInt = src->isInt; n->bl = src->bl; n->str = src->str;
+    n->rawTok = src->rawTok;
     n->keyOrder = src->keyOrder;
     for (std::map<std::string, Node*>::const_iterator it = src->dict.begin();
          it != src->dict.end(); ++it) {
@@ -679,6 +759,145 @@ namespace {
     if (!root || root->kind != Node::DICT) { delete root; return false; }
     out.clear();
     emitDict(out, root, 0, true);
+    delete root;
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // Txt2 の本文編集
+  // --------------------------------------------------------------------------
+
+  // 「/0 に『/1 を持つ辞書』の配列を抱えた辞書」か。Txt2 の段落ラン (/5) と
+  // スタイルラン (/6) はどちらもこの形をしている。
+  static bool isTxt2RunHolder(Node *n) {
+    if (!n || n->kind != Node::DICT) return false;
+    Node *a = dget(n, "0");
+    if (!a || a->kind != Node::ARRAY || a->arr.empty()) return false;
+    for (size_t i = 0; i < a->arr.size(); i++) {
+      Node *it = a->arr[i];
+      if (!it || it->kind != Node::DICT || !dget(it, "1")) return false;
+    }
+    return true;
+  }
+
+  // 本文オブジェクトか。/0 が本文、/5 が段落ラン、/6 がスタイルラン。
+  // この 3 点そろいを条件にすると、同じ Txt2 に同居している別物 (スタイルシート
+  // 名の「なし」「基本段落」など、/0 が文字列なだけの辞書) を拾わずに済む。
+  static bool isTxt2Body(Node *n) {
+    if (!n || n->kind != Node::DICT) return false;
+    Node *t = dget(n, "0");
+    if (!t || t->kind != Node::STRING) return false;
+    return isTxt2RunHolder(dget(n, "5")) && isTxt2RunHolder(dget(n, "6"));
+  }
+
+  // 本文オブジェクトを出現順に集める。この並びがレイヤ側 TySh の TextIndex に
+  // 一致する (実データ 50 レイヤで確認済み)。
+  static void collectTxt2Bodies(Node *n, std::vector<Node*> &acc) {
+    if (!n) return;
+    if (n->kind == Node::DICT) {
+      if (isTxt2Body(n)) acc.push_back(n);
+      for (const std::string &key : n->keyOrder) {
+        std::map<std::string, Node*>::iterator it = n->dict.find(key);
+        if (it != n->dict.end()) collectTxt2Bodies(it->second, acc);
+      }
+    } else if (n->kind == Node::ARRAY) {
+      for (size_t i = 0; i < n->arr.size(); i++) collectTxt2Bodies(n->arr[i], acc);
+    }
+  }
+
+  // ラン長を本文長へ合わせる。0 以下は捨て、合計が足りなければ末尾を伸ばし、
+  // 超えていれば末尾から削る。空なら本文ぜんぶを 1 ランに畳む。
+  static std::vector<int> normalizeRunLengths(const std::vector<int> &src, int total) {
+    std::vector<int> v;
+    for (size_t i = 0; i < src.size(); i++) if (src[i] > 0) v.push_back(src[i]);
+    if (v.empty()) { v.push_back(total); return v; }
+    int sum = 0;
+    for (size_t i = 0; i < v.size(); i++) sum += v[i];
+    while (sum > total && !v.empty()) {
+      int over = sum - total;
+      if (v.back() > over) { v.back() -= over; sum -= over; }
+      else                 { sum -= v.back(); v.pop_back(); }
+    }
+    if (v.empty())        v.push_back(total);
+    else if (sum < total) v.back() += total - sum;
+    return v;
+  }
+
+  // Txt2 のラン配列を lengths の数へ作り直す。既存のランを順に再利用し、足りない
+  // 分は末尾ランの複製で埋める (増えた分は直前の書式を引き継ぐ)。
+  static void rebuildTxt2Run(Node *holder, const std::vector<int> &lengths) {
+    if (!holder) return;
+    Node *arr = dget(holder, "0");
+    if (!arr || arr->kind != Node::ARRAY || arr->arr.empty()) return;
+    // 雛形は先に複製しておく (ループ内で元要素の所有権を移すため)。
+    Node *tmpl = cloneNode(arr->arr[arr->arr.size() - 1]);
+    std::vector<Node*> built;
+    built.reserve(lengths.size());
+    for (size_t i = 0; i < lengths.size(); i++) {
+      Node *item;
+      if (i < arr->arr.size() && arr->arr[i]) { item = arr->arr[i]; arr->arr[i] = 0; }
+      else                                    { item = cloneNode(tmpl); }
+      setNumberNode(item, "1", lengths[i], true);
+      built.push_back(item);
+    }
+    for (size_t i = 0; i < arr->arr.size(); i++) delete arr->arr[i];   // 余り
+    arr->arr = built;
+    delete tmpl;
+  }
+
+  // Txt2 が持つ本文を出現順に列挙する (TextIndex 順)。
+  bool listTextEngineDataTexts(const char *data, size_t len, std::vector<u16str> &out) {
+    Parser ps(data, len);
+    Node *root = parseBareDict(ps);
+    if (!root || root->keyOrder.empty()) { delete root; return false; }
+    std::vector<Node*> bodies;
+    collectTxt2Bodies(root, bodies);
+    out.clear();
+    out.reserve(bodies.size());
+    for (size_t i = 0; i < bodies.size(); i++) out.push_back(toU16(dget(bodies[i], "0")));
+    delete root;
+    return true;
+  }
+
+  // Txt2 の textIndex 番目の本文を差し替え、ラン長を追随させる。
+  bool editTextEngineDataText(const char *data, size_t len, int textIndex,
+                              const u16str &newText,
+                              const std::vector<int> &paragraphLengths,
+                              const std::vector<int> &styleLengths,
+                              std::string &out) {
+    Parser ps(data, len);
+    Node *root = parseBareDict(ps);
+    if (!root || root->keyOrder.empty()) { delete root; return false; }
+
+    std::vector<Node*> bodies;
+    collectTxt2Bodies(root, bodies);
+    if (textIndex < 0 || textIndex >= (int)bodies.size()) { delete root; return false; }
+    Node *body = bodies[(size_t)textIndex];
+
+    u16str text = newText;
+    if (text.empty() || text[text.size() - 1] != u'\r') text.push_back(u'\r');
+    int textLen = (int)text.size();
+
+    Node *tnode = dget(body, "0");
+    if (!tnode || tnode->kind != Node::STRING) { delete root; return false; }
+    tnode->str = buildTextRaw(text);
+
+    rebuildTxt2Run(dget(body, "5"), normalizeRunLengths(paragraphLengths, textLen));
+    rebuildTxt2Run(dget(body, "6"), normalizeRunLengths(styleLengths, textLen));
+
+    out.clear();
+    emitCompactMembers(out, root);
+    delete root;
+    return true;
+  }
+
+  // Txt2 をパースしてそのまま再直列化する (バイト一致検証・編集の土台)。
+  bool reserializeTextEngineData(const char *data, size_t len, std::string &out) {
+    Parser ps(data, len);
+    Node *root = parseBareDict(ps);
+    if (!root || root->keyOrder.empty()) { delete root; return false; }
+    out.clear();
+    emitCompactMembers(out, root);
     delete root;
     return true;
   }

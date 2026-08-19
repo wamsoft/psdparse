@@ -358,7 +358,32 @@ inline void writeLayerAndMask(WriterBase &w, const Data &data) {
   writeLayerInfo(w, data);
   writeGlobalLayerMaskInfo(w, data);
   // global layer mask info より後ろにあった secondary layer info (Lr16/Lr32 等)
-  if (data.layerAndMaskTrailing) w.copyAllFrom(data.layerAndMaskTrailing);
+  if (data.layerAndMaskTrailing && data.trailingPatched) {
+    // 文書末尾の追加情報のうち 1 ブロックだけ差し替える / 削除する。
+    // 前後は元のバイトをそのまま流すので、巨大な lnk2 があってもメモリに
+    // 載せずに済む。
+    IteratorBase *t = data.layerAndMaskTrailing;
+    t->init();
+    int total = t->size();
+    int off   = data.trailingPatchOffset;
+    int after = off + data.trailingPatchLength;
+    if (off > 0) {
+      t->init();
+      IteratorBase *head = t->cloneRange(0, off);
+      w.copyAllFrom(head);
+      delete head;
+    }
+    if (!data.trailingPatchBytes.empty())
+      w.putData(data.trailingPatchBytes.data(), data.trailingPatchBytes.size());
+    if (after < total) {
+      t->init();
+      IteratorBase *tail = t->cloneRange(after, total - after);
+      w.copyAllFrom(tail);
+      delete tail;
+    }
+  } else if (data.layerAndMaskTrailing) {
+    w.copyAllFrom(data.layerAndMaskTrailing);
+  }
   int64_t bodyEnd = w.tell();
   w.seek(sizePos);
   w.putUint32BE((uint32_t)(bodyEnd - bodyStart));

@@ -538,6 +538,8 @@ namespace psd {
 			   mergedAlpha(false), channelImageData(0),
 			   globalLayerMaskInfoRaw(0),
 			   layerAndMaskTrailing(0),
+			   trailingPatched(false), trailingPatchKey(0),
+			   trailingPatchOffset(0), trailingPatchLength(0),
 			   imageData(0)
 		{
 		}
@@ -553,6 +555,9 @@ namespace psd {
 			delete channelImageData; channelImageData = 0;
 			delete globalLayerMaskInfoRaw; globalLayerMaskInfoRaw = 0;
 			delete layerAndMaskTrailing; layerAndMaskTrailing = 0;
+			trailingPatched = false; trailingPatchKey = 0;
+			trailingPatchOffset = 0; trailingPatchLength = 0;
+			trailingPatchBytes.clear();
 			delete imageData; imageData = 0;
 		}
 
@@ -623,6 +628,17 @@ namespace psd {
 		// ある追加 info (Lr16/Lr32 などの secondary layer info) を未解釈の
 		// まま保持。ラウンドトリップ save 用。
 		IteratorBase *layerAndMaskTrailing;
+
+		// 文書末尾の追加情報 (Txt2 など) を 1 ブロックだけ差し替える / 削除する
+		// ための指定。巨大な lnk2 (リンク済みスマートオブジェクト) を丸ごと
+		// メモリへ写さずに済むよう、「layerAndMaskTrailing のこの範囲を、この
+		// 内容へ置き換える」形で持つ。offset / length は常に**元の** trailing
+		// 上の位置なので、同じキーへの差し替えを繰り返しても破綻しない。
+		bool        trailingPatched;
+		int         trailingPatchKey;
+		int         trailingPatchOffset;
+		int         trailingPatchLength;
+		std::string trailingPatchBytes;   // 空なら削除
 		
 		// 合成済み画像データ
 		IteratorBase *imageData;

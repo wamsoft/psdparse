@@ -174,10 +174,17 @@ namespace psd {
     // 本文とラン構成 / 段落構成をまとめて差し替える (書式付きテキストの編集)。
     // setLayerText はランを 1 つに畳んでしまうので、部分ごとに書式を変えたい
     // 場合はこちらを使う。詳細は psdengine.h の editEngineDataRichText 参照。
+    //
+    // formattingUnchanged: 「ラン構成も書式も変わっておらず、変わったのは本文
+    // (と各ランの長さ) だけ」だと呼び出し側が保証する場合に true。書式を毎回
+    // **絶対値**で渡す呼び出し側 (指定が無い = 元のまま、を使わない設計) では、
+    // 指定の有無から本文だけの編集かどうかを判別できないため。true のときだけ
+    // Txt2 への追随を試みる (それ以外は Txt2 を落として TySh へ倒す)。
     bool setLayerRichText(int index, const u16str &newText,
                           const std::vector<TextRunSpec> &runs,
                           const std::vector<TextParagraphSpec> &paragraphs,
-                          std::string *errorOut = nullptr);
+                          std::string *errorOut = nullptr,
+                          bool formattingUnchanged = false);
 
     // 段落の行揃えだけ変える (paraIndex < 0 で全段落)。0=左 1=右 2=中央。
     bool setLayerJustification(int index, int paraIndex, int justification,
@@ -235,6 +242,13 @@ namespace psd {
     // Python 側で合成した結果を PSD のプレビューに反映するのに使う。失敗で false。
     bool setMergedImage(const uint8_t *bgra, int width, int height);
 
+    // 合成済み画像を単色で置き換える (RLE 圧縮なので巨大なキャンバスでも小さい)。
+    // Photoshop が「PSD 互換を優先」を切って保存したときと同じ形 = 中身のない
+    // プレビュー。テキストを書き換えると合成は古くなるが、psdparse は再合成でき
+    // ないので、**古い絵をそのまま配るかわりに空にする**ために使う。
+    // Photoshop はレイヤから合成し直すので、Photoshop での表示には影響しない。
+    bool setMergedImageSolid(uint8_t r = 255, uint8_t g = 255, uint8_t b = 255);
+
     // --- 新規作成 (E5) ------------------------------------------------------
     // この PSDFile を空の 8bit RGB 文書 (幅×高さ, 白の合成画像) として初期化する。
     // 以後 addLayer(...) でレイヤを足して save() できる。成功で true。
@@ -249,7 +263,57 @@ namespace psd {
     bool getLayerImageById(int layerId, void *buf, const ColorFormat &format,
                            int bufPitchByte, ImageMode mode);
 
+    // --- Txt2 (文書ぜんたいの Text Engine Data) の扱い ------------------------
+    //
+    // Photoshop CS3 以降は、文書ぜんたいのテキストエンジン状態を Txt2 として
+    // 持ち、**レイヤ毎の TySh より優先して読む**。したがって TySh だけ書き換え
+    // ても編集は Photoshop に届かない (psdtext 側で実測)。どう辻褄を合わせるか
+    // をここで選ぶ。
+    enum TextEngineDataPolicy {
+      // 既定。本文とラン長の編集は Txt2 にも反映する。書式 / 行揃え / 枠 /
+      // 位置のように反映できない編集が来たら、その時点で Txt2 を削除して
+      // TySh へフォールバックさせる (古い本文を見せるより安全なため)。
+      TEXTENGINE_SYNC = 0,
+      // 編集の有無にかかわらず Txt2 を削除する。書式ごと組み替えるならこちら。
+      TEXTENGINE_REMOVE,
+      // 何もしない。Photoshop からは編集が見えなくなるので、意図がある場合だけ。
+      TEXTENGINE_KEEP,
+    };
+    void setTextEngineDataPolicy(TextEngineDataPolicy p);
+    TextEngineDataPolicy textEngineDataPolicy() const { return textPolicy_; }
+    // 追随できない編集に当たって Txt2 を落としたら true (ツール側の通知用)。
+    bool textEngineDataDropped() const { return textEngineDropped_; }
+    // Txt2 を明示的に削除する。
+    bool dropTextEngineData();
+    // レイヤの TySh が持つ TextIndex (Txt2 内の本文の並び順) を読む。
+    bool getLayerTextIndex(int index, int &out) const;
+
+    // --- 文書末尾の追加情報 (Txt2 など) --------------------------------------
+    //
+    // レイヤ&マスク情報の末尾にある、文書ぜんたいに効く追加情報ブロック
+    // ('8BIM'|'8B64' + key + length + data)。psdparse は普段ここを素通しするが、
+    // Txt2 (文書ぜんたいの Text Engine Data) だけは触る必要がある。
+    // **Photoshop は Txt2 をレイヤ毎の TySh より優先して読む**ので、TySh だけ
+    // 書き換えても編集が Photoshop に届かない。
+    //
+    // 差し替えられるのは 1 キーだけ (それ以上を要求したら false)。
+    bool hasDocumentAdditionalInfo(int key);
+    bool getDocumentAdditionalInfo(int key, std::string &out);
+    bool setDocumentAdditionalInfo(int key, const char *data, size_t size);
+    bool removeDocumentAdditionalInfo(int key);
+
   private:
+    // Txt2 の扱い。既定は本文編集への追随。
+    TextEngineDataPolicy textPolicy_ = TEXTENGINE_SYNC;
+    bool                 textEngineDropped_ = false;
+
+    // 本文編集を Txt2 へ写す。写せなければ Txt2 を落とす。
+    bool syncTextEngineData(int index, const u16str &newText,
+                            const std::vector<int> &paragraphLengths,
+                            const std::vector<int> &styleLengths);
+    // 書式 / 位置の編集など、写せない変更が起きたときの後始末。
+    void invalidateTextEngineData();
+
     // OS マップ領域 (path から load した場合)。pimpl で windows.h 等の漏出を防ぐ。
     struct Mapping;
     std::unique_ptr<Mapping> mapping_;

@@ -35,6 +35,40 @@ namespace psd {
   // (未編集なら元とバイト一致するのが目標 — 直列化器の検証用)。
   bool reserializeEngineData(const char *data, size_t len, std::string &out);
 
+  // --------------------------------------------------------------------------
+  // Txt2 (文書全体の Text Engine Data)
+  //
+  // Photoshop CS3 以降が書く、文書ぜんたいのテキストエンジン状態。レイヤ毎の
+  // TySh より**優先して読まれる**ので、TySh だけ書き換えても Photoshop には
+  // 届かない。中身は EngineData と同じミニ言語だが、最上位が << >> で囲まれず、
+  // キーが数値エイリアス (/0 /5 /98 ...) で、空白区切りの 1 行で書かれる。
+  // --------------------------------------------------------------------------
+
+  // Txt2 をパースしてそのまま再直列化する
+  // (未編集なら元とバイト一致する — 直列化器の検証用)。
+  bool reserializeTextEngineData(const char *data, size_t len, std::string &out);
+
+  // Txt2 が持つ本文を出現順に列挙する。この並びはレイヤ側 TySh の descriptor が
+  // 持つ TextIndex に一致する。
+  bool listTextEngineDataTexts(const char *data, size_t len,
+                               std::vector<u16str> &out);
+
+  // Txt2 の textIndex 番目の本文を差し替え、段落ラン / スタイルランの長さを
+  // 追随させる。
+  //
+  // - paragraphLengths / styleLengths は UTF-16 コードユニット数。空なら本文
+  //   ぜんぶを 1 ランに畳む (= 書式は先頭ランのものに揃う)
+  // - 合計が本文長と食い違う場合は末尾ランで吸収する
+  // - 既存のラン数より増える分は末尾ランを雛形に複製する。**書式そのものは
+  //   触らない**ので、書式まで変える編集を Txt2 に反映することはできない。
+  //   その場合は Txt2 を丸ごと削除して TySh へフォールバックさせること
+  // - 末尾に改行 () が無ければ補う (Photoshop の慣習)
+  bool editTextEngineDataText(const char *data, size_t len, int textIndex,
+                              const u16str &newText,
+                              const std::vector<int> &paragraphLengths,
+                              const std::vector<int> &styleLengths,
+                              std::string &out);
+
   // EngineData の本文を newText に差し替えて再直列化する。 スタイルは先頭ランに
   // 畳まれる。 成功で true。
   bool editEngineDataText(const char *data, size_t len, const u16str &newText,
