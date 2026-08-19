@@ -539,7 +539,7 @@ the two in step for you.
 
 ```python
 p.set_text(i, "new body")
-p.text_engine_texts()          # -> ['new body', ...] in TextIndex order
+p.text_engine_texts()          # -> ['new body\r', ...] in TextIndex order
 p.has_text_engine_data()       # -> True
 p.text_engine_dropped          # -> False (nothing had to be given up)
 ```

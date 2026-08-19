@@ -62,7 +62,7 @@ namespace psd {
   // - 既存のラン数より増える分は末尾ランを雛形に複製する。**書式そのものは
   //   触らない**ので、書式まで変える編集を Txt2 に反映することはできない。
   //   その場合は Txt2 を丸ごと削除して TySh へフォールバックさせること
-  // - 末尾に改行 () が無ければ補う (Photoshop の慣習)
+  // - 末尾に改行 (\r) が無ければ補う (Photoshop の慣習)
   bool editTextEngineDataText(const char *data, size_t len, int textIndex,
                               const u16str &newText,
                               const std::vector<int> &paragraphLengths,
