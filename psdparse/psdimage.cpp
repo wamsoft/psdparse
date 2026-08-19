@@ -1,5 +1,7 @@
 
 #include "psdfile.h"
+
+#include <algorithm>
 #include "psdparse.h"   // MemoryReader / VectorReader
 #include <cstring>
 #include <cmath>
@@ -1313,6 +1315,42 @@ namespace psd {
     for (int c = 0; c < nch; c++) {
       int s = comp[c];
       for (int i = 0; i < px; i++) buf->push_back(bgra[(size_t)i * 4 + s]);
+    }
+    delete imageData;
+    imageData = new VectorReader(buf);
+    return true;
+  }
+
+  bool PSDFile::setMergedImageSolid(uint8_t r, uint8_t g, uint8_t b) {
+    if (header.depth != 8 || header.mode != COLOR_MODE_RGB) return false;
+    const int w = header.width, h = header.height;
+    if (w <= 0 || h <= 0) return false;
+    int nch = header.channels;
+    if (nch < 3) nch = 3;
+    if (nch > 4) nch = 4;
+    const uint8_t val[4] = { r, g, b, 255 };
+
+    // merged セクションの RLE は、レイヤのチャンネルと並びが違う:
+    // 圧縮ワードのあと「全チャンネルぶんの行バイト数テーブル」をまとめて置き、
+    // その後ろに行データが続く。
+    auto buf = std::make_shared<std::vector<uint8_t>>();
+    buf->push_back(0); buf->push_back(1);                 // compression = 1 (RLE)
+    const size_t countPos = buf->size();
+    buf->resize(buf->size() + (size_t)h * nch * 2, 0);
+
+    std::vector<uint8_t> row((size_t)w), enc;
+    size_t line = 0;
+    for (int c = 0; c < nch; c++) {
+      // 一様な行なので 1 回だけ符号化して使い回す。
+      std::fill(row.begin(), row.end(), val[c]);
+      enc.clear();
+      packBitsEncodeRow(enc, row.data(), w);
+      for (int y = 0; y < h; y++) {
+        buf->insert(buf->end(), enc.begin(), enc.end());
+        (*buf)[countPos + line * 2]     = (uint8_t)((enc.size() >> 8) & 0xff);
+        (*buf)[countPos + line * 2 + 1] = (uint8_t)(enc.size() & 0xff);
+        line++;
+      }
     }
     delete imageData;
     imageData = new VectorReader(buf);

@@ -52,3 +52,34 @@ def test_set_merged_image_valid_for_psd_tools(tmp_path):
     pt = PSDImage.open(str(dst))
     px = np.array(pt.topil())[0, 0]
     assert tuple(px[:3]) == (data[2], data[1], data[0])   # R,G,B of pixel 0
+
+def test_set_merged_image_solid(psd_textbox, tmp_path):
+    # An edit leaves the stored composite stale, and psdparse cannot re-composite.
+    # Blanking it is better than handing out a picture that is no longer true —
+    # and it is what Photoshop writes with "Maximize PSD compatibility" off.
+    before = psd_textbox.merged_image()
+    assert len(set(before[i:i + 4] for i in range(0, len(before), 4))) > 1
+
+    assert psd_textbox.set_merged_image_solid()
+    dst = tmp_path / "solid.psd"
+    assert psd_textbox.save(str(dst))
+
+    q = psdparse.PSDFile()
+    assert q.load(str(dst))
+    after = q.merged_image()
+    assert len(after) == len(before)
+    assert len(set(after[i:i + 4] for i in range(0, len(after), 4))) == 1
+    # RLE-compressed, so it shrinks the file rather than bloating it.
+    assert dst.stat().st_size < len(before)
+
+
+def test_set_merged_image_solid_colour(tmp_path):
+    p = psdparse.PSDFile()
+    p.create_blank(12, 9)
+    assert p.set_merged_image_solid(10, 20, 30)
+    dst = tmp_path / "c.psd"
+    assert p.save(str(dst))
+    q = psdparse.PSDFile()
+    assert q.load(str(dst))
+    m = q.merged_image()
+    assert (m[2], m[1], m[0]) == (10, 20, 30)   # BGRA out
