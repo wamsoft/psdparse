@@ -505,7 +505,7 @@ private:
       return true;
     }
     if (a.type == "levels") {
-      // 先に全体 (records[0])、次にチャンネルごと (records[1..3])
+      // 先にチャンネルごと (records[1..3])、次に全体 (records[0])
       const auto *rec = tableOf(a, "records");
       if (!rec || rec->size() < 4) return false;
       uint8_t master[256];
@@ -515,7 +515,7 @@ private:
         const auto &r = (*rec)[(size_t)ch];
         uint8_t t[256];
         psdfx_levels_lut(r[0], r[1], r[2], r[3], r[4], t);
-        for (int i = 0; i < 256; i++) lut[ch][i] = t[master[i]];
+        for (int i = 0; i < 256; i++) lut[ch][i] = master[t[i]];
       }
       applyLuts();
       return true;

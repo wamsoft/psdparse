@@ -4,6 +4,7 @@
 // コントラストの新方式の曲線、露光量の伝達特性など) は Photoshop が保存した
 // 合成画像と照合して合わせたもの。透明な画素 (アルファ 0) は触らない。
 #include "psdfx.h"
+#include "psdfx_bc_tables.h"
 
 #include <algorithm>
 #include <cmath>
@@ -61,6 +62,15 @@ void hslToRgb(float h, float s, float l, float c[3]) {
 float bayer4(int x, int y) {
   static const float M[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
   return (M[(y & 3) * 4 + (x & 3)] + 0.5f) / 16.f - 0.5f;
+}
+
+// 刻み step ごとの曲線の表 (count 本 x 256) を value で補間して、入力 x の出力を返す
+int curveFromTable(const uint8_t *tables, int count, int minValue, int step, double value, int x) {
+  const double pos = std::min((double)(count - 1), std::max(0.0, (value - minValue) / step));
+  const int i0 = std::min(count - 2, (int)pos);
+  const double f = pos - i0;
+  const double y = tables[(size_t)i0 * 256 + x] * (1 - f) + tables[(size_t)(i0 + 1) * 256 + x] * f;
+  return (int)std::floor(y + 0.5);
 }
 
 }  // namespace
@@ -142,27 +152,18 @@ extern "C" void psdfx_brightness_contrast_lut(double brightness, double contrast
   for (int i = 0; i < 256; i++) {
     double v = i / 255.0;
     if (legacy) {
-      // 旧方式: 中間の灰色を軸にコントラストを掛け、明るさを足す
+      // 旧方式: 中間の灰色を軸にコントラストを掛け、明るさを足す。コントラストを
+      // 上げるときは明るさが先、下げるときはコントラストが先 (照合で確認)
       const double cc = std::min(99.0, std::max(-100.0, contrast));
       const double k = cc >= 0 ? 1.0 / (1.0 - cc / 100.0) : 1.0 + cc / 100.0;
-      v = (v - 0.5) * k + 0.5 + brightness / 255.0;
+      if (cc >= 0) v = (v + brightness / 255.0 - 0.5) * k + 0.5;
+      else v = (v - 0.5) * k + 0.5 + brightness / 255.0;
     } else {
-      // 新方式: 明るさは原点からの傾き 1.375^(b/50) の直線を白で 1 に収める曲線、
-      // コントラストは 0.5 を軸にした 3 次エルミートの S 字 (端の傾き 1 - c/128、
-      // 中央の傾き 1 + c/128)。明るさ → コントラストの順。
-      if (brightness != 0) {
-        const double s = std::pow(1.375, brightness / 50.0);
-        const double p = brightness >= 0 ? std::max(2.0, 4.5 - 0.013 * brightness) : 5.0 - 0.072 * brightness;
-        v = s * v + (1.0 - s) * std::pow(v, p);
-      }
-      if (contrast != 0) {
-        const double k = contrast / 128.0, e = 1.0 - k, m = 1.0 + k;
-        auto half = [&](double t) {
-          return e * 0.5 * (t * t * t - 2 * t * t + t) + (-2 * t * t * t + 3 * t * t) * 0.5 + m * 0.5 * (t * t * t - t * t);
-        };
-        v = std::min(1.0, std::max(0.0, v));
-        v = v <= 0.5 ? half(v / 0.5) : 1.0 - half((1.0 - v) / 0.5);
-      }
+      // 新方式: Photoshop で測った曲線の表を補間して使う (明るさ → コントラスト)
+      const int x = (int)std::floor(v * 255.0 + 0.5);
+      v = curveFromTable(kBcContrast[0], kBcContrastCount, kBcContrastMin, kBcContrastStep, contrast,
+                         curveFromTable(kBcBrightness[0], kBcBrightnessCount, kBcBrightnessMin, kBcBrightnessStep,
+                                        brightness, x)) / 255.0;
     }
     lut[i] = to8((float)v);
   }
