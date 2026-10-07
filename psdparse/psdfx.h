@@ -88,7 +88,12 @@ typedef struct psdfx_gradient {
   const psdfx_color_stop *colors; int color_count;
   const psdfx_alpha_stop *alphas; int alpha_count;
   double smoothness;      /* 0..1 (Photoshop の滑らかさ。既定 1.0) */
+  int interpolation;      /* PSDFX_GRADIENT_CLASSIC (既定) / PSDFX_GRADIENT_LINEAR_LIGHT */
 } psdfx_gradient;
+
+/* グラデーションの補間方法 ('gradientsInterpolationMethod')。
+ * 線形 (Lnr ) は線形光 (sRGB を外した値) で色を混ぜる */
+enum { PSDFX_GRADIENT_CLASSIC = 0, PSDFX_GRADIENT_LINEAR_LIGHT = 1 };
 
 enum {
   PSDFX_GRADIENT_LINEAR = 0,

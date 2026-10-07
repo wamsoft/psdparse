@@ -38,7 +38,7 @@ double sampleStops(const Stop *s, int n, double t, double smooth, Get get) {
   const Stop &a = s[i], &b = s[i + 1];
   const double span = b.location - a.location;
   double u = span > 1e-9 ? (t - a.location) / span : 0;
-  u = bend(u, a.midpoint);
+  u = bend(u, b.midpoint);   // 中間点は区間の終わりの分岐点が持つ (Photoshop の保存の形)
   const double va = get(a), vb = get(b);
   const double lin = va + (vb - va) * u;
   if (smooth <= 0) return lin;
@@ -60,9 +60,18 @@ inline uint8_t to8(double v) { return (uint8_t)(clamp01(v) * 255.0 + 0.5); }
 extern "C" void psdfx_gradient_color(const psdfx_gradient *g, double t, uint8_t rgba[4]) {
   t = clamp01(t);
   const double s = clamp01(g->smoothness);
-  const double r = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.r / 255.0; });
-  const double gg = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.g / 255.0; });
-  const double b = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.b / 255.0; });
+  double r, gg, b;
+  if (g->interpolation == PSDFX_GRADIENT_LINEAR_LIGHT) {
+    auto lin = [](uint8_t v) { const double x = v / 255.0; return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4); };
+    auto enc = [](double v) { v = clamp01(v); return v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055; };
+    r = enc(sampleStops(g->colors, g->color_count, t, s, [&](const psdfx_color_stop &c) { return lin(c.r); }));
+    gg = enc(sampleStops(g->colors, g->color_count, t, s, [&](const psdfx_color_stop &c) { return lin(c.g); }));
+    b = enc(sampleStops(g->colors, g->color_count, t, s, [&](const psdfx_color_stop &c) { return lin(c.b); }));
+  } else {
+    r = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.r / 255.0; });
+    gg = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.g / 255.0; });
+    b = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.b / 255.0; });
+  }
   const double a = g->alpha_count > 0
       ? sampleStops(g->alphas, g->alpha_count, t, s, [](const psdfx_alpha_stop &c) { return c.opacity; })
       : 1.0;

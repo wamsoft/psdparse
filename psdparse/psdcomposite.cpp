@@ -247,7 +247,14 @@ private:
     g.colors = cs.data(); g.color_count = (int)cs.size();
     g.alphas = as.empty() ? nullptr : as.data(); g.alpha_count = (int)as.size();
     g.smoothness = num(gr, "Intr", 4096) / 4096.0;
+    g.interpolation = PSDFX_GRADIENT_CLASSIC;
     return true;
+  }
+
+  // 補間方法 ('gradientsInterpolationMethod' は塗り / 効果の descriptor 側にある)
+  static int gradientInterpolation(Descriptor *d) {
+    return enumOf(d, "gradientsInterpolationMethod") == "Lnr " ? PSDFX_GRADIENT_LINEAR_LIGHT
+                                                               : PSDFX_GRADIENT_CLASSIC;
   }
 
   static int gradientStyle(Descriptor *d) {
@@ -315,6 +322,7 @@ private:
       std::vector<psdfx_color_stop> cs; std::vector<psdfx_alpha_stop> as;
       psdfx_gradient g;
       if (!descGradient(dynamic_cast<Descriptor*>(d.item("Grad").find()), cs, as, g)) return false;
+      g.interpolation = gradientInterpolation(&d);
       double box[4];
       auto *al = dynamic_cast<DescriptorBoolean*>(d.item("Algn").find());
       if (!al || al->val) shapeBox(l, box);
@@ -651,6 +659,7 @@ private:
                 [](const psdfx_color_stop &x, const psdfx_color_stop &y) { return x.location < y.location; });
       psdfx_alpha_stop as[2] = { { 0, 0.5, 1 }, { 1, 0.5, 1 } };
       psdfx_gradient g;
+      g.interpolation = PSDFX_GRADIENT_CLASSIC;
       g.colors = stops.data(); g.color_count = (int)stops.size();
       g.alphas = as; g.alpha_count = 2;
       g.smoothness = scalarOf(a, "interpolation", 4096) / 4096.0;
@@ -797,6 +806,7 @@ private:
         return false;
       }
       f.kind = PSDFX_FILL_GRADIENT;
+      f.gradient.interpolation = gradientInterpolation(d);
       f.gradient_style = gradientStyle(d);
       f.angle = num(d, "Angl", 90);
       f.scale = num(d, "Scl ", 100) / 100.0;
