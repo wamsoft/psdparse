@@ -1141,7 +1141,14 @@ private:
       left = l.left; top = l.top;
       int w = l.width, h = l.height;
       if (l.layerType == LAYER_TYPE_FILL || w <= 0 || h <= 0) {
-        left = 0; top = 0; w = psd_.header.width; h = psd_.header.height;
+        // 文書全体。形が文書の外へはみ出していれば、その分も含める (形の縁が文書の
+        // 外にあるとき、効果の内側の距離が文書の端から測られないように)
+        int x0 = 0, y0 = 0, x1 = psd_.header.width, y1 = psd_.header.height;
+        if (l.width > 0 && l.height > 0) {
+          x0 = std::min(x0, l.left); y0 = std::min(y0, l.top);
+          x1 = std::max(x1, l.right); y1 = std::max(y1, l.bottom);
+        }
+        left = x0; top = y0; w = x1 - x0; h = y1 - y0;
       }
       Canvas fill(w, h);
       if (l.layerType != LAYER_TYPE_FILL && paintShapeWithStroke(l, fill, left, top)) {
