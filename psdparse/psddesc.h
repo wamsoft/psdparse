@@ -239,7 +239,7 @@ namespace psd {
       DescriptorList_getter(const std::vector<DescriptorItem*>& items, int id)
       : items(items), id(id) { }
       DescriptorItem *get() const {
-        return (id >= 0 && id <= (int)items.size()) ? items[id] : 0;
+        return (id >= 0 && id < (int)items.size()) ? items[id] : 0;
       }
 #define GETTER(type) operator type*() const { return (type*)get(); }
       GETTER(Descriptor);

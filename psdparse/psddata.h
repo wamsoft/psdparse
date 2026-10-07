@@ -201,6 +201,71 @@ namespace psd {
 		int total() const { return dataOffset - offset + dataLength + padding; }
 	};
 
+	// --- パス (ベクタマスク / 保存パス / 作業パス) -----------------------------
+	//
+	// パスは 26 バイトのレコード (2 バイトの種別 + 24 バイト) の並び。座標は
+	// 符号付き 8.24 固定小数で、文書の幅 / 高さに対する比率 (0..1) として持つ。
+	// ディスク上は (縦, 横) の順だが、ここでは x / y に直して持つ。
+
+	// パス上の 1 点 (文書幅 / 高さに対する比率)
+	struct PathPoint {
+		double x = 0.0;
+		double y = 0.0;
+	};
+
+	// ベジェのアンカー 1 個と、その前後の制御点
+	struct PathKnot {
+		bool linked = true;      // 制御点が連動しているか
+		PathPoint preceding;     // 前の区間の制御点 (アンカーへ入ってくる側)
+		PathPoint anchor;
+		PathPoint leaving;       // 次の区間の制御点 (アンカーから出ていく側)
+	};
+
+	// サブパス 1 本
+	struct PathSubpath {
+		bool closed = true;
+		// サブパスどうしの合成方法 (長さレコードの 3〜4 バイト目)。
+		//   -1 / 1: 結合 (or)、2: 前面の型抜き (subtract)、3: 交差 (intersect)、
+		//   0: 中マド (xor)。古いファイルは -1。
+		int operation = -1;
+		int index = 0;           // 長さレコードの index (Photoshop がシェイプ内の順に振る)
+		std::vector<PathKnot> knots;
+	};
+
+	struct PathData {
+		std::vector<PathSubpath> subpaths;
+		bool hasFillRule = false;     // パス塗りつぶしルールのレコード (中身は無い)
+		int  initialFill = -1;        // 初期塗りつぶしルール (0/1)。レコード無しは -1
+		bool hasClipboard = false;    // クリップボードのレコード
+		double clipboardTop = 0, clipboardLeft = 0, clipboardBottom = 0, clipboardRight = 0;
+		double clipboardResolution = 0;
+	};
+
+	// レイヤのベクタマスク ('vmsk' / シェイプレイヤは 'vsms')
+	struct VectorMask {
+		bool present = false;
+		int key = 0;              // 'vmsk' / 'vsms'
+		int version = 0;          // 3
+		uint32_t flags = 0;       // bit0: 反転 / bit1: リンク解除 / bit2: 無効
+		PathData path;
+		bool inverted() const { return (flags & 1) != 0; }
+		bool notLinked() const { return (flags & 2) != 0; }
+		bool disabled() const { return (flags & 4) != 0; }
+	};
+
+	// 保存パス (image resource 2000〜2997) と作業パス (1025)
+	struct SavedPath {
+		int id = 0;
+		std::string name;         // リソース名 (Pascal 文字列の生バイト)
+		u16str nameUnicode;       // 'pths' ブロックにある Unicode 名
+		bool hasNameUnicode = false;
+		PathData path;
+	};
+
+	// パスレコード列 (26 バイト × n) を読む。読めたところまでを out に入れ、
+	// 途中で壊れていたら false。
+	bool parsePathRecords(const uint8_t *p, size_t n, PathData &out);
+
   // RGBAカラー
   struct ColorRgba {
     uint8_t r;
@@ -562,6 +627,9 @@ namespace psd {
     bool isObsolete()              const { return (flag & (1 << 2)) != 0; }
     bool isLaterVer5()             const { return (flag & (1 << 3)) != 0; }
     bool isPixelDataIrrelevant()   const { return (flag & (1 << 4)) != 0; }
+
+    // ベクタマスク ('vmsk' / 'vsms')。processParsed で設定。
+    VectorMask vectorMask;
 	};
 	
 	/**
@@ -711,6 +779,7 @@ namespace psd {
     GridGuideResource  gridGuide;   // グリッド/ガイド
     ColorTable         colorTable;  // カラーテーブル(インデックスカラー用)
     std::vector<LayerComp> layerComps; // レイヤーカンプ
+    std::vector<SavedPath> savedPaths; // 保存パス (2000〜2997) と作業パス (1025)。リソース順
     int lastAppliedCompId;             // 最終適用カンプ
 
   protected:

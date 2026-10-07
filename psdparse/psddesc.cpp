@@ -1,6 +1,8 @@
 
 #include "psddesc.h"
 
+#include <algorithm>
+
 namespace psd {
 
   // --------------------------------------------------------------------------
@@ -13,6 +15,13 @@ namespace psd {
     int idSize = data->getInt32();
     if (idSize == 0) {
       idSize = 4;
+    }
+    // 壊れた長さ (負 / 残りより長い) は読めないので、残りを捨てて空 ID にする。
+    // 以降の読み取りは型 0 になり、呼び出し側が「解釈不能」として打ち切る。
+    if (idSize < 0 || idSize > data->rest()) {
+      data->advance(data->rest());
+      id.clear();
+      return;
     }
     std::vector<char> buf(idSize+1);
     data->getData(&buf[0], idSize);
@@ -111,16 +120,15 @@ namespace psd {
   DescriptorList::load(IteratorBase *data)
   {
     int itemCount = data->getInt32();
-    items.reserve(itemCount);
+    // 1 要素は最低 4 バイト (型) あるので、残りから見て多すぎる件数は確保しない
+    if (itemCount > 0) items.reserve((size_t)std::min(itemCount, data->rest() / 4));
     for (int i = 0; i < itemCount; i++) {
       DescriptorItem *item = readItem(data);
       if (item && item->isValid) {
         items.push_back(item);
       } else {
         // 解釈不能が出てきたら構造上スキップできないのでここで終了する
-        if (item->isValid) {
-          delete item;
-        }
+        delete item;
         isValid = false;
         break;
       }
@@ -203,6 +211,10 @@ namespace psd {
   DescriptorAlias::load(IteratorBase *data)
   {
     int size = data->getInt32();
+    if (size < 0 || size > data->rest()) {
+      isValid = false;
+      return false;
+    }
     std::vector<char> buf(size+1);
     data->getData(&buf[0], size);
     buf[size] = '\0';

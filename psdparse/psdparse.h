@@ -98,6 +98,8 @@ public:
     int len = getInt32(true);
     str.clear();
     if (len < 0) return;
+    // 壊れた長さで巨大な確保 / 長いループにならないよう、残りバイト数で頭打ち
+    if (len > rest() / 2) len = rest() / 2;
     str.reserve((size_t)len);
     for (int i = 0; i < len; i++) {
       str.push_back((char16_t)getInt16(convToNative));
@@ -293,6 +295,8 @@ public:
     int len = getInt32(true);
     str.clear();
     if (len < 0) return;
+    // 壊れた長さで巨大な確保 / 長いループにならないよう、残りバイト数で頭打ち
+    if (len > rest() / 2) len = rest() / 2;
     str.reserve((size_t)len);
     for (int i = 0; i < len; i++) {
       str.push_back((char16_t)getInt16(convToNative));

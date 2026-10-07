@@ -162,6 +162,77 @@ py::object layerSheetColor(const psd::LayerInfo &l) {
   return py::none();
 }
 
+// Path records (vector masks, saved / work paths) -> dict. Coordinates are
+// stored as fractions of the document size; they are returned in document
+// pixels as (x, y) tuples.
+py::dict pathToPy(const psd::PathData &pd, double w, double h) {
+  auto pt = [&](const psd::PathPoint &p) { return py::make_tuple(p.x * w, p.y * h); };
+  py::list subs;
+  for (const auto &sp : pd.subpaths) {
+    py::list knots;
+    for (const auto &k : sp.knots) {
+      py::dict kd;
+      kd["anchor"]    = pt(k.anchor);
+      kd["preceding"] = pt(k.preceding);
+      kd["leaving"]   = pt(k.leaving);
+      kd["linked"]    = k.linked;
+      knots.append(kd);
+    }
+    py::dict sd;
+    sd["closed"]    = sp.closed;
+    sd["operation"] = sp.operation;
+    sd["index"]     = sp.index;
+    sd["knots"]     = knots;
+    subs.append(sd);
+  }
+  py::dict d;
+  d["subpaths"]     = subs;
+  d["initial_fill"] = pd.initialFill < 0 ? py::object(py::none()) : py::object(py::int_(pd.initialFill));
+  if (pd.hasClipboard) {
+    py::dict c;
+    c["top"]        = pd.clipboardTop;
+    c["left"]       = pd.clipboardLeft;
+    c["bottom"]     = pd.clipboardBottom;
+    c["right"]      = pd.clipboardRight;
+    c["resolution"] = pd.clipboardResolution;
+    d["clipboard"] = c;
+  } else {
+    d["clipboard"] = py::none();
+  }
+  return d;
+}
+
+// Layer vector mask ('vmsk', or 'vsms' on shape layers).
+py::object layerVectorMask(const psd::LayerInfo &l) {
+  const psd::VectorMask &vm = l.vectorMask;
+  if (!vm.present || !l.owner) return py::none();
+  const psd::Header &h = l.owner->header;
+  py::dict d;
+  char k[5] = { (char)((vm.key >> 24) & 0xff), (char)((vm.key >> 16) & 0xff),
+                (char)((vm.key >> 8) & 0xff), (char)(vm.key & 0xff), 0 };
+  d["key"]        = std::string(k);
+  d["inverted"]   = vm.inverted();
+  d["not_linked"] = vm.notLinked();
+  d["disabled"]   = vm.disabled();
+  d["path"]       = pathToPy(vm.path, h.width, h.height);
+  return std::move(d);
+}
+
+// Saved paths (image resources 2000-2997) and the work path (1025).
+py::list psdPaths(psd::PSDFile &self) {
+  py::list out;
+  for (const auto &sp : self.savedPaths) {
+    py::dict d;
+    d["id"]   = sp.id;
+    d["kind"] = sp.id == 1025 ? "work" : "saved";
+    d["name"] = py::bytes(sp.name);
+    d["unicode_name"] = sp.hasNameUnicode ? u16ToStr(sp.nameUnicode) : py::object(py::none());
+    d["path"] = pathToPy(sp.path, self.header.width, self.header.height);
+    out.append(d);
+  }
+  return out;
+}
+
 // Per-layer layer-comp state: {comp_id: {"enabled", "offset_x", "offset_y"}}.
 // Empty dict when the layer participates in no comps. `enabled` drives which
 // layers are shown for a given document layer comp (PSDFile.layer_comps).
@@ -419,6 +490,22 @@ py::object layerDescriptor(const psd::LayerInfo &l, const std::string &keyStr, i
     case 'vstk': case 'CgEd':                skip = 4;  break;  // descVer
     case 'vscg':                             skip = 8;  break;  // key + ver
     case 'vogk':                             skip = 8;  break;  // ver + dataVer
+    case 'PlLd': {
+      // 'plcL' + ver + uuid (Pascal, 詰め物なし) + page/total/antiAlias/type +
+      // transform (8 doubles) + warp ver + descVer。uuid の長さで位置が変わる。
+      skip = 0;
+      for (const auto &a : l.extraData.additionalLayers) {
+        if (a.key != key || !a.data) continue;
+        psd::IteratorBase *rd = a.data->clone();
+        rd->init();
+        rd->advance(8);
+        int n = rd->getCh();
+        delete rd;
+        if (n >= 0) skip = 8 + 1 + n + 16 + 64 + 8;
+        break;
+      }
+      break;
+    }
     default:                                 skip = 0;  break;
     }
   }
@@ -924,6 +1011,12 @@ PYBIND11_MODULE(psdparse, m) {
         "Per-layer layer-comp state as {comp_id: {'enabled', 'offset_x', "
         "'offset_y'}} (empty when the layer is in no comps). `enabled` says "
         "whether this layer is shown in that document comp (PSDFile.layer_comps).")
+    .def_property_readonly("vector_mask", &layerVectorMask,
+        "Vector mask ('vmsk', or 'vsms' on shape layers) as {'key', 'inverted', "
+        "'not_linked', 'disabled', 'path'}, or None. 'path' holds 'subpaths' "
+        "(each {'closed', 'operation', 'index', 'knots'}), 'initial_fill' and "
+        "'clipboard'; knot points ('anchor', 'preceding', 'leaving') are (x, y) "
+        "in document pixels.")
     .def_property_readonly("sheet_color", &layerSheetColor,
         "Layer-panel color label ('lclr') as {'index', 'name'} (0/'none' .. "
         "11/'fuschia'), or None when the layer carries no lclr block.")
@@ -1468,6 +1561,12 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("index"), py::arg("mode") = "masked",
          "Extract pixels for layer `index` as BGRA bytes. "
          "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).")
+    .def_property_readonly("paths", &psdPaths,
+         "Saved paths (image resources 2000-2997, kind 'saved') and the work "
+         "path (1025, kind 'work') in resource order, as dicts {'id', 'kind', "
+         "'name' (raw bytes), 'unicode_name' (from the 'pths' block, or None), "
+         "'path'}. 'path' has the same shape as "
+         "layer.vector_mask['path'].")
     .def_property_readonly("guides", &psdGuides,
          "Grid & guides (image resource 1032) as a dict "
          "(horizontal_grid, vertical_grid, guides[]), or None.")

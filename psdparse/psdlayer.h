@@ -10,5 +10,6 @@ namespace psd {
   bool loadLayerMetadata(LayerInfo &layer, AdditionalLayerInfo &additional);
   bool loadLayerFillOpacity(LayerInfo &layer, AdditionalLayerInfo &additional);
   bool loadLayerTypeTool(LayerInfo &layer, AdditionalLayerInfo &additional);
+  bool loadLayerVectorMask(LayerInfo &layer, AdditionalLayerInfo &additional);
 }
 #endif //  __psdlayer_h__

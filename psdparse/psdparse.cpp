@@ -34,6 +34,9 @@ Data::processParsed()
     case 1065:  // 0x0429 -- (Photoshop CS) Layer Comps. 4 bytes (descriptor version = 16), Descriptor (see See Descriptor structure)
       success = loadResourceLayerComps(*this, res);
       break;
+    case 1025:  // 0x0401 -- Work path (not saved). See See Path resource format.
+      success = loadResourcePath(*this, res);
+      break;
 
     case 1005: { // 0x03ED -- ResolutionInfo。 hRes/vRes は Fixed 16.16 の dpi。
       if (res.data) {
@@ -70,7 +73,6 @@ Data::processParsed()
     case 1022:  // 0x03FE -- Quick Mask information. 2 bytes containing Quick Mask channel ID; 1- byte boolean indicating whether the mask was initially empty.
     case 1023:  // 0x03FF -- (Obsolete)
     case 1024:  // 0x0400 -- Layer state information. 2 bytes containing the index of target layer (0 = bottom layer).
-    case 1025:  // 0x0401 -- Working path (not saved). See See Path resource format.
     case 1026:  // 0x0402 -- Layers group information. 2 bytes per layer containing a group ID for the dragging groups. Layers in a group have the same group ID.
     case 1027:  // 0x0403 -- (Obsolete)
     case 1028:  // 0x0404 -- IPTC-NAA record. Contains the File Info... information. See the documentation in the IPTC folder of the Documentation folder.
@@ -130,12 +132,16 @@ Data::processParsed()
     case 8000:  // 0x1F40 -- (Photoshop CS3) Lightroom workflow, if present the document is in the middle of a Lightroom workflow.
     case 10000:  // 0x2710 -- Print flags information. 2 bytes version ( = 1), 1 byte center crop marks, 1 byte ( = 0), 4 bytes bleed width value, 2 bytes bleed width scale.
       if (res.id >= 2000 && res.id <= 2997) {
+        success = loadResourcePath(*this, res);   // 保存パス
       }
       if (res.id >= 4000 && res.id <= 4999) {
       }
       break;
     }
   }
+
+  // 保存パスの Unicode 名 (文書末尾の 'pths')
+  loadUnicodePathNames(*this);
 
   // カラーテーブル
   if (header.mode == COLOR_MODE_INDEXED &&
@@ -233,6 +239,11 @@ Data::processParsed()
       case 'TySh': // Type tool object setting (Photoshop 6.0) — テキストレイヤ
         success = loadLayerTypeTool(layer, additional);
         break;
+      case 'vmsk': // Vector mask setting (Photoshop 6.0)
+      case 'vsms': // シェイプレイヤのベクタマスク (CS6 以降)
+        if (!layer.vectorMask.present || additional.key == 'vmsk')
+          success = loadLayerVectorMask(layer, additional);
+        break;
 
       // --- 未対応 ---
       case 'lrFX': // Effects Layer (Photoshop 5.0)
@@ -249,8 +260,6 @@ Data::processParsed()
       case 'lclr': // Sheet color setting (Photoshop 6.0)
       case 'fxrp': // Reference point (Photoshop 6.0)
       case 'brst': // Channel blending restrictions setting (Photoshop 6.0)
-      case 'vmsk': // Vector mask setting (Photoshop 6.0)
-      case 'vsms':
       case 'ffxi': // Foreign effect ID (Photoshop 6.0)
       case 'lnsr': // Layer name source setting (Photoshop 6.0)
       case 'shpa': // Pattern data (Photoshop 6.0)

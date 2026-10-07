@@ -125,6 +125,7 @@ Read-only view of one layer.
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
 | `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
+| `vector_mask` | `dict` \| `None` | vector mask (`vmsk`, or `vsms` on shape layers): `{"key", "inverted", "not_linked", "disabled", "path"}` — see [Paths](#paths) |
 | `comp_states` | `dict` | per layer-comp state `{comp_id: {"enabled", "offset_x", "offset_y"}}` (empty if the layer is in no comps). `enabled` says if the layer shows in that comp — see [Layer comps](#layer-comps) |
 | `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
 | `visible` | `bool` | flag bit 1 inverted |
@@ -693,6 +694,7 @@ Read-only accessors on `PSDFile` for whole-document metadata. Each returns
 
 ```python
 p.guides        # dict|None : {"horizontal_grid", "vertical_grid", "guides":[{"location","direction"}]}
+p.paths         # list[dict]: saved paths (2000-2997) and the work path (1025) — see Paths below
 p.slices        # dict|None : {"group_name", "bounding":{...}, "slices":[{...}]}
 p.layer_comps   # list[dict]: [{"id","name","comment","record_visibility","record_position","record_appearance"}]
 p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparency_index"} for indexed-color PSDs
@@ -750,6 +752,27 @@ p.thumbnail              # dict|None  : {"format","width","height","bits","resou
 
 - **`xmp`** decodes as UTF-8 `str`; if a file's packet is not valid UTF-8, read
   the raw bytes with `p.image_resource(1060)` instead.
+
+### Paths
+
+`layer.vector_mask["path"]` and each `PSDFile.paths[i]["path"]` share one shape:
+
+```python
+{"subpaths": [{"closed": True, "operation": 1, "index": 0,
+               "knots": [{"anchor": (x, y), "preceding": (x, y), "leaving": (x, y),
+                          "linked": True}, ...]}, ...],
+ "initial_fill": 0,        # initial fill rule record, None if absent
+ "clipboard": None}        # or {"top", "left", "bottom", "right", "resolution"}
+```
+
+Points are `(x, y)` in document pixels (stored as 8.24 fixed-point fractions of
+the canvas). `preceding` is the control point on the way into the anchor,
+`leaving` the one on the way out. `operation` is how a subpath combines with
+the ones before it: `-1`/`1` combine, `2` subtract, `3` intersect, `0` exclude.
+`PSDFile.paths` entries are `{"id", "kind": "saved"|"work", "name": bytes,
+"unicode_name": str|None, "path"}` — `name` is the raw Pascal resource name (system
+encoding, e.g. Shift-JIS), `unicode_name` comes from the document's `pths` block.
+Read-only for now; saving keeps the original bytes.
 
 - **`guides`** — grid spacing (in 1/32 px) and each guide's `location` (1/32 px
   from origin) and `direction` (`"vertical"` / `"horizontal"`).

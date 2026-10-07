@@ -129,7 +129,8 @@ Python バインディングが 0.10.0)。
 | マスク矩形/フラグ/既定色 | ✅ | `layer.mask` (v0.3.0) |
 | real/user mask (size>=36) | ✅ | `layer.mask["real"]` (v0.6.0 でオフセット 1 byte ずれを修正) |
 | density / feather | ✅ | `layer.mask` の `user_density`/`user_feather`/`vector_density`/`vector_feather` (v0.6.0) |
-| ベクタマスク / パス (`vmsk`/`vsms`) | ❌ | 未対応 |
+| ベクタマスク (`vmsk`/`vsms`) | ✅ | `layer.vector_mask` (反転 / リンク解除 / 無効、サブパスの開閉・合成方法、knot と制御点を文書ピクセルで)。未リリース。読み取りのみ |
+| 保存パス (2000〜2997) / 作業パス (1025) | ✅ | `PSDFile.paths` (`unicode_name` は `pths` ブロックから)。未リリース。読み取りのみ |
 | ブレンディングレンジ ("Blend If") | ✅ | `layer.blending_ranges` (raw 32bit packed) |
 
 ## テキストレイヤ
@@ -172,10 +173,10 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 |---|:---:|---|
 | 調整レイヤの種別判定 | ✅ | `layer_type == ADJUST` |
 | 調整レイヤのパラメータ (levels/curves 等, binary) | ❌ | 未デコード。descriptor 形式のもの (`CgEd` 等) は `descriptor()` で取得可 |
-| スマートオブジェクト変換 (`SoLd`) | 🟡 | `descriptor("SoLd")` で取得可 (既定 skip=12 を設定済。実サンプル未検証) |
+| スマートオブジェクト変換 (`SoLd`/`SoLE`/`PlLd`) | 🟡 | `descriptor("SoLd")` / `descriptor("PlLd")` で取得可 (既定の読み飛ばし量を設定済。psd-tools 素材の実ファイルで確認) |
 | スマートオブジェクト埋め込みデータ抽出 (`lnkD`) | ❌ | 未対応 |
-| ベクタストローク/シェイプ (`vstk`/`vscg`/`vogk`) | 🟡 | `descriptor()` 経由で取得可 (既定 skip 設定済、実サンプル未検証) |
-| ライブシェイプ情報 (origination) | ❌ | 未対応 |
+| ベクタストローク/シェイプ (`vstk`/`vscg`/`vogk`) | 🟡 | `descriptor()` 経由で取得可 (既定の読み飛ばし量を設定済、実ファイルで確認)。型付きのアクセサは無い |
+| ライブシェイプ情報 (origination) | 🟡 | `descriptor("vogk")` で生 descriptor として取得可 |
 
 ---
 
@@ -215,7 +216,7 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
   新規作成。未編集部分は byte-identical を維持。編集 API は C++ / Python の
   どちらからも同じことができます。
 - **未対応/限定的**: Multichannel ピクセル、調整レイヤの数値パラメータ、ベクタ
-  パス、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成 (composite 再描画)、
+  パスの編集、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成 (composite 再描画)、
   テキストの warp / leading / 段落インデント。画素編集は 8bit RGB のみ。
 - Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを

@@ -109,3 +109,29 @@ def test_fill_none_for_non_fill(psd_group):
     for l in psd_group.layers:
         if l.layer_type != psdparse.LayerType.FILL:
             assert l.fill is None
+
+
+def test_shape_blocks_decode(psd_group):
+    """シェイプレイヤの vscg / vstk / vogk は既定の読み飛ばし量で dict になる"""
+    seen = set()
+    for l in psd_group.layers:
+        for key in ("vscg", "vstk", "vogk"):
+            if key in l.info_keys:
+                d = l.descriptor(key)
+                assert isinstance(d, dict) and d
+                seen.add(key)
+    if not seen:
+        pytest.skip("no shape layers in this sample")
+
+
+def test_misaligned_skip_does_not_crash(psd_group):
+    """読み飛ばし量を外して descriptor でないバイト列を読ませても落ちない。
+    (以前は未知の型でリスト読み込みが null を参照し、壊れた長さの ID / 文字列で
+    巨大な確保をしていた)"""
+    for l in psd_group.layers[:40]:
+        for key in l.info_keys:
+            for skip in range(0, 16, 3):
+                try:
+                    l.descriptor(key, skip)
+                except Exception:
+                    pass
