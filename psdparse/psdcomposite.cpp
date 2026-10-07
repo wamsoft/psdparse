@@ -1039,6 +1039,9 @@ private:
       b.shadow_opacity = (float)(num(e, "sdwO", 75) / 100.0);
       descColor(dynamic_cast<Descriptor*>(e->item("hglC").find()), b.highlight_color);
       descColor(dynamic_cast<Descriptor*>(e->item("sdwC").find()), b.shadow_color);
+      const std::string tech = enumOf(e, "bvlT");
+      b.technique = tech == "PrBL" ? PSDFX_BEVEL_CHISEL_HARD : tech == "Slmt" ? PSDFX_BEVEL_CHISEL_SOFT
+                                                                             : PSDFX_BEVEL_SMOOTH;
     }
     return any;
   }

@@ -27,7 +27,7 @@ const double kSigmaInnerShadow = 0.4;   // ドロップシャドウと同じ (Ph
 const double kSigmaOuterGlow = 0.44;   // 箱ぼかし 3 回で半径 0.42 x 大きさ (Photoshop で測定)
 const double kSigmaInnerGlow = 0.44;    // 光彩 (外側) と同じ (Photoshop で測定)
 const double kSigmaSatin = 0.3;
-const double kSigmaBevel = 0.5;
+const double kSigmaBevel = 0.4;     // 形のぼかし (Photoshop で測定)
 
 inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 inline uint8_t to8(float v) { return (uint8_t)(clamp01(v) * 255.f + 0.5f); }
@@ -396,16 +396,39 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   const psdfx_bevel &bv = fx->bevel;
   Plane bevelOuterHi, bevelOuterSh;
   if (bv.enabled && bv.size > 0) {
-    Plane hgt = A;
-    blur(hgt, bv.size * kSigmaBevel);
+    // 浮き彫り / ピロー浮き彫りは大きさの半分ずつを形の内と外に (Photoshop で測定)
+    const bool both = bv.style == PSDFX_BEVEL_EMBOSS || bv.style == PSDFX_BEVEL_PILLOW;
+    const double w = both ? bv.size * 0.5 : bv.size;
+    // 高さ: 滑らかは形をぼかしたもの、ジゼルは形の縁からの距離で直線に
+    Plane hgt;
+    if (bv.technique == PSDFX_BEVEL_SMOOTH) {
+      hgt = A;
+      blur(hgt, w * kSigmaBevel);
+    } else {
+      Plane dout = distanceTo(A, false), din = distanceTo(A, true);
+      hgt = Plane(W, H);
+      for (size_t i = 0; i < hgt.v.size(); i++) {
+        const double sd = A.v[i] >= 0.5f ? dout.v[i] - 0.5 : 0.5 - din.v[i];   // 内側で正
+        double h;
+        if (bv.style == PSDFX_BEVEL_OUTER) h = 1.0 + sd / w;
+        else if (both) h = 0.5 + sd / (2.0 * w);
+        else h = sd / w;
+        hgt.v[i] = clamp01((float)h);
+      }
+      if (bv.technique == PSDFX_BEVEL_CHISEL_SOFT) blur(hgt, 1.0);
+    }
     const double az = bv.angle * kPi / 180.0, al = bv.altitude * kPi / 180.0;
     const double lx = std::cos(al) * std::cos(az), ly = -std::cos(al) * std::sin(az), lz = std::sin(al);
-    const double k = (bv.up ? 1.0 : -1.0) * bv.depth * bv.size;
+    const double k = (bv.up ? 1.0 : -1.0) * bv.depth * (bv.technique == PSDFX_BEVEL_SMOOTH ? w : 1.0);
     Plane hi(W, H), sh(W, H);
     for (int y = 0; y < H; y++)
       for (int x = 0; x < W; x++) {
-        const double gx = (hgt.get(x + 1, y) - hgt.get(x - 1, y)) * 0.5 * k;
-        const double gy = (hgt.get(x, y + 1) - hgt.get(x, y - 1)) * 0.5 * k;
+        double gx = (hgt.get(x + 1, y) - hgt.get(x - 1, y)) * 0.5 * k;
+        double gy = (hgt.get(x, y + 1) - hgt.get(x, y - 1)) * 0.5 * k;
+        // ジゼルの斜面の傾きは 深さ x 0.46 (大きさにほぼよらない。Photoshop で測定)
+        if (bv.technique != PSDFX_BEVEL_SMOOTH) { gx *= w * 0.46; gy *= w * 0.46; }
+        // ピローは形の外側を逆向きに照らす
+        if (bv.style == PSDFX_BEVEL_PILLOW && A.get(x, y) < 0.5f) { gx = -gx; gy = -gy; }
         const double nl = std::sqrt(gx * gx + gy * gy + 1.0);
         const double shade = (-gx * lx - gy * ly + lz) / nl;
         const double d = shade - lz;
@@ -420,7 +443,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
       compositeCoverage(&Ss, ps, shIn, 0, 0, bv.shadow_blend, bv.shadow_opacity);
       compositeCoverage(&Ss, ph, hiIn, 0, 0, bv.highlight_blend, bv.highlight_opacity);
     }
-    if (bv.style == PSDFX_BEVEL_OUTER || bv.style == PSDFX_BEVEL_EMBOSS) {
+    if (bv.style == PSDFX_BEVEL_OUTER || both) {
       bevelOuterHi = hi; bevelOuterSh = sh;
       for (size_t i = 0; i < A.v.size(); i++) {
         bevelOuterHi.v[i] *= 1.f - A.v[i]; bevelOuterSh.v[i] *= 1.f - A.v[i];

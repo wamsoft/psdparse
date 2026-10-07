@@ -279,7 +279,10 @@ typedef struct psdfx_bevel {      /* ベベルとエンボス */
   uint32_t highlight_blend, shadow_blend;
   float highlight_opacity, shadow_opacity;
   uint8_t highlight_color[3], shadow_color[3];
+  int technique;                  /* PSDFX_BEVEL_SMOOTH (既定) / CHISEL_HARD / CHISEL_SOFT */
 } psdfx_bevel;
+
+enum { PSDFX_BEVEL_SMOOTH = 0, PSDFX_BEVEL_CHISEL_HARD = 1, PSDFX_BEVEL_CHISEL_SOFT = 2 };
 
 typedef struct psdfx_layer_effects {
   psdfx_shadow drop_shadow, inner_shadow;
