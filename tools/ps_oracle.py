@@ -459,7 +459,7 @@ def cases():
                                                                             (4096, (0, 0, 255))), method="Perc"), 16, 3.0),
         "grad_smooth_gray": ("white", grad_layer("Lnr ", angle=0, stops=((0, (0, 0, 0)), (2048, (128, 128, 128)),
                                                                          (4096, (255, 255, 255))), method="Smoo"), 2, 0.5),
-        "fx_outer_glow_soft": ("black", square_layer(60, 60, 100, 100) + outer_glow(20), 12, 0.5),
+        "fx_outer_glow_soft": ("black", square_layer(60, 60, 100, 100) + outer_glow(20), 6, 0.5),
         "fx_outer_glow_precise": ("black", square_layer(60, 60, 100, 100) + outer_glow(20, 25, precise=True), 15, 0.5),
         "fx_inner_glow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + inner_glow(10), 20, 0.5),
         "fx_inner_shadow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + shadow("IrSh", 10, distance=8), 12, 0.5),

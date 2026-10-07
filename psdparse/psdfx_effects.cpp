@@ -24,8 +24,6 @@ const double kPi = 3.14159265358979323846;
 // 効果ごとに最も合う値を選んだ (影 0.4、内側の影・サテン・外側の光彩 0.3、内側の光彩 0.5)。
 const double kSigmaDropShadow = 0.4;
 const double kSigmaInnerShadow = 0.4;   // ドロップシャドウと同じ (Photoshop で測定)
-const double kSigmaOuterGlow = 0.44;   // 箱ぼかし 3 回で半径 0.42 x 大きさ (Photoshop で測定)
-const double kSigmaInnerGlow = 0.44;    // 光彩 (外側) と同じ (Photoshop で測定)
 const double kSigmaSatin = 0.42;   // Photoshop で測定
 const double kSigmaBevel = 0.4;     // 形のぼかし (Photoshop で測定)
 
@@ -162,6 +160,20 @@ Plane spreadBlur(const Plane &a, double spread, double size, double sigmaK, floa
   spread = std::min(1.0, std::max(0.0, spread));
   Plane p = dilate(a, size * spread);
   blur(p, size * (1.0 - spread) * sigmaK, outside);
+  return p;
+}
+
+// 箱ぼかし 3 回 (半径は整数)。光彩は半径 round(0.4 x 大きさ) でこれ (Photoshop で測定)
+const double kGlowBoxRadius = 0.4;
+Plane spreadBox(const Plane &a, double spread, double size, float outside = 0.f) {
+  spread = std::min(1.0, std::max(0.0, spread));
+  Plane p = dilate(a, size * spread);
+  const int r = (int)std::lround(size * (1.0 - spread) * kGlowBoxRadius);
+  std::vector<float> tmp;
+  for (int pass = 0; pass < 3; pass++) {
+    for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
+    for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
+  }
   return p;
 }
 
@@ -353,7 +365,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
       const double k = og.range > 0 ? 0.5 / og.range : 1.0;
       for (auto &v : gl.v) v = clamp01((float)(v * k));
     } else {
-      gl = spreadBlur(A, og.spread, og.size, kSigmaOuterGlow);
+      gl = spreadBox(A, og.spread, og.size);
       raw = gl;
       applyRange(gl, og.range);
     }
@@ -415,7 +427,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
         gl.v[i] = clamp01((float)(std::max((double)inv.v[i], (rest + 1.0 - d) / (rest + 1.0)) * k));
       }
     } else {
-      gl = spreadBlur(inv, ig.spread, ig.size, kSigmaInnerGlow, 1.f);
+      gl = spreadBox(inv, ig.spread, ig.size, 1.f);
       applyRange(gl, ig.range);
     }
     applyContour(gl, ig.contour);
