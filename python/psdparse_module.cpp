@@ -375,6 +375,22 @@ py::tuple psdComposite(psd::PSDFile &self, bool effects, py::object background) 
   return py::make_tuple(py::bytes((const char *)out.data(), out.size()), s);
 }
 
+py::object psdRenderLayer(psd::PSDFile &self, int index, bool effects) {
+  if (index < 0 || index >= (int)self.layerList.size())
+    throw std::out_of_range("layer index out of range");
+  psd::CompositeOptions opt;
+  opt.effects = effects;
+  std::vector<uint8_t> out;
+  int left = 0, top = 0, w = 0, h = 0;
+  bool ok;
+  {
+    py::gil_scoped_release release;
+    ok = self.renderLayer(index, out, left, top, w, h, opt);
+  }
+  if (!ok) return py::none();
+  return py::make_tuple(py::bytes((const char *)out.data(), out.size()), left, top, w, h);
+}
+
 py::list psdAnnotations(psd::PSDFile &self) {
   py::list out;
   for (const auto &a : self.annotations) {
@@ -2006,6 +2022,13 @@ PYBIND11_MODULE(psdparse, m) {
          "(bgra_bytes, stats); stats counts what could not be reproduced "
          "(adjustment layers are skipped for now). background=(r, g, b) "
          "composites onto an opaque color instead of transparency.")
+    .def("render_layer", &psdRenderLayer, py::arg("index"), py::arg("effects") = true,
+         "Render one layer with its effects onto a transparent surface (not "
+         "composited with the layers below): returns (bgra_bytes, left, top, "
+         "width, height), where the rectangle includes what the effects add "
+         "around the layer (shadow, glow, stroke). Masks, fill / shape content "
+         "and opacity are applied. None for groups, dividers, adjustment "
+         "layers or empty layers.")
     .def_property_readonly("annotations", &psdAnnotations,
          "Notes ('Anno') as dicts {'kind' ('text' / 'sound'), 'open', 'icon_rect', "
          "'popup_rect' (top, left, bottom, right), 'color_space', 'color', 'author', "

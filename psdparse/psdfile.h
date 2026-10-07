@@ -291,6 +291,14 @@ namespace psd {
     bool compositeImage(std::vector<uint8_t> &bgra, const CompositeOptions &opt = CompositeOptions(),
                         CompositeStats *stats = nullptr);
 
+    // レイヤ 1 枚を効果込みで透明な面へ描く (下地とは重ねない)。結果は効果の
+    // はみ出しを含む矩形で、left / top は文書上の位置。ゲームなど、合成を自前で
+    // 行う側が「Photoshop で見えるレイヤ 1 枚分」を受け取るのに使う。
+    // 影など下地に対するブレンドは透明な下地に対して行われる (= 通常と同じ)。
+    bool renderLayer(int index, std::vector<uint8_t> &bgra, int &left, int &top,
+                     int &width, int &height, const CompositeOptions &opt = CompositeOptions(),
+                     CompositeStats *stats = nullptr);
+
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);
     bool getLayerImage(const LayerInfo &layer, void *buf, const ColorFormat &format,

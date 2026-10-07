@@ -36,6 +36,28 @@ public:
   Compositor(PSDFile &psd, const CompositeOptions &opt, CompositeStats &st)
     : psd_(psd), opt_(opt), st_(st) {}
 
+  // レイヤ 1 枚を (効果込みで) 透明な面へ描く。面は効果のはみ出しを含む矩形。
+  bool renderSingle(int idx, std::vector<uint8_t> &out, int &left, int &top, int &w, int &h) {
+    LayerInfo &l = psd_.layerList[(size_t)idx];
+    if (l.layerType == LAYER_TYPE_FOLDER || l.layerType == LAYER_TYPE_HIDDEN ||
+        l.layerType == LAYER_TYPE_ADJUST) return false;
+    Canvas surf;
+    int sx = 0, sy = 0;
+    if (!layerSurface(l, surf, sx, sy)) return false;
+    psdfx_layer_effects fx;
+    FxStore store;
+    int margin = 0;
+    if (opt_.effects && layerEffects(l, fx, store)) margin = psdfx_effects_margin(&fx);
+    left = sx - margin; top = sy - margin;
+    w = surf.width + 2 * margin; h = surf.height + 2 * margin;
+    if ((int64_t)w * h > opt_.maxPixels) return false;
+    Canvas dst(w, h);
+    drawLayer(l, surf, sx, sy, dst, left, top, l.opacity / 255.f, l.fill_opacity / 255.f,
+              PSDFX_KEY('n','o','r','m'), nullptr);
+    out.swap(dst.px);
+    return true;
+  }
+
   void renderChildren(int parent, Canvas &canvas) {
     std::vector<int> kids = psd_.childIndices(parent);
     for (size_t k = 0; k < kids.size(); ) {
@@ -824,6 +846,17 @@ private:
 };
 
 }  // anonymous namespace
+
+bool PSDFile::renderLayer(int index, std::vector<uint8_t> &bgra, int &left, int &top,
+                          int &width, int &height, const CompositeOptions &opt,
+                          CompositeStats *stats) {
+  CompositeStats local;
+  CompositeStats &st = stats ? *stats : local;
+  st = CompositeStats();
+  if (index < 0 || index >= (int)layerList.size()) return false;
+  Compositor c(*this, opt, st);
+  return c.renderSingle(index, bgra, left, top, width, height);
+}
 
 bool PSDFile::compositeImage(std::vector<uint8_t> &bgra, const CompositeOptions &opt,
                              CompositeStats *stats) {
