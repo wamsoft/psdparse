@@ -208,6 +208,27 @@ adj.putInteger(cTID("Dnst"), {density});
 adj.putBoolean(cTID("PrsL"), {"true" if preserve else "false"});""", 'sTID("photoFilter")')
 
 
+def selective_color(entries, relative=False):
+    """entries: [(範囲の ID (Rds / Ylws / Grns / Cyns / Bls  / Mgnt / Whts / Ntrl / Blks), C, M, Y, K)]"""
+    lines = ["var adj = new ActionDescriptor();",
+             'adj.putEnumerated(sTID("presetKind"), sTID("presetKindType"), sTID("presetKindCustom"));',
+             f'adj.putEnumerated(cTID("Mthd"), cTID("CrcM"), cTID("{"Rltv" if relative else "Absl"}"));',
+             "var list = new ActionList();"]
+    for name, c, m, y, k in entries:
+        lines += ["var e = new ActionDescriptor();",
+                  f'e.putEnumerated(cTID("Clrs"), cTID("Clrs"), cTID("{name}"));',
+                  f'e.putUnitDouble(cTID("Cyn "), cTID("#Prc"), {c}); e.putUnitDouble(cTID("Mgnt"), cTID("#Prc"), {m});',
+                  f'e.putUnitDouble(cTID("Ylw "), cTID("#Prc"), {y}); e.putUnitDouble(cTID("Blck"), cTID("#Prc"), {k});',
+                  'list.putObject(cTID("ClrC"), e);']
+    lines.append('adj.putList(cTID("ClrC"), list);')
+    return adjustment_layer("\n".join(lines), 'cTID("SlcC")')
+
+
+def vibrance(vib, sat):
+    return adjustment_layer(f'var adj = new ActionDescriptor(); adj.putInteger(sTID("vibrance"), {vib}); '
+                            f'adj.putInteger(cTID("Strt"), {sat});', 'sTID("vibrance")')
+
+
 def masked_black(feather):
     """白の上の黒いレイヤに、横 64..128 を見せるマスク (ぼかし feather) を付ける"""
     return f"""
@@ -442,6 +463,13 @@ def cases():
         "cb_mixed_preserve": ("cube", color_balance((30, -20, 40), (-40, 25, 10), (20, 50, -60), True), 4, 0.5),
         "pf_warm": ("cube", photo_filter((236, 138, 0), 25, False), 2, 0.5),
         "pf_blue_preserve": ("cube", photo_filter((0, 90, 255), 60, True), 8, 0.5),
+        "sc_absolute_mix": ("cube", selective_color([("Rds ", 40, -30, 20, 25), ("Ntrl", 30, -20, 10, 15),
+                                                     ("Bls ", -50, 60, 0, -20)]), 2, 0.5),
+        "sc_relative_mix": ("cube", selective_color([("Rds ", 40, -30, 20, 25), ("Ntrl", 30, -20, 10, 15),
+                                                     ("Whts", 0, 0, 50, 30)], relative=True), 2, 0.3),
+        "vib_saturation_only": ("cube", vibrance(0, -60), 1, 0.2),
+        "vib_small": ("cube", vibrance(-6, 2), 3, 0.5),
+        "vib_up": ("cube", vibrance(50, 0), 8, 1.0),
         "mask_feather_2": ("white", masked_black(2), 4, 0.5),
         "mask_feather_15": ("white", masked_black(15), 3, 0.5),
         "mode_linear_burn_fill": ("cube", solid_layer((40, 120, 200), "LINEARBURN", 100, 50), 2, 0.5),

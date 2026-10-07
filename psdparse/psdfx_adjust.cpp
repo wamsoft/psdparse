@@ -286,11 +286,49 @@ extern "C" void psdfx_hue_saturation(psdfx_surface *s, double hue, double satura
 
 extern "C" void psdfx_vibrance(psdfx_surface *s, double vibrance, double saturation) {
   const float v = (float)(vibrance / 100.0), sa = (float)(saturation / 100.0);
+  // 彩度: 線形光で灰色 (0.2878 R + 0.7122 G。青は入らない) との間を 1 + 彩度 倍に
+  // (Photoshop で測定、1/255 以内)
+  float lin[256];
+  for (int i = 0; i < 256; i++) {
+    const double x = i / 255.0;
+    lin[i] = (float)(x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4));
+  }
+  auto enc = [](float y) {
+    y = clamp01(y);
+    return y <= 0.0031308f ? y * 12.92f : 1.055f * std::pow(y, 1 / 2.4f) - 0.055f;
+  };
   mapRGB(s, [&](float c[3], int, int) {
-    float h, ss, l;
-    rgbToHsl(c, h, ss, l);
-    const float boost = v * (1 - ss);   // 鮮やかでない色ほど大きく動く
-    hslToRgb(h, clamp01(ss * (1 + sa) + boost * std::max(ss, 0.1f)), l, c);
+    if (v != 0.f) {
+      // 自然な彩度 (Photoshop で測った近似): 線形光でいちばん明るいチャンネル M を保ち、
+      // ほかを M からの距離 x ratio に。S = (M - min) / M として
+      //   下げる: ratio = 1 + v (1 - 0.75 S^1.45)
+      //   上げる: ratio = 1 + v h(S) (h は中くらいの S で最大になる測定値の表)
+      // (-100 / +100 で最大 24 / 255 ほどずれる。小さい値ではほぼ一致)
+      static const float kS[9] = { 0.f, .145f, .396f, .598f, .754f, .867f, .942f, .984f, 1.f };
+      static const float kH[9] = { 0.f, .062f, .131f, .162f, .139f, .092f, .046f, .013f, 0.f };
+      float L[3];
+      for (int i = 0; i < 3; i++) L[i] = lin[(int)(clamp01(c[i]) * 255.f + 0.5f)];
+      const float M = std::max(L[0], std::max(L[1], L[2])), m = std::min(L[0], std::min(L[1], L[2]));
+      if (M > 0.f && M > m) {
+        const float S = (M - m) / M;
+        float ratio;
+        if (v < 0.f) {
+          ratio = 1.f + v * (1.f - 0.75f * std::pow(S, 1.45f));
+        } else {
+          int k = 0;
+          while (k < 7 && S > kS[k + 1]) k++;
+          const float t = (S - kS[k]) / (kS[k + 1] - kS[k]);
+          ratio = 1.f + v * (kH[k] + (kH[k + 1] - kH[k]) * clamp01(t));
+        }
+        for (int i = 0; i < 3; i++) c[i] = enc(M - ratio * (M - L[i]));
+      }
+    }
+    if (sa != 0.f) {
+      float L[3];
+      for (int i = 0; i < 3; i++) L[i] = lin[(int)(clamp01(c[i]) * 255.f + 0.5f)];
+      const float g = 0.2878f * L[0] + 0.7122f * L[1];
+      for (int i = 0; i < 3; i++) c[i] = enc(g + (1 + sa) * (L[i] - g));
+    }
   });
 }
 
@@ -332,15 +370,28 @@ extern "C" void psdfx_selective_color(psdfx_surface *s, const double adjustments
     const float w[9] = { top(0), bottom(2), top(1), bottom(0), top(2), bottom(1),
                          std::max(0.f, (mn - 0.5f) * 2), clamp01(1 - std::fabs(mx - 0.5f) - std::fabs(mn - 0.5f)),
                          std::max(0.f, (0.5f - mx) * 2) };
+    // 範囲ごとに、チャンネルの行き先 t を決めて属しかた w だけ寄せ、範囲の分を足し合わせる
+    // (Photoshop で測定、1/255 以内):
+    //   相対: t = c - a (1 - c)、続けてブラック t = t - k (1 - t)
+    //   絶対: t = c - a - k (1 + a)
+    // (a はそのチャンネルのシアン / マゼンタ / イエロー、k はブラック。t は 0..1 に切る)
     float delta[3] = { 0, 0, 0 };
     for (int r = 0; r < 9; r++) {
       if (w[r] <= 0) continue;
+      const float k = (float)adjustments[r][3] / 100.f;
       for (int i = 0; i < 3; i++) {
-        const float a = (float)(adjustments[r][i] + adjustments[r][3]) / 100.f;
-        delta[i] += (relative ? a * (1 - c[i]) : a) * w[r];
+        const float a = (float)adjustments[r][i] / 100.f;
+        float t;
+        if (relative) {
+          t = clamp01(c[i] - a * (1 - c[i]));
+          t = clamp01(t - k * (1 - t));
+        } else {
+          t = clamp01(c[i] - a - k * (1 + a));
+        }
+        delta[i] += w[r] * (t - c[i]);
       }
     }
-    for (int i = 0; i < 3; i++) c[i] = clamp01(c[i] - delta[i]);
+    for (int i = 0; i < 3; i++) c[i] = clamp01(c[i] + delta[i]);
   });
 }
 
