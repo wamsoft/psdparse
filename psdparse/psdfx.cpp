@@ -6,6 +6,7 @@
 // B の式は Photoshop に合わせたもの (ソフトライト、比較 (暗) / (明) のカラーなど)。
 #include "psdfx.h"
 #include "psdfx_parallel.h"
+#include "psdfx_simd.h"
 
 #include <algorithm>
 #include <cmath>
@@ -180,13 +181,22 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
   const float op = clamp01(opacity);
   const bool normal = key == PSDFX_KEY('n','o','r','m');
   const uint32_t key0 = key;
+  // SIMD 版が使えるとき (塗りの特別な扱いと、透明な下地へのハードミックスは除く)。
+  // 行の先頭から 8 画素単位で SIMD、残りをこの下のスカラー処理で (結果は同じ)
+  const bool simd = !special && key != PSDFX_KEY('h','M','i','x') && psdfx_internal::simdAvailable();
   psdfx_internal::parallelFor(y0, y1, (long long)(y1 - y0) * (x1 - x0), [&](int ya, int yb) {
   uint32_t key = key0;   // ハードミックス + 塗りでは途中で通常に切り替える (スレッドごと)
   for (int y = ya; y < yb; y++) {
     uint8_t *d = dst->pixels + (size_t)y * dst->stride + (size_t)x0 * 4;
     const uint8_t *s = src->pixels + (size_t)(y - dy) * src->stride + (size_t)(x0 - dx) * 4;
     const uint8_t *m = mask ? mask + (size_t)(y - dy) * mstride + (x0 - dx) : nullptr;
-    for (int x = x0; x < x1; x++, d += 4, s += 4) {
+    int xs = x0;
+    if (simd) {
+      const int done = psdfx_internal::compositeRowSimd(d, s, m, x1 - x0, key, op, atop);
+      xs += done; d += (size_t)done * 4; s += (size_t)done * 4;
+      if (m) m += done;
+    }
+    for (int x = xs; x < x1; x++, d += 4, s += 4) {
       float as = s[3] / 255.f * op;
       if (m) as *= (*m++) / 255.f;
       if (as <= 0.f) continue;

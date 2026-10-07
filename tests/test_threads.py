@@ -50,3 +50,20 @@ def test_render_layer_same_for_any_thread_count(restore_threads):
         psdparse.set_threads(4)
         b = p.render_layer(i)
         assert a == b
+
+
+def test_simd_matches_scalar():
+    """SIMD 版 (AVX2) を切った子プロセスの合成と、この中の合成がバイト一致する"""
+    import hashlib
+    import subprocess
+    import sys
+    path = os.path.join(DATA, "system.psd")
+    code = ("import hashlib, psdparse; p = psdparse.PSDFile(); p.load(r'%s'); "
+            "print(hashlib.md5(p.composite()[0]).hexdigest())" % path)
+    env = dict(os.environ, PSDFX_SIMD="0")
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    scalar = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                            check=True).stdout.strip()
+    p = psdparse.PSDFile()
+    assert p.load(path)
+    assert hashlib.md5(p.composite()[0]).hexdigest() == scalar

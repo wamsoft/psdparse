@@ -121,7 +121,9 @@ part follows Photoshop.
 transparency.
 
 Large images are split across threads (rows of each blend / adjustment /
-blur / distance pass); the result is identical to a single-threaded run.
+blur / distance pass), and the common blend modes use an AVX2 kernel on CPUs
+that have it (picked at run time; `PSDFX_SIMD=0` turns it off). The result is
+byte-identical to a single-threaded, non-SIMD run.
 
 ```python
 psdparse.set_threads(count: int) -> None   # 0 = automatic (default), 1 = single-threaded

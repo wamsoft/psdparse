@@ -53,6 +53,8 @@ add_library(${PROJECT_NAME} STATIC
 	psdfx.cpp
 	psdfx_parallel.cpp
 	psdfx_parallel.h
+	psdfx_simd.h
+	psdfx_simd_avx2.cpp
 	psdfx_path.cpp
 	psdfx_paint.cpp
 	psdfx_effects.cpp
@@ -65,6 +67,13 @@ add_library(${PROJECT_NAME} STATIC
 )
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
+
+# 合成の SIMD 版 (AVX2) はこのファイルだけ AVX2 でビルドし、実行時に CPU を見て使う。
+# FMA は有効にしない (スカラー版と演算順・丸めを同じにするため)。
+# GCC / Clang は関数ごとの target 属性で有効にするので、ここで指定するのは MSVC だけ。
+if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+	set_source_files_properties(psdfx_simd_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
