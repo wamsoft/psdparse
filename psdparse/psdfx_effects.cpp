@@ -165,8 +165,13 @@ std::vector<uint8_t> paintSource(const psdfx_fill_source &src, int W, int H, int
                         src.align_with_layer ? layerBox : docBox, src.offset_x, src.offset_y);
   } else if (src.kind == PSDFX_FILL_PATTERN && src.pattern) {
     const double sc = src.scale > 0 ? src.scale : 1.0;
-    const double oxp = (src.align_with_layer ? layerBox[0] : docBox[0]) + src.phase_x;
-    const double oyp = (src.align_with_layer ? layerBox[1] : docBox[1]) + src.phase_y;
+    // レイヤに整列するときの原点は効果の基準点 (あれば)、無ければレイヤの左上
+    double oxp = (src.align_with_layer ? layerBox[0] : docBox[0]) + src.phase_x;
+    double oyp = (src.align_with_layer ? layerBox[1] : docBox[1]) + src.phase_y;
+    if (src.align_with_layer && src.has_reference_point) {
+      oxp = docBox[0] + src.reference_x + src.phase_x;
+      oyp = docBox[1] + src.reference_y + src.phase_y;
+    }
     psdfx_draw_pattern(&s, ox, oy, src.pattern, sc, oxp, oyp);
   } else {
     for (size_t i = 0; i < px.size(); i += 4) {

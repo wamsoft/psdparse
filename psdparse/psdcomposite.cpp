@@ -776,6 +776,9 @@ private:
     std::vector<psdfx_shadow> moreDrop, moreInner;
     std::vector<psdfx_stroke> moreStroke;
     std::vector<psdfx_overlay> moreColor, moreGrad;
+    // 効果の基準点 ('fxrp')。レイヤに整列するパターンの原点
+    bool hasRef = false;
+    double refX = 0, refY = 0;
     FxStore() { tileSurfaces.reserve(64); }
   };
 
@@ -822,6 +825,8 @@ private:
         f.align_with_layer = flag(d, "Algn", true);
         auto *ph = dynamic_cast<Descriptor*>(d->item("phase").find());
         f.phase_x = num(ph, "Hrzn"); f.phase_y = num(ph, "Vrtc");
+        f.has_reference_point = store.hasRef ? 1 : 0;
+        f.reference_x = store.refX; f.reference_y = store.refY;
         return true;
       }
       return false;
@@ -902,6 +907,16 @@ private:
   bool layerEffects(const LayerInfo &l, psdfx_layer_effects &fx, FxStore &store) {
     fx = psdfx_layer_effects();
     Descriptor d;
+    for (const auto &a : l.extraData.additionalLayers) {
+      if (a.key != 'fxrp' || !a.data) continue;
+      IteratorBase *r = a.data->clone(); r->init();
+      if (r->rest() >= 16) {
+        pun64 x, y;
+        x.i = (uint64_t)r->getInt64(true); y.i = (uint64_t)r->getInt64(true);
+        if (std::isfinite(x.f) && std::isfinite(y.f)) { store.hasRef = true; store.refX = x.f; store.refY = y.f; }
+      }
+      delete r;
+    }
     // 'lfx2' が普通。同じ形で 'lmfx' / 'lfxs' に持つファイルもある
     if (!readDescriptor(l, 'lfx2', 8, d) && !readDescriptor(l, 'lmfx', 8, d) &&
         !readDescriptor(l, 'lfxs', 8, d)) return false;

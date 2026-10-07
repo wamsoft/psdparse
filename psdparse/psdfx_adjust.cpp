@@ -58,6 +58,19 @@ void hslToRgb(float h, float s, float l, float c[3]) {
   c[0] = hue2rgb(p, q, h + 1.f / 3); c[1] = hue2rgb(p, q, h); c[2] = hue2rgb(p, q, h - 1.f / 3);
 }
 
+// 輝度 (W3C の Lum) を l にそろえ、範囲外に出た色は輝度を保って縮める (ClipColor)
+void setLum(float c[3], float l) {
+  auto lum = [](const float *v) { return 0.3f * v[0] + 0.59f * v[1] + 0.11f * v[2]; };
+  const float d = l - lum(c);
+  for (int i = 0; i < 3; i++) c[i] += d;
+  const float L = lum(c);
+  const float n = std::min(c[0], std::min(c[1], c[2])), x = std::max(c[0], std::max(c[1], c[2]));
+  for (int i = 0; i < 3; i++) {
+    if (n < 0) c[i] = L + (c[i] - L) * L / std::max(1e-6f, L - n);
+    if (x > 1) c[i] = L + (c[i] - L) * (1 - L) / std::max(1e-6f, x - L);
+  }
+}
+
 // 4x4 の組織的ディザ (-0.5..0.5)
 float bayer4(int x, int y) {
   static const float M[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
@@ -281,11 +294,8 @@ extern "C" void psdfx_color_balance(psdfx_surface *s, const double shadows[3], c
     float o[3];
     for (int i = 0; i < 3; i++)
       o[i] = clamp01(c[i] + (float)(shadows[i] * ws + midtones[i] * wm + highlights[i] * wh) / 100.f * 0.5f);
-    if (preserve_luminosity) {
-      const float l1 = std::max(1e-6f, luma(o[0], o[1], o[2]));
-      for (int i = 0; i < 3; i++) o[i] = clamp01(o[i] * l / l1);
-    }
-    c[0] = o[0]; c[1] = o[1]; c[2] = o[2];
+    if (preserve_luminosity) setLum(o, 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]);
+    c[0] = clamp01(o[0]); c[1] = clamp01(o[1]); c[2] = clamp01(o[2]);
   });
 }
 
@@ -329,11 +339,8 @@ extern "C" void psdfx_photo_filter(psdfx_surface *s, const uint8_t color[3], dou
   mapRGB(s, [&](float c[3], int, int) {
     float o[3];
     for (int i = 0; i < 3; i++) o[i] = c[i] * (1 - d) + c[i] * k[i] * d;
-    if (preserve_luminosity) {
-      const float l0 = luma(c[0], c[1], c[2]), l1 = std::max(1e-6f, luma(o[0], o[1], o[2]));
-      for (int i = 0; i < 3; i++) o[i] = clamp01(o[i] * l0 / l1);
-    }
-    c[0] = o[0]; c[1] = o[1]; c[2] = o[2];
+    if (preserve_luminosity) setLum(o, 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]);
+    c[0] = clamp01(o[0]); c[1] = clamp01(o[1]); c[2] = clamp01(o[2]);
   });
 }
 

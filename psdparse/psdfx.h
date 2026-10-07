@@ -207,6 +207,8 @@ typedef struct psdfx_fill_source {
   double offset_x, offset_y;      /* グラデーションの中心のずらし (%) */
   const psdfx_surface *pattern;   /* パターンのタイル */
   double phase_x, phase_y;        /* パターンの位相 (px) */
+  int has_reference_point;        /* レイヤに整列するパターンの原点を下の点にする */
+  double reference_x, reference_y; /* 効果の基準点 (文書座標、PSD の 'fxrp') */
 } psdfx_fill_source;
 
 typedef struct psdfx_shadow {     /* ドロップシャドウ / シャドウ (内側) */
