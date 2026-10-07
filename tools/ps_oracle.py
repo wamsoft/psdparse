@@ -340,6 +340,29 @@ def stroke_fx(size, pos="OutF", rgb=(255, 0, 0), opacity=100):
         _color("c", rgb), 'e.putObject(cTID("Clr "), cTID("RGBC"), c);'])
 
 
+# 輪郭 (効果の被覆率を写す曲線) の点。ガウス (Photoshop の既定の一覧にあるもの) とリング
+GAUSS_CONTOUR = [(0, 0), (32, 7), (64, 38), (96, 101), (128, 166), (159, 209), (191, 235), (223, 248), (255, 255)]
+RING_CONTOUR = [(0, 0), (128, 255), (255, 0)]
+
+
+def with_contour(fx_js, points, key="TrnS"):
+    lines = ['var cc = new ActionDescriptor(); cc.putString(cTID("Nm  "), "c"); var cl2 = new ActionList();']
+    for h, v in points:
+        lines.append(f'var cp = new ActionDescriptor(); cp.putDouble(cTID("Hrzn"), {h}); cp.putDouble(cTID("Vrtc"), {v}); '
+                     'cl2.putObject(cTID("CrPt"), cp);')
+    lines.append(f'cc.putList(cTID("Crv "), cl2); e.putObject(cTID("{key}"), cTID("ShpC"), cc);')
+    return fx_js.replace('fx.putObject(', "\n".join(lines) + '\nfx.putObject(', 1)
+
+
+def satin(size=14, distance=11, angle=19, invert=True, rgb=(255, 0, 0)):
+    return effect("ChFX", [
+        'e.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Nrml"));', _color("c", rgb), 'e.putObject(cTID("Clr "), cTID("RGBC"), c);',
+        'e.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100);',
+        f'e.putUnitDouble(cTID("lagl"), cTID("#Ang"), {angle}); e.putUnitDouble(cTID("Dstn"), cTID("#Pxl"), {distance});',
+        f'e.putUnitDouble(cTID("blur"), cTID("#Pxl"), {size}); e.putBoolean(cTID("Invr"), {"true" if invert else "false"});',
+        'e.putBoolean(cTID("AntA"), false);'])
+
+
 def soft_square(x0, y0, x1, y1, feather, rgb=(255, 255, 255)):
     r, g, b = rgb
     return f"""
@@ -444,6 +467,13 @@ def cases():
         "fx_bevel_inner": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(), 18, 0.5),
         "fx_bevel_emboss": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel("Embs"), 25, 0.6),
         "fx_bevel_chisel": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(tech="PrBL"), 36, 0.5),
+        "fx_drop_shadow_gauss_contour": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) +
+                                         with_contour(shadow("DrSh", 20), GAUSS_CONTOUR), 8, 0.5),
+        "fx_outer_glow_ring_contour": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) +
+                                       with_contour(outer_glow(30, rng=75), RING_CONTOUR), 16, 1.2),
+        "fx_satin": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) + satin(), 6, 0.5),
+        "fx_satin_gauss_contour": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) +
+                                   with_contour(satin(size=30, distance=25, angle=45), GAUSS_CONTOUR, "MpgS"), 8, 0.5),
         "fx_stroke_ellipse_outside": ("black", ellipse_layer(40, 40, 120, 120, (0, 0, 255)) + stroke_fx(3, "OutF"), 20, 0.5),
         "fx_stroke_ellipse_inside": ("black", ellipse_layer(40, 40, 120, 120, (0, 0, 255)) + stroke_fx(3, "InsF"), 20, 0.5),
         "fx_stroke_soft_center": ("black", soft_square(50, 50, 110, 110, 6, (0, 0, 255)) + stroke_fx(10, "CtrF"), 32, 0.5),

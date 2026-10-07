@@ -13,8 +13,10 @@
 #include "psdfx.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -811,6 +813,8 @@ private:
     std::vector<psdfx_shadow> moreDrop, moreInner;
     std::vector<psdfx_stroke> moreStroke;
     std::vector<psdfx_overlay> moreColor, moreGrad;
+    // 輪郭の表 (deque なので増やしても既存の表は動かない)
+    std::deque<std::array<uint8_t, 256>> contours;
     // 効果の基準点 ('fxrp')。レイヤに整列するパターンの原点
     bool hasRef = false;
     double refX = 0, refY = 0;
@@ -970,6 +974,22 @@ private:
     bool any = false;
     auto angleOf = [&](Descriptor *e) { return flag(e, "uglg", true) ? (double)gAngle : num(e, "lagl", 120); };
 
+    // 輪郭 ('TrnS' / 'MpgS'): 点を通る曲線の表。線形なら NULL
+    auto contourOf = [&](Descriptor *e, const char *key) -> const uint8_t * {
+      auto *c = e ? dynamic_cast<Descriptor*>(e->item(key).find()) : nullptr;
+      auto *list = c ? dynamic_cast<DescriptorList*>(c->item("Crv ").find()) : nullptr;
+      if (!list) return nullptr;
+      std::vector<double> pts;
+      for (auto *it : list->items)
+        if (auto *p = dynamic_cast<Descriptor*>(it)) { pts.push_back(num(p, "Hrzn")); pts.push_back(num(p, "Vrtc")); }
+      if (pts.size() < 4) return nullptr;
+      store.contours.emplace_back();
+      uint8_t *lut = store.contours.back().data();
+      psdfx_curve_lut(pts.data(), (int)pts.size() / 2, lut);
+      bool linear = true;
+      for (int i = 0; i < 256 && linear; i++) linear = lut[i] == i;
+      return linear ? nullptr : lut;
+    };
     auto shadow = [&](Descriptor *e, psdfx_shadow &s, bool drop) {
       s = psdfx_shadow();
       s.enabled = 1; any = true;
@@ -978,6 +998,7 @@ private:
       s.angle = angleOf(e); s.distance = num(e, "Dstn", 5) * sc;
       s.size = num(e, "blur", 5) * sc; s.spread = fraction(e, "Ckmt", num(e, "blur", 5));
       if (drop) s.knocks_out = flag(e, "layerConceals", true);
+      s.contour = contourOf(e, "TrnS");
     };
     {
       auto list = effectList(d, "DrSh", "dropShadowMulti");
@@ -1001,6 +1022,7 @@ private:
       g.precise = enumOf(e, "GlwT") == "PrBL";
       g.range = num(e, "Inpr", 50) / 100.0;
       g.source_center = inner && enumOf(e, "glwS") == "SrcC";
+      g.contour = contourOf(e, "TrnS");
     };
     glow("OrGl", fx.outer_glow, false);
     glow("IrGl", fx.inner_glow, true);
@@ -1049,6 +1071,7 @@ private:
       descColor(dynamic_cast<Descriptor*>(e->item("Clr ").find()), s.color);
       s.angle = num(e, "lagl", 19); s.distance = num(e, "Dstn", 11) * sc;
       s.size = num(e, "blur", 14) * sc; s.invert = flag(e, "Invr", true);
+      s.contour = contourOf(e, "MpgS");
     }
     if (Descriptor *e = effectDesc(d, "ebbl", nullptr)) {
       psdfx_bevel &b = fx.bevel;

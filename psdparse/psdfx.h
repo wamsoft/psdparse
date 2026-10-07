@@ -248,6 +248,7 @@ typedef struct psdfx_shadow {     /* ドロップシャドウ / シャドウ (�
   double spread;                  /* 0..1 (内側ではチョーク) */
   double size;
   int knocks_out;                 /* ドロップシャドウ: レイヤの下の影を抜く */
+  const uint8_t *contour;         /* 輪郭: 被覆率 0..255 → 0..255 の 256 段の表 (NULL = 線形) */
 } psdfx_shadow;
 
 typedef struct psdfx_glow {       /* 光彩 (外側 / 内側) */
@@ -260,6 +261,7 @@ typedef struct psdfx_glow {       /* 光彩 (外側 / 内側) */
   int precise;                    /* 0: さらにソフト / 1: 精細 */
   double range;                   /* 範囲 0..1 (既定 0.5)。光彩の濃さの立ち上がり */
   int source_center;              /* 内側: 1 = 中央から / 0 = エッジから */
+  const uint8_t *contour;         /* 輪郭 (NULL = 線形)。範囲を掛けたあとの被覆率に掛ける */
 } psdfx_glow;
 
 enum { PSDFX_STROKE_OUTSIDE = 0, PSDFX_STROKE_INSIDE = 1, PSDFX_STROKE_CENTER = 2 };
@@ -287,6 +289,7 @@ typedef struct psdfx_satin {      /* サテン */
   uint8_t color[3];
   double angle, distance, size;
   int invert;
+  const uint8_t *contour;         /* 輪郭 (NULL = 線形) */
 } psdfx_satin;
 
 enum { PSDFX_BEVEL_OUTER = 0, PSDFX_BEVEL_INNER = 1, PSDFX_BEVEL_EMBOSS = 2,

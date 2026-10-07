@@ -26,7 +26,7 @@ const double kSigmaDropShadow = 0.4;
 const double kSigmaInnerShadow = 0.4;   // ドロップシャドウと同じ (Photoshop で測定)
 const double kSigmaOuterGlow = 0.44;   // 箱ぼかし 3 回で半径 0.42 x 大きさ (Photoshop で測定)
 const double kSigmaInnerGlow = 0.44;    // 光彩 (外側) と同じ (Photoshop で測定)
-const double kSigmaSatin = 0.3;
+const double kSigmaSatin = 0.42;   // Photoshop で測定
 const double kSigmaBevel = 0.4;     // 形のぼかし (Photoshop で測定)
 
 inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
@@ -75,6 +75,17 @@ void blur(Plane &p, double sigma, float outside = 0.f) {
     const int r = ((pass < m ? wl : wu) - 1) / 2;
     for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
     for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
+  }
+}
+
+// 輪郭: 被覆率を 256 段の表で写す (段の間は直線でつなぐ)。表が無ければそのまま
+void applyContour(Plane &p, const uint8_t *lut) {
+  if (!lut) return;
+  for (auto &v : p.v) {
+    const float x = std::min(1.f, std::max(0.f, v)) * 255.f;
+    const int i = std::min(254, (int)x);
+    const float f = x - i;
+    v = (lut[i] + (lut[i + 1] - lut[i]) * f) / 255.f;
   }
 }
 
@@ -318,6 +329,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     const double th = ds.angle * kPi / 180.0;
     Plane sh = spreadBlur(shifted(A, -std::cos(th) * ds.distance, std::sin(th) * ds.distance),
                           ds.spread, ds.size, kSigmaDropShadow);
+    applyContour(sh, ds.contour);
     if (ds.knocks_out)
       for (size_t i = 0; i < sh.v.size(); i++) sh.v[i] *= 1.f - A.v[i];
     std::vector<uint8_t> px = solid(W, H, ds.color);
@@ -326,7 +338,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   });
   const psdfx_glow &og = fx->outer_glow;
   if (og.enabled && og.opacity > 0) {
-    Plane gl;
+    Plane gl, raw;
     if (og.precise) {
       // 精細: 形からの距離 d で (大きさ + 1 - d) / (大きさ + 1) の直線 (スプレッドの分は先に広げる)
       const double sp = std::min(1.0, std::max(0.0, og.spread)) * og.size, rest = og.size - sp;
@@ -336,14 +348,22 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
         const double d = std::max(0.0, din.v[i] - sp);
         gl.v[i] = std::max(A.v[i], clamp01((float)((rest + 1.0 - d) / (rest + 1.0))));
       }
+      raw = gl;
       // 範囲は 0.5 / 範囲 倍 (50% で直線そのまま)
       const double k = og.range > 0 ? 0.5 / og.range : 1.0;
       for (auto &v : gl.v) v = clamp01((float)(v * k));
     } else {
       gl = spreadBlur(A, og.spread, og.size, kSigmaOuterGlow);
+      raw = gl;
       applyRange(gl, og.range);
     }
+    applyContour(gl, og.contour);
     std::vector<uint8_t> px = glowColor(og, gl, false);
+    if (og.fill.kind == PSDFX_FILL_GRADIENT && og.fill.gradient.color_count > 0) {
+      // グラデーションの光彩: 色は (範囲・輪郭を掛けた) 値を位置として引き、不透明度は
+      // ぼかしただけの被覆率の 8.33 倍で頭打ち (範囲・大きさによらない。Photoshop で測定)
+      for (size_t i = 0; i < gl.v.size(); i++) gl.v[i] = std::min(1.f, raw.v[i] * 8.33f);
+    }
     compositeCoverage(dst, px, gl, ox, oy, og.blend, og.opacity * opacity);
   }
 
@@ -363,9 +383,12 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   const psdfx_satin &sa = fx->satin;
   if (sa.enabled && sa.opacity > 0) {
     const double th = sa.angle * kPi / 180.0;
-    const double dx = std::cos(th) * sa.distance * 0.5, dy = -std::sin(th) * sa.distance * 0.5;
+    // 形を角度の向きに距離だけ前後へずらした 2 枚 (ずれは整数の画素に丸める。Photoshop で測定)
+    const double dx = std::round(std::cos(th) * sa.distance), dy = std::round(-std::sin(th) * sa.distance);
     Plane a1 = shifted(A, dx, dy), a2 = shifted(A, -dx, -dy);
     blur(a1, sa.size * kSigmaSatin); blur(a2, sa.size * kSigmaSatin);
+    // 輪郭はぼかした 2 枚それぞれに掛けてから差を取る (Photoshop で測定)
+    applyContour(a1, sa.contour); applyContour(a2, sa.contour);
     Plane cov(W, H);
     for (size_t i = 0; i < cov.v.size(); i++) {
       float v = std::fabs(a1.v[i] - a2.v[i]);
@@ -395,6 +418,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
       gl = spreadBlur(inv, ig.spread, ig.size, kSigmaInnerGlow, 1.f);
       applyRange(gl, ig.range);
     }
+    applyContour(gl, ig.contour);
     if (ig.source_center) for (auto &v : gl.v) v = 1.f - v;
     std::vector<uint8_t> px = glowColor(ig, gl, true);
     compositeCoverage(&Ss, px, gl, 0, 0, ig.blend, ig.opacity);
@@ -407,6 +431,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     const double th = is.angle * kPi / 180.0;
     Plane sh = spreadBlur(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance, 1.f),
                           is.spread, is.size, kSigmaInnerShadow, 1.f);
+    applyContour(sh, is.contour);
     std::vector<uint8_t> px = solid(W, H, is.color);
     compositeCoverage(&Ss, px, sh, 0, 0, is.blend, is.opacity);
   }
