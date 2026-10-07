@@ -11,10 +11,12 @@
 // 影や光彩のぼかしの幅と Photoshop の「サイズ」の対応は、Photoshop の保存した
 // 合成画像と照合して決めた近似 (kSigma*)。
 #include "psdfx.h"
+#include "psdfx_parallel.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <vector>
 
 namespace {
@@ -38,6 +40,32 @@ struct Plane {
     return v[(size_t)y * w + x];
   }
 };
+
+// 面の各行 / 各列に fn(線の先頭, 長さ, 間隔, 作業用) を並列に掛ける
+template <class F>
+void eachRow(Plane &p, F fn) {
+  psdfx_internal::parallelFor(0, p.h, (long long)p.w * p.h, [&](int a, int b) {
+    std::vector<float> tmp;
+    for (int y = a; y < b; y++) fn(&p.v[(size_t)y * p.w], p.w, 1, tmp);
+  });
+}
+template <class F>
+void eachCol(Plane &p, F fn) {
+  psdfx_internal::parallelFor(0, p.w, (long long)p.w * p.h, [&](int a, int b) {
+    std::vector<float> tmp;
+    for (int x = a; x < b; x++) fn(&p.v[(size_t)x], p.h, p.w, tmp);
+  });
+}
+
+// 要素ごとに独立な処理 f(i) (i = 0..n-1) を並列に
+template <class F>
+void pfor(size_t n, F f) {
+  const int blocks = (int)((n + 4095) / 4096);
+  psdfx_internal::parallelFor(0, blocks, (long long)n, [&](int a, int b) {
+    const size_t e = std::min(n, (size_t)b * 4096);
+    for (size_t i = (size_t)a * 4096; i < e; i++) f(i);
+  });
+}
 
 // --- ぼかし (箱ぼかし 3 回) ----------------------------------------------------
 // 端の外は outside の値とみなす (形のアルファなら 0、形の反転なら 1)
@@ -65,23 +93,24 @@ void blur(Plane &p, double sigma, float outside = 0.f) {
   const int wu = wl + 2;
   const double mIdeal = (12.0 * sigma * sigma - n * wl * wl - 4.0 * n * wl - 3.0 * n) / (-4.0 * wl - 4.0);
   const int m = (int)std::round(mIdeal);
-  std::vector<float> tmp;
   for (int pass = 0; pass < n; pass++) {
     const int r = ((pass < m ? wl : wu) - 1) / 2;
-    for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
-    for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
+    auto f = [&](float *v, int len, int step, std::vector<float> &tmp) { boxPass(v, len, step, r, tmp, outside); };
+    eachRow(p, f);
+    eachCol(p, f);
   }
 }
 
 // 輪郭: 被覆率を 256 段の表で写す (段の間は直線でつなぐ)。表が無ければそのまま
 void applyContour(Plane &p, const uint8_t *lut) {
   if (!lut) return;
-  for (auto &v : p.v) {
+  pfor(p.v.size(), [&](size_t k) {
+    float &v = p.v[k];
     const float x = std::min(1.f, std::max(0.f, v)) * 255.f;
     const int i = std::min(254, (int)x);
     const float f = x - i;
     v = (lut[i] + (lut[i + 1] - lut[i]) * f) / 255.f;
-  }
+  });
 }
 
 // --- 距離変換 (Felzenszwalb の 2 乗ユークリッド距離) ---------------------------
@@ -112,22 +141,28 @@ void edt1d(const float *f, int n, float *d, std::vector<int> &v, std::vector<flo
 Plane distanceTo(const Plane &a, bool wantInside, float threshold = 0.5f) {
   const float INF = 1e20f;
   Plane d(a.w, a.h);
-  for (size_t i = 0; i < d.v.size(); i++) {
+  pfor(d.v.size(), [&](size_t i) {
     const bool in = a.v[i] >= threshold;
     d.v[i] = (in == wantInside) ? 0.f : INF;
-  }
-  std::vector<float> f, out;
-  std::vector<int> vv; std::vector<float> zz;
-  f.resize((size_t)std::max(a.w, a.h)); out.resize(f.size());
-  for (int x = 0; x < a.w; x++) {
-    for (int y = 0; y < a.h; y++) f[(size_t)y] = d.v[(size_t)y * a.w + x];
-    edt1d(f.data(), a.h, out.data(), vv, zz);
-    for (int y = 0; y < a.h; y++) d.v[(size_t)y * a.w + x] = out[(size_t)y];
-  }
-  for (int y = 0; y < a.h; y++) {
-    edt1d(&d.v[(size_t)y * a.w], a.w, out.data(), vv, zz);
-    for (int x = 0; x < a.w; x++) d.v[(size_t)y * a.w + x] = std::sqrt(out[(size_t)x]);
-  }
+  });
+  const long long work = (long long)a.w * a.h * 4;
+  psdfx_internal::parallelFor(0, a.w, work, [&](int xa, int xb) {
+    std::vector<float> f((size_t)a.h), out((size_t)a.h);
+    std::vector<int> vv; std::vector<float> zz;
+    for (int x = xa; x < xb; x++) {
+      for (int y = 0; y < a.h; y++) f[(size_t)y] = d.v[(size_t)y * a.w + x];
+      edt1d(f.data(), a.h, out.data(), vv, zz);
+      for (int y = 0; y < a.h; y++) d.v[(size_t)y * a.w + x] = out[(size_t)y];
+    }
+  });
+  psdfx_internal::parallelFor(0, a.h, work, [&](int ya, int yb) {
+    std::vector<float> out((size_t)a.w);
+    std::vector<int> vv; std::vector<float> zz;
+    for (int y = ya; y < yb; y++) {
+      edt1d(&d.v[(size_t)y * a.w], a.w, out.data(), vv, zz);
+      for (int x = 0; x < a.w; x++) d.v[(size_t)y * a.w + x] = std::sqrt(out[(size_t)x]);
+    }
+  });
   return d;
 }
 
@@ -136,19 +171,20 @@ Plane dilate(const Plane &a, double r) {
   if (r <= 0.0) return a;
   Plane d = distanceTo(a, true);
   Plane o(a.w, a.h);
-  for (size_t i = 0; i < o.v.size(); i++)
-    o.v[i] = std::max(a.v[i], clamp01((float)(r + 1.0 - d.v[i])));
+  pfor(o.v.size(), [&](size_t i) { o.v[i] = std::max(a.v[i], clamp01((float)(r + 1.0 - d.v[i]))); });
   return o;
 }
 
 Plane shifted(const Plane &a, double dx, double dy, float outside = 0.f) {
   Plane o(a.w, a.h);
   const int ix = (int)std::lround(dx), iy = (int)std::lround(dy);
-  for (int y = 0; y < a.h; y++)
-    for (int x = 0; x < a.w; x++) {
-      const int sx = x - ix, sy = y - iy;
-      o.at(x, y) = (sx < 0 || sy < 0 || sx >= a.w || sy >= a.h) ? outside : a.get(sx, sy);
-    }
+  psdfx_internal::parallelFor(0, a.h, (long long)a.w * a.h, [&](int ya, int yb) {
+    for (int y = ya; y < yb; y++)
+      for (int x = 0; x < a.w; x++) {
+        const int sx = x - ix, sy = y - iy;
+        o.at(x, y) = (sx < 0 || sy < 0 || sx >= a.w || sy >= a.h) ? outside : a.get(sx, sy);
+      }
+  });
   return o;
 }
 
@@ -175,10 +211,10 @@ Plane spreadBox(const Plane &a, double spread, double size, float outside = 0.f)
   spread = std::min(1.0, std::max(0.0, spread));
   Plane p = dilate(a, size * spread);
   const double r = std::max(0.0, size * (1.0 - spread) * 0.423 - 0.72);
-  std::vector<float> tmp;
+  auto f = [&](float *v, int len, int step, std::vector<float> &tmp) { boxPassFrac(v, len, step, r, tmp, outside); };
   for (int pass = 0; pass < 3; pass++) {
-    for (int y = 0; y < p.h; y++) boxPassFrac(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
-    for (int x = 0; x < p.w; x++) boxPassFrac(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
+    eachRow(p, f);
+    eachCol(p, f);
   }
   return p;
 }
@@ -203,9 +239,10 @@ std::vector<uint8_t> paintSource(const psdfx_fill_source &src, int W, int H, int
     }
     psdfx_draw_pattern(&s, ox, oy, src.pattern, sc, oxp, oyp);
   } else {
-    for (size_t i = 0; i < px.size(); i += 4) {
-      px[i] = src.color[2]; px[i + 1] = src.color[1]; px[i + 2] = src.color[0]; px[i + 3] = 255;
-    }
+    pfor(px.size() / 4, [&](size_t k) {
+      uint8_t *q = &px[k * 4];
+      q[0] = src.color[2]; q[1] = src.color[1]; q[2] = src.color[0]; q[3] = 255;
+    });
   }
   return px;
 }
@@ -223,25 +260,26 @@ void compositeCoverage(psdfx_surface *dst, std::vector<uint8_t> &px, const Plane
   default: break;
   }
   if (neutral >= 0.f) {
-    for (size_t i = 0; i < cov.v.size(); i++) {
+    pfor(cov.v.size(), [&](size_t i) {
       const float k = px[i * 4 + 3] / 255.f * cov.v[i] * clamp01(opacity);
       for (int c = 0; c < 3; c++) px[i * 4 + c] = to8(neutral + (px[i * 4 + c] / 255.f - neutral) * k);
       px[i * 4 + 3] = k > 0.f ? 255 : 0;
-    }
+    });
     psdfx_surface src{ px.data(), cov.w, cov.h, cov.w * 4 };
     psdfx_composite(dst, &src, dx, dy, blend, 1.f, nullptr, 0);
     return;
   }
-  for (size_t i = 0; i < cov.v.size(); i++) px[i * 4 + 3] = to8(px[i * 4 + 3] / 255.f * cov.v[i]);
+  pfor(cov.v.size(), [&](size_t i) { px[i * 4 + 3] = to8(px[i * 4 + 3] / 255.f * cov.v[i]); });
   psdfx_surface src{ px.data(), cov.w, cov.h, cov.w * 4 };
   psdfx_composite(dst, &src, dx, dy, blend, opacity, nullptr, 0);
 }
 
 std::vector<uint8_t> solid(int W, int H, const uint8_t rgb[3]) {
   std::vector<uint8_t> px((size_t)W * H * 4);
-  for (size_t i = 0; i < px.size(); i += 4) {
-    px[i] = rgb[2]; px[i + 1] = rgb[1]; px[i + 2] = rgb[0]; px[i + 3] = 255;
-  }
+  pfor((size_t)W * H, [&](size_t k) {
+    uint8_t *q = &px[k * 4];
+    q[0] = rgb[2]; q[1] = rgb[1]; q[2] = rgb[0]; q[3] = 255;
+  });
   return px;
 }
 
@@ -257,13 +295,13 @@ std::vector<uint8_t> glowColor(const psdfx_glow &g, const Plane &m, bool inner) 
   if (g.fill.kind != PSDFX_FILL_GRADIENT || g.fill.gradient.color_count == 0)
     return solid(m.w, m.h, g.fill.color);
   std::vector<uint8_t> px((size_t)m.w * m.h * 4);
-  for (size_t i = 0; i < m.v.size(); i++) {
+  pfor(m.v.size(), [&](size_t i) {
     uint8_t c[4];
     // 外側: 形の際 (被覆 1) が位置 0。内側 (エッジから): 際が位置 1 側
     const double t = inner ? m.v[i] : 1.0 - m.v[i];
     psdfx_gradient_color(&g.fill.gradient, g.fill.reverse ? 1.0 - t : t, c);
     px[i * 4] = c[2]; px[i * 4 + 1] = c[1]; px[i * 4 + 2] = c[0]; px[i * 4 + 3] = c[3];
-  }
+  });
   return px;
 }
 
@@ -314,27 +352,35 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   Plane A(W, H), C(W, H);
   std::vector<uint8_t> S((size_t)W * H * 4, 0);   // 内側の合成面 (形の中での被覆率で持つ)
   double lb[4] = { 1e30, 1e30, -1e30, -1e30 };      // 不透明な所の範囲 (dst 座標)
-  for (int y = 0; y < layer->height; y++) {
-    const uint8_t *row = layer->pixels + (size_t)y * layer->stride;
-    for (int x = 0; x < layer->width; x++) {
-      const float c = row[x * 4 + 3] / 255.f;
-      const float a = shape ? shape[(size_t)y * shape_stride + x] / 255.f : c;
-      A.at(x + m, y + m) = a;
-      C.at(x + m, y + m) = c;
-      uint8_t *s = &S[((size_t)(y + m) * W + x + m) * 4];
-      s[0] = row[x * 4]; s[1] = row[x * 4 + 1]; s[2] = row[x * 4 + 2];
-      if (a > 0.f) {
-        lb[0] = std::min(lb[0], (double)(left + x)); lb[1] = std::min(lb[1], (double)(top + y));
-        lb[2] = std::max(lb[2], (double)(left + x + 1)); lb[3] = std::max(lb[3], (double)(top + y + 1));
+  std::mutex lbMutex;
+  psdfx_internal::parallelFor(0, layer->height, (long long)layer->width * layer->height, [&](int ya, int yb) {
+    double b[4] = { 1e30, 1e30, -1e30, -1e30 };
+    for (int y = ya; y < yb; y++) {
+      const uint8_t *row = layer->pixels + (size_t)y * layer->stride;
+      for (int x = 0; x < layer->width; x++) {
+        const float c = row[x * 4 + 3] / 255.f;
+        const float a = shape ? shape[(size_t)y * shape_stride + x] / 255.f : c;
+        A.at(x + m, y + m) = a;
+        C.at(x + m, y + m) = c;
+        uint8_t *s = &S[((size_t)(y + m) * W + x + m) * 4];
+        s[0] = row[x * 4]; s[1] = row[x * 4 + 1]; s[2] = row[x * 4 + 2];
+        if (a > 0.f) {
+          b[0] = std::min(b[0], (double)(left + x)); b[1] = std::min(b[1], (double)(top + y));
+          b[2] = std::max(b[2], (double)(left + x + 1)); b[3] = std::max(b[3], (double)(top + y + 1));
+        }
       }
     }
-  }
+    std::lock_guard<std::mutex> lk(lbMutex);
+    lb[0] = std::min(lb[0], b[0]); lb[1] = std::min(lb[1], b[1]);
+    lb[2] = std::max(lb[2], b[2]); lb[3] = std::max(lb[3], b[3]);
+  });
   if (lb[0] > lb[2]) { lb[0] = left; lb[1] = top; lb[2] = left + layer->width; lb[3] = top + layer->height; }
   // 形の中: レイヤの色を (形の中での透明度 x 塗りの不透明度) で。形の外は空。
   // 内部効果をまとめるときは、塗りの不透明度は内側の効果のあとでまとめて掛ける。
   const float fillOnContent = fx->blend_interior_as_group ? 1.f : clamp01(fill_opacity);
-  for (size_t i = 0; i < A.v.size(); i++)
+  pfor(A.v.size(), [&](size_t i) {
     S[i * 4 + 3] = A.v[i] > 0.f ? to8(clamp01(C.v[i] / A.v[i]) * fillOnContent) : 0;
+  });
 
   // --- 外側の効果 (下地へ) ---
   // 同じ種類の 2 つ目以降は一覧の下のものから描き、1 つ目を最後に (いちばん上に)
@@ -349,7 +395,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
                          ds.spread, ds.size);
     applyContour(sh, ds.contour);
     if (ds.knocks_out)
-      for (size_t i = 0; i < sh.v.size(); i++) sh.v[i] *= 1.f - A.v[i];
+      pfor(sh.v.size(), [&](size_t i) { sh.v[i] *= 1.f - A.v[i]; });
     std::vector<uint8_t> px = solid(W, H, ds.color);
     compositeCoverage(dst, px, sh, ox, oy, ds.blend, ds.opacity * opacity);
   }
@@ -380,11 +426,11 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     if (og.fill.kind == PSDFX_FILL_GRADIENT && og.fill.gradient.color_count > 0) {
       // グラデーションの光彩: 色は (範囲・輪郭を掛けた) 値を位置として引き、不透明度は
       // ぼかしただけの被覆率の 8.33 倍で頭打ち (範囲・大きさによらない。Photoshop で測定)
-      for (size_t i = 0; i < gl.v.size(); i++) gl.v[i] = std::min(1.f, raw.v[i] * 8.33f);
+      pfor(gl.v.size(), [&](size_t i) { gl.v[i] = std::min(1.f, raw.v[i] * 8.33f); });
     }
     // 光彩 (外側) はレイヤの形の下には出ない (半透明のレイヤや比較 (暗) などでも透けない。
     // Photoshop で確認)
-    for (size_t i = 0; i < gl.v.size(); i++) gl.v[i] *= 1.f - A.v[i];
+    pfor(gl.v.size(), [&](size_t i) { gl.v[i] *= 1.f - A.v[i]; });
     compositeCoverage(dst, px, gl, ox, oy, og.blend, og.opacity * opacity);
   }
 
@@ -422,7 +468,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   const psdfx_glow &ig = fx->inner_glow;
   if (ig.enabled && ig.opacity > 0) {
     Plane inv(W, H);
-    for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
+    pfor(inv.v.size(), [&](size_t i) { inv.v[i] = 1.f - A.v[i]; });
     // 文書の外 (作業面の外) も「形の外」として扱うため、縁は 1 のまま広げる
     Plane gl;
     if (ig.precise) {
@@ -448,7 +494,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   eachBottomUp(fx->inner_shadow, fx->more_inner_shadows, fx->more_inner_shadow_count, [&](const psdfx_shadow &is) {
   if (is.enabled && is.opacity > 0) {
     Plane inv(W, H);
-    for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
+    pfor(inv.v.size(), [&](size_t i) { inv.v[i] = 1.f - A.v[i]; });
     const double th = is.angle * kPi / 180.0;
     Plane sh = spreadBox(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance, 1.f),
                          is.spread, is.size, 1.f);
@@ -506,7 +552,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     const double lx = std::cos(al) * std::cos(az), ly = -std::cos(al) * std::sin(az), lz = std::sin(al);
     const double k = (bv.up ? 1.0 : -1.0) * bv.depth * (bv.technique == PSDFX_BEVEL_SMOOTH ? w : 1.0);
     Plane hi(W, H), sh(W, H);
-    for (int y = 0; y < H; y++)
+    psdfx_internal::parallelFor(0, H, (long long)W * H * 4, [&](int ya, int yb) {
+    for (int y = ya; y < yb; y++)
       for (int x = 0; x < W; x++) {
         double gx = (hgt.get(x + 1, y) - hgt.get(x - 1, y)) * 0.5 * k;
         double gy = (hgt.get(x, y + 1) - hgt.get(x, y - 1)) * 0.5 * k;
@@ -520,11 +567,12 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
         if (d > 0) hi.at(x, y) = (float)std::min(1.0, d / (1.0 - lz + 1e-6));
         else sh.at(x, y) = (float)std::min(1.0, -d / (lz + 1e-6));
       }
+    });
     if (bv.soften > 0) { blur(hi, bv.soften * kSigmaBevel); blur(sh, bv.soften * kSigmaBevel); }
     if (bv.style != PSDFX_BEVEL_OUTER) {
       std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
       Plane hiIn = hi, shIn = sh;
-      for (size_t i = 0; i < A.v.size(); i++) if (A.v[i] <= 0.f) { hiIn.v[i] = 0; shIn.v[i] = 0; }
+      pfor(A.v.size(), [&](size_t i) { if (A.v[i] <= 0.f) { hiIn.v[i] = 0; shIn.v[i] = 0; } });
       compositeCoverage(&Ss, ps, shIn, 0, 0, bv.shadow_blend, bv.shadow_opacity);
       compositeCoverage(&Ss, ph, hiIn, 0, 0, bv.highlight_blend, bv.highlight_opacity);
     }
@@ -538,7 +586,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
 
   // 形の中の被覆率 → 実際のアルファ (内部効果をまとめるなら塗りの不透明度もここで)
   const float fillAfter = fx->blend_interior_as_group ? clamp01(fill_opacity) : 1.f;
-  for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i] * fillAfter);
+  pfor(A.v.size(), [&](size_t i) { S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i] * fillAfter); });
 
   // --- 境界線 (形の上、外側は形の外へ) ---
   eachBottomUp(fx->stroke, fx->more_strokes, fx->more_stroke_count, [&](const psdfx_stroke &st) {
@@ -555,9 +603,21 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
       static const float kLevels[] = { 1.f / 255, 1.f / 16, 2.f / 16, 3.f / 16, 4.f / 16, 5.f / 16, 6.f / 16,
                                        7.f / 16, 8.f / 16, 9.f / 16, 10.f / 16, 11.f / 16, 12.f / 16,
                                        13.f / 16, 14.f / 16, 15.f / 16, 254.5f / 255 };
+      // しきい値で分けた形が前のしきい値と同じなら距離変換もし直さない (硬い縁の形では
+      // ほとんどのしきい値で同じになる。結果は変わらない)
+      Plane d;
+      float prevThr = -1.f;
       for (float t : kLevels) {
-        Plane d = outside ? distanceTo(A, true, t) : distanceTo(A, false, 1.f - t + 1e-6f);
-        for (size_t i = 0; i < D.v.size(); i++) D.v[i] = std::min(D.v[i], d.v[i] - t);
+        const float thr = outside ? t : 1.f - t + 1e-6f;
+        bool same = prevThr >= 0.f;
+        if (same) {
+          const float lo = std::min(thr, prevThr), hi = std::max(thr, prevThr);
+          for (float v : A.v)
+            if (v >= lo && v < hi) { same = false; break; }   // 2 つのしきい値の間の値があると形が変わる
+        }
+        if (!same) d = distanceTo(A, outside, thr);
+        prevThr = thr;
+        pfor(D.v.size(), [&](size_t i) { D.v[i] = std::min(D.v[i], d.v[i] - t); });
       }
       return D;
     };
@@ -567,18 +627,14 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     if (st.position != PSDFX_STROKE_INSIDE) {
       Plane D = softDistance(true);
       under = Plane(W, H);
-      for (size_t i = 0; i < cov.v.size(); i++) {
-        const float c = clamp01((float)(sz - D.v[i]));
-        under.v[i] = c;
-      }
+      pfor(cov.v.size(), [&](size_t i) { under.v[i] = clamp01((float)(sz - D.v[i])); });
     }
     // 内側の分は中身の色を置き換え、アルファは中身のまま (source-atop。Photoshop で確認)
     Plane inner;
     if (st.position != PSDFX_STROKE_OUTSIDE) {
       Plane D = softDistance(false);
       inner = Plane(W, H);
-      for (size_t i = 0; i < inner.v.size(); i++)
-        if (A.v[i] > 0.f) inner.v[i] = clamp01((float)(sz - D.v[i]));
+      pfor(inner.v.size(), [&](size_t i) { if (A.v[i] > 0.f) inner.v[i] = clamp01((float)(sz - D.v[i])); });
     }
     // グラデーションの線は、形の範囲を外側の線幅 - 1 だけ広げた枠に描く
     // (Photoshop の合成画像と照合して確認)
@@ -593,7 +649,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
       //   外側: 形の外の分 c x (1 - A) を足す (形の中は中身のまま。塗り 0% でも形の中に入らない)
       //   内側: 形の中の分 c で中身を置き換える (中身が透明でも形の中には線が出る)
       const float op = clamp01(st.opacity);
-      for (size_t i = 0; i < A.v.size(); i++) {
+      pfor(A.v.size(), [&](size_t i) {
         uint8_t *q = &S[i * 4];
         float sa = q[3] / 255.f;
         float pr[3] = { q[0] / 255.f * sa, q[1] / 255.f * sa, q[2] / 255.f * sa };
@@ -612,7 +668,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
         }
         q[3] = to8(sa);
         for (int k = 0; k < 3; k++) q[k] = sa > 0.f ? to8(pr[k] / sa) : 0;
-      }
+      });
     } else {
       if (!under.v.empty())
         for (size_t i = 0; i < cov.v.size(); i++) cov.v[i] = A.v[i] > 0.f ? under.v[i] * (1.f - A.v[i]) : under.v[i];

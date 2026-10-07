@@ -51,6 +51,8 @@ add_library(${PROJECT_NAME} STATIC
 	psdchannels.cpp
 	psdmisc.cpp
 	psdfx.cpp
+	psdfx_parallel.cpp
+	psdfx_parallel.h
 	psdfx_path.cpp
 	psdfx_paint.cpp
 	psdfx_effects.cpp
@@ -68,8 +70,10 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PUBLIC
 	ZLIB::ZLIB
+	Threads::Threads
 )
 
 # スタンドアロン CLI (PSD をロードしてヘッダを表示する smoke test 用)

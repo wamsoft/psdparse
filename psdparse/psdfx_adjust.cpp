@@ -5,6 +5,7 @@
 // 合成画像と照合して合わせたもの。透明な画素 (アルファ 0) は触らない。
 #include "psdfx.h"
 #include "psdfx_bc_tables.h"
+#include "psdfx_parallel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,19 +17,21 @@ inline float clamp01(float v) { return v < 0.f ? 0.f : v > 1.f ? 1.f : v; }
 inline uint8_t to8(float v) { return (uint8_t)(clamp01(v) * 255.f + 0.5f); }
 inline float luma(float r, float g, float b) { return 0.299f * r + 0.587f * g + 0.114f * b; }
 
-// 画素ごとに RGB (0..1) を変換する
+// 画素ごとに RGB (0..1) を変換する (行ごとに並列。f は画素ごとに独立であること)
 template <class F>
 void mapRGB(psdfx_surface *s, F f) {
   if (!s || !s->pixels) return;
-  for (int y = 0; y < s->height; y++) {
-    uint8_t *p = s->pixels + (size_t)y * s->stride;
-    for (int x = 0; x < s->width; x++, p += 4) {
-      if (!p[3]) continue;
-      float c[3] = { p[2] / 255.f, p[1] / 255.f, p[0] / 255.f };
-      f(c, x, y);
-      p[2] = to8(c[0]); p[1] = to8(c[1]); p[0] = to8(c[2]);
+  psdfx_internal::parallelFor(0, s->height, (long long)s->width * s->height * 4, [&](int ya, int yb) {
+    for (int y = ya; y < yb; y++) {
+      uint8_t *p = s->pixels + (size_t)y * s->stride;
+      for (int x = 0; x < s->width; x++, p += 4) {
+        if (!p[3]) continue;
+        float c[3] = { p[2] / 255.f, p[1] / 255.f, p[0] / 255.f };
+        f(c, x, y);
+        p[2] = to8(c[0]); p[1] = to8(c[1]); p[0] = to8(c[2]);
+      }
     }
-  }
+  });
 }
 
 void rgbToHsl(const float c[3], float &h, float &s, float &l) {
@@ -91,13 +94,15 @@ int curveFromTable(const uint8_t *tables, int count, int minValue, int step, dou
 extern "C" void psdfx_apply_lut(psdfx_surface *s, const uint8_t lut_r[256], const uint8_t lut_g[256],
                                 const uint8_t lut_b[256]) {
   if (!s || !s->pixels) return;
-  for (int y = 0; y < s->height; y++) {
-    uint8_t *p = s->pixels + (size_t)y * s->stride;
-    for (int x = 0; x < s->width; x++, p += 4) {
-      if (!p[3]) continue;
-      p[2] = lut_r[p[2]]; p[1] = lut_g[p[1]]; p[0] = lut_b[p[0]];
+  psdfx_internal::parallelFor(0, s->height, (long long)s->width * s->height / 4, [&](int ya, int yb) {
+    for (int y = ya; y < yb; y++) {
+      uint8_t *p = s->pixels + (size_t)y * s->stride;
+      for (int x = 0; x < s->width; x++, p += 4) {
+        if (!p[3]) continue;
+        p[2] = lut_r[p[2]]; p[1] = lut_g[p[1]]; p[0] = lut_b[p[0]];
+      }
     }
-  }
+  });
 }
 
 extern "C" void psdfx_levels_lut(double in_black, double in_white, double out_black, double out_white,
@@ -487,15 +492,30 @@ extern "C" void psdfx_apply_adjusted(psdfx_surface *dst, const psdfx_surface *ad
   // アルファは元のまま (調整レイヤは下地の透明度を変えない)。
   if (!dst || !adjusted || !dst->pixels || !adjusted->pixels) return;
   const int w = std::min(dst->width, adjusted->width), h = std::min(dst->height, adjusted->height);
-  std::vector<uint8_t> src((size_t)w * h * 4);
-  for (int y = 0; y < h; y++) {
-    const uint8_t *a = adjusted->pixels + (size_t)y * adjusted->stride;
-    for (int x = 0; x < w; x++) {
-      uint8_t *p = &src[((size_t)y * w + x) * 4];
-      p[0] = a[x * 4]; p[1] = a[x * 4 + 1]; p[2] = a[x * 4 + 2];
-      p[3] = mask ? mask[(size_t)y * mask_stride + x] : 255;
-    }
+  if (!mask && opacity >= 1.f &&
+      (blend_key == PSDFX_KEY('n','o','r','m') || blend_key == PSDFX_KEY('p','a','s','s'))) {
+    // 通常 100% でマスク無し: 色を写すだけ (アルファのある画素の色が調整済みの色になる)
+    psdfx_internal::parallelFor(0, h, (long long)w * h / 4, [&](int ya, int yb) {
+      for (int y = ya; y < yb; y++) {
+        uint8_t *p = dst->pixels + (size_t)y * dst->stride;
+        const uint8_t *a = adjusted->pixels + (size_t)y * adjusted->stride;
+        for (int x = 0; x < w; x++, p += 4, a += 4)
+          if (p[3]) { p[0] = a[0]; p[1] = a[1]; p[2] = a[2]; }
+      }
+    });
+    return;
   }
+  std::vector<uint8_t> src((size_t)w * h * 4);
+  psdfx_internal::parallelFor(0, h, (long long)w * h / 4, [&](int ya, int yb) {
+    for (int y = ya; y < yb; y++) {
+      const uint8_t *a = adjusted->pixels + (size_t)y * adjusted->stride;
+      for (int x = 0; x < w; x++) {
+        uint8_t *p = &src[((size_t)y * w + x) * 4];
+        p[0] = a[x * 4]; p[1] = a[x * 4 + 1]; p[2] = a[x * 4 + 2];
+        p[3] = mask ? mask[(size_t)y * mask_stride + x] : 255;
+      }
+    }
+  });
   psdfx_surface s = { src.data(), w, h, w * 4 };
   psdfx_composite_atop(dst, &s, 0, 0, blend_key, opacity);
 }

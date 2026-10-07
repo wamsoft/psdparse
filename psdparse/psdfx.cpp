@@ -5,6 +5,7 @@
 //   Co = (αs (1-αb) Cs + αs αb B(Cb, Cs) + (1-αs) αb Cb) / αo
 // B の式は Photoshop に合わせたもの (ソフトライト、比較 (暗) / (明) のカラーなど)。
 #include "psdfx.h"
+#include "psdfx_parallel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -178,7 +179,10 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
   const int x1 = std::min(dst->width, dx + src->width), y1 = std::min(dst->height, dy + src->height);
   const float op = clamp01(opacity);
   const bool normal = key == PSDFX_KEY('n','o','r','m');
-  for (int y = y0; y < y1; y++) {
+  const uint32_t key0 = key;
+  psdfx_internal::parallelFor(y0, y1, (long long)(y1 - y0) * (x1 - x0), [&](int ya, int yb) {
+  uint32_t key = key0;   // ハードミックス + 塗りでは途中で通常に切り替える (スレッドごと)
+  for (int y = ya; y < yb; y++) {
     uint8_t *d = dst->pixels + (size_t)y * dst->stride + (size_t)x0 * 4;
     const uint8_t *s = src->pixels + (size_t)(y - dy) * src->stride + (size_t)(x0 - dx) * 4;
     const uint8_t *m = mask ? mask + (size_t)(y - dy) * mstride + (x0 - dx) : nullptr;
@@ -224,6 +228,7 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
       d[2] = to8(b[0]); d[1] = to8(b[1]); d[0] = to8(b[2]); d[3] = to8(ab);
     }
   }
+  });
 }
 
 void psdfx_composite(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
@@ -252,7 +257,8 @@ void psdfx_lerp(psdfx_surface *dst, const psdfx_surface *src, float t,
                 const uint8_t *mask, int mask_stride) {
   if (!dst || !src || dst->width != src->width || dst->height != src->height) return;
   t = clamp01(t);
-  for (int y = 0; y < dst->height; y++) {
+  psdfx_internal::parallelFor(0, dst->height, (long long)dst->width * dst->height, [&](int ya, int yb) {
+  for (int y = ya; y < yb; y++) {
     uint8_t *d = dst->pixels + (size_t)y * dst->stride;
     const uint8_t *s = src->pixels + (size_t)y * src->stride;
     const uint8_t *m = mask ? mask + (size_t)y * mask_stride : nullptr;
@@ -269,6 +275,7 @@ void psdfx_lerp(psdfx_surface *dst, const psdfx_surface *src, float t,
       d[3] = to8(ao);
     }
   }
+  });
 }
 
 }  // extern "C"
@@ -312,10 +319,16 @@ extern "C" void psdfx_blur_plane(uint8_t *plane, int width, int height, int stri
     for (int x = 0; x < width; x++) f[(size_t)y * width + x] = plane[(size_t)y * stride + x];
   int r[3];
   boxRadii(sigma, r);
-  std::vector<float> tmp;
+  const long long work = (long long)width * height;
   for (int pass = 0; pass < 3; pass++) {
-    for (int y = 0; y < height; y++) boxPass(&f[(size_t)y * width], width, 1, r[pass], tmp);
-    for (int x = 0; x < width; x++) boxPass(&f[(size_t)x], height, width, r[pass], tmp);
+    psdfx_internal::parallelFor(0, height, work, [&](int a, int b) {
+      std::vector<float> tmp;
+      for (int y = a; y < b; y++) boxPass(&f[(size_t)y * width], width, 1, r[pass], tmp);
+    });
+    psdfx_internal::parallelFor(0, width, work, [&](int a, int b) {
+      std::vector<float> tmp;
+      for (int x = a; x < b; x++) boxPass(&f[(size_t)x], height, width, r[pass], tmp);
+    });
   }
   for (int y = 0; y < height; y++)
     for (int x = 0; x < width; x++)

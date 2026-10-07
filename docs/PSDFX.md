@@ -28,6 +28,7 @@ psdfx の `.cpp` (`psdfx.cpp` / `psdfx_path.cpp` / `psdfx_paint.cpp` /
 | `psdfx_composite_layer` | レイヤとして重ねる。不透明度と塗りの不透明度を分けて受け取る (リニアバーンなど 8 つのモードでは塗りが特別に効く) |
 | `psdfx_composite_atop` | dst のアルファを変えずに重ねる (source-atop) |
 | `psdfx_composite_layer_atop` | `psdfx_composite_layer` の source-atop 版 (クリッピング用。下地が半透明でもアルファを変えない) |
+| `psdfx_set_threads` / `psdfx_get_threads` / `psdfx_shutdown_threads` | 並列処理のスレッド数 (0 = 自動、1 = 分けない)。大きな面の処理は行ごとに分け、結果はスレッド数によらない。DLL から使うときは外す前に `psdfx_shutdown_threads` を呼ぶ |
 | `psdfx_lerp` | 2 枚の面の線形補間 (通過グループの不透明度 / マスク) |
 | `psdfx_blur_plane` | 1 チャンネルのガウスぼかし (箱ぼかし 3 回) |
 | `psdfx_gradient_color` / `psdfx_draw_gradient` | グラデーション (線形 / 円形 / 角度 / 反射 / 菱形、中間点、滑らかさ、補間方法: クラシック / 線形光 / 知覚的 (Oklab) / 滑らか) |

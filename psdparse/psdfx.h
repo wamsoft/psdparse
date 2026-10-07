@@ -39,6 +39,19 @@ typedef struct psdfx_surface {
 int psdfx_blend_supported(uint32_t blend_key);
 
 /*
+ * 並列処理: 大きな面の処理は行ごとに複数のスレッドへ分ける (結果は 1 スレッドと同じ)。
+ *   psdfx_set_threads(n)    使うスレッド数 (呼び出し元を含む)。0 = 自動 (論理コア数、
+ *                           最大 16。環境変数 PSDFX_THREADS でも指定できる)、1 = 分けない
+ *   psdfx_get_threads()     実際に使うスレッド数
+ *   psdfx_shutdown_threads() 作業スレッドを止める (次に必要になればまた作る)。
+ *                           DLL から使うときは、DLL を外す前にこれを呼ぶこと
+ *                           (後始末の中でスレッドの終わりを待つと止まることがある)
+ */
+void psdfx_set_threads(int count);
+int psdfx_get_threads(void);
+void psdfx_shutdown_threads(void);
+
+/*
  * src を dst の (dx, dy) の位置へ、ブレンドモード blend_key・不透明度 opacity
  * (0..1) で重ねる (source-over)。dst からはみ出る部分は捨てる。
  * mask が NULL でなければ、src と同じ大きさの 8bit 面 (1 行 mask_stride バイト)

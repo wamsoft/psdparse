@@ -120,6 +120,18 @@ part follows Photoshop.
 `background=(r, g, b)` composites onto an opaque colour instead of
 transparency.
 
+Large images are split across threads (rows of each blend / adjustment /
+blur / distance pass); the result is identical to a single-threaded run.
+
+```python
+psdparse.set_threads(count: int) -> None   # 0 = automatic (default), 1 = single-threaded
+psdparse.get_threads() -> int
+```
+
+The automatic count is the number of logical cores, capped at 16; the
+`PSDFX_THREADS` environment variable overrides it when `set_threads` was not
+called.
+
 ```python
 p.render_layer(index: int, effects: bool = True) -> (bytes, left, top, width, height) | None
 ```

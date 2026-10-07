@@ -11,6 +11,7 @@
 #include "psdparse.h"
 #include "psdfile.h"
 #include "psdfx.h"
+#include "psdfx_parallel.h"
 
 #include <algorithm>
 #include <array>
@@ -473,10 +474,15 @@ private:
     psdfx_surface s = adj.surface();
     if (!adjustSurface(a, s)) { st_.skippedAdjustments++; return; }
     const int W = target.width;
-    std::vector<uint8_t> mask = adjustmentMask(l, clipMask, target.width, target.height);
+    // マスクが何も無ければ作らない (全面 255 のマスクと同じ)
+    LayerInfo maskLayer;
+    const bool anyMask = clipMask || (userMaskLayer(l, maskLayer) && !userMaskIsBlank(maskLayer)) ||
+                         (l.vectorMask.present && !l.vectorMask.disabled());
+    std::vector<uint8_t> mask;
+    if (anyMask) mask = adjustmentMask(l, clipMask, target.width, target.height);
     psdfx_surface d = target.surface();
     psdfx_apply_adjusted(&d, &s, (uint32_t)l.blendModeKey, l.opacity / 255.f * (l.fill_opacity / 255.f),
-                         mask.data(), W);
+                         anyMask ? mask.data() : nullptr, W);
   }
 
   // 調整レイヤのマスク (ユーザーマスク / ベクタマスク、clipMask があれば掛ける) を文書大で
@@ -487,11 +493,13 @@ private:
     if (userMaskLayer(l, maskLayer)) applyUserMask(maskLayer, m, 0, 0);
     applyVectorMask(l, m, 0, 0);
     std::vector<uint8_t> mask((size_t)W * H);
-    for (size_t i = 0; i < mask.size(); i++) {
-      int v = m.px[i * 4 + 3];
-      if (clipMask) v = (v * clipMask[i] + 127) / 255;
-      mask[i] = (uint8_t)v;
-    }
+    psdfx_internal::parallelFor(0, H, (long long)W * H, [&](int ya, int yb) {
+      for (size_t i = (size_t)ya * W; i < (size_t)yb * W; i++) {
+        int v = m.px[i * 4 + 3];
+        if (clipMask) v = (v * clipMask[i] + 127) / 255;
+        mask[i] = (uint8_t)v;
+      }
+    });
     return mask;
   }
 
@@ -1248,7 +1256,17 @@ private:
   }
 
   // ユーザーマスクを面のアルファへ掛ける (矩形の外は既定色)
+  // ユーザーマスクが全面白 (矩形なし・既定色 255・濃度とぼかしなし) なら true。
+  // 掛けても何も変わらないので省ける
+  static bool userMaskIsBlank(const LayerInfo &l) {
+    const LayerMask &m = l.extraData.layerMask;
+    return !(m.width > 0 && m.height > 0) && m.defaultColor == 255 &&
+           !(m.hasUserFeather && m.userMaskFeather > 0) &&
+           !(m.userMaskDensity >= 0 && m.userMaskDensity < 255);
+  }
+
   void applyUserMask(LayerInfo &l, Canvas &c, int left, int top) {
+    if (userMaskIsBlank(l)) return;
     const LayerMask &m = l.extraData.layerMask;
     std::vector<uint8_t> bgra;
     const bool have = m.width > 0 && m.height > 0;
@@ -1257,20 +1275,24 @@ private:
       if (!psd_.getLayerImage(l, bgra.data(), BGRA_LE, m.width * 4, IMAGE_MODE_MASK)) bgra.clear();
     }
     std::vector<uint8_t> mk((size_t)c.width * c.height);
-    for (int y = 0; y < c.height; y++) {
-      for (int x = 0; x < c.width; x++) {
-        int mx = left + x - m.left, my = top + y - m.top;
-        uint8_t v = (uint8_t)m.defaultColor;
-        if (!bgra.empty() && mx >= 0 && my >= 0 && mx < m.width && my < m.height)
-          v = bgra[((size_t)my * m.width + mx) * 4];
-        mk[(size_t)y * c.width + x] = v;
+    psdfx_internal::parallelFor(0, c.height, (long long)c.width * c.height, [&](int ya, int yb) {
+      for (int y = ya; y < yb; y++) {
+        for (int x = 0; x < c.width; x++) {
+          int mx = left + x - m.left, my = top + y - m.top;
+          uint8_t v = (uint8_t)m.defaultColor;
+          if (!bgra.empty() && mx >= 0 && my >= 0 && mx < m.width && my < m.height)
+            v = bgra[((size_t)my * m.width + mx) * 4];
+          mk[(size_t)y * c.width + x] = v;
+        }
       }
-    }
+    });
     if (m.hasUserFeather && m.userMaskFeather > 0)
       psdfx_blur_plane(mk.data(), c.width, c.height, c.width, m.userMaskFeather);   // σ = ぼかしの値 (Photoshop で測定)
     if (m.userMaskDensity >= 0 && m.userMaskDensity < 255) applyDensity(mk, m.userMaskDensity);
-    for (size_t i = 0; i < mk.size(); i++)
-      c.px[i * 4 + 3] = (uint8_t)((c.px[i * 4 + 3] * mk[i] + 127) / 255);
+    psdfx_internal::parallelFor(0, c.height, (long long)c.width * c.height, [&](int ya, int yb) {
+      for (size_t i = (size_t)ya * c.width; i < (size_t)yb * c.width; i++)
+        c.px[i * 4 + 3] = (uint8_t)((c.px[i * 4 + 3] * mk[i] + 127) / 255);
+    });
   }
 
   // 1 つの兄弟 (レイヤかグループ) と、それにクリップされたレイヤ群を canvas へ

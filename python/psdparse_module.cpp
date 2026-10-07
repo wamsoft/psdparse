@@ -1423,6 +1423,13 @@ PYBIND11_MODULE(psdparse, m) {
         "list of subpath dicts with 'knots' / 'closed' / 'operation') into "
         "polylines: a list of {'closed', 'operation', 'points': [(x, y), ...]}. "
         "tolerance is the maximum distance from the curve in pixels.");
+  m.def("set_threads", [](int n) { psdfx_set_threads(n); }, py::arg("count"),
+        "Threads used by composite / render_layer / the rasterizers (including the "
+        "caller). 0 = automatic (logical cores, at most 16; the PSDFX_THREADS "
+        "environment variable also sets it), 1 = single-threaded. Results do not "
+        "depend on the thread count.");
+  m.def("get_threads", []() { return psdfx_get_threads(); },
+        "Number of threads composite and friends will use.");
   m.def("rasterize_path", &pyRasterizePath, py::arg("path"), py::arg("width"),
         py::arg("height"), py::arg("left") = 0.0, py::arg("top") = 0.0,
         "Fill a path into width x height 8-bit coverage (bytes, anti-aliased). "
