@@ -23,9 +23,9 @@ const double kPi = 3.14159265358979323846;
 // 効果の「サイズ」をガウスの sigma へ換算する係数。Photoshop の合成画像と照合して
 // 効果ごとに最も合う値を選んだ (影 0.4、内側の影・サテン・外側の光彩 0.3、内側の光彩 0.5)。
 const double kSigmaDropShadow = 0.4;
-const double kSigmaInnerShadow = 0.3;
+const double kSigmaInnerShadow = 0.4;   // ドロップシャドウと同じ (Photoshop で測定)
 const double kSigmaOuterGlow = 0.44;   // 箱ぼかし 3 回で半径 0.42 x 大きさ (Photoshop で測定)
-const double kSigmaInnerGlow = 0.5;
+const double kSigmaInnerGlow = 0.44;    // 光彩 (外側) と同じ (Photoshop で測定)
 const double kSigmaSatin = 0.3;
 const double kSigmaBevel = 0.5;
 
@@ -234,7 +234,15 @@ extern "C" int psdfx_effects_margin(const psdfx_layer_effects *fx) {
       m = std::max(m, fx->more_strokes[i].size);
   if (fx->outer_glow.enabled) m = std::max(m, fx->outer_glow.size * 1.5);
   if (fx->stroke.enabled && fx->stroke.position != PSDFX_STROKE_INSIDE) m = std::max(m, fx->stroke.size);
-  if (fx->bevel.enabled && fx->bevel.style != PSDFX_BEVEL_INNER) m = std::max(m, fx->bevel.size * 1.5);
+  if (fx->bevel.enabled) m = std::max(m, fx->bevel.size * 1.5);
+  // 内側の効果も、ぼかしが形の外 (作業面の外は「形の外」とみなす) に届く分の余白が要る
+  if (fx->inner_glow.enabled) m = std::max(m, fx->inner_glow.size * 1.5);
+  if (fx->inner_shadow.enabled)
+    m = std::max(m, fx->inner_shadow.distance + fx->inner_shadow.size * 1.5);
+  for (int i = 0; i < fx->more_inner_shadow_count && fx->more_inner_shadows; i++)
+    if (fx->more_inner_shadows[i].enabled)
+      m = std::max(m, fx->more_inner_shadows[i].distance + fx->more_inner_shadows[i].size * 1.5);
+  if (fx->satin.enabled) m = std::max(m, fx->satin.distance + fx->satin.size * 1.5);
   return (int)std::ceil(m) + 2;
 }
 
@@ -353,8 +361,21 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     Plane inv(W, H);
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
     // 文書の外 (作業面の外) も「形の外」として扱うため、縁は 1 のまま広げる
-    Plane gl = spreadBlur(inv, ig.spread, ig.size, kSigmaInnerGlow, 1.f);
-    applyRange(gl, ig.range);
+    Plane gl;
+    if (ig.precise) {
+      // 精細: 形の外からの距離 d で (大きさ + 1 - d) / (大きさ + 1)、範囲は 0.5 / 範囲 倍
+      const double sp = std::min(1.0, std::max(0.0, ig.spread)) * ig.size, rest = ig.size - sp;
+      Plane dout = distanceTo(A, false);
+      gl = Plane(W, H);
+      const double k = ig.range > 0 ? 0.5 / ig.range : 1.0;
+      for (size_t i = 0; i < gl.v.size(); i++) {
+        const double d = std::max(0.0, dout.v[i] - sp);
+        gl.v[i] = clamp01((float)(std::max((double)inv.v[i], (rest + 1.0 - d) / (rest + 1.0)) * k));
+      }
+    } else {
+      gl = spreadBlur(inv, ig.spread, ig.size, kSigmaInnerGlow, 1.f);
+      applyRange(gl, ig.range);
+    }
     if (ig.source_center) for (auto &v : gl.v) v = 1.f - v;
     std::vector<uint8_t> px = glowColor(ig, gl, true);
     compositeCoverage(&Ss, px, gl, 0, 0, ig.blend, ig.opacity);
