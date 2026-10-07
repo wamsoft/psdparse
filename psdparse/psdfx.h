@@ -49,6 +49,17 @@ void psdfx_composite(psdfx_surface *dst, const psdfx_surface *src, int dx, int d
                      const uint8_t *mask, int mask_stride);
 
 /*
+ * レイヤとして重ねる: 不透明度 opacity と塗りの不透明度 fill を分けて渡す。
+ * 多くのモードでは opacity x fill と同じだが、リニアバーン / 焼き込みカラー /
+ * 覆い焼きカラー / 覆い焼き (リニア) / 差の絶対値 / ビビッドライト / リニアライト /
+ * ハードミックスでは、塗りはアルファを下げずに上の色をそのモードの中立色へ寄せる
+ * (Photoshop と同じ)。
+ */
+void psdfx_composite_layer(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
+                           uint32_t blend_key, float opacity, float fill,
+                           const uint8_t *mask, int mask_stride);
+
+/*
  * クリッピング用: src を dst へ重ねるが、dst のアルファは変えない
  * (dst が不透明な所にだけ描く。source-atop)。
  */

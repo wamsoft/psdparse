@@ -1087,7 +1087,7 @@ private:
                                (double)(psd_.header.width - dx), (double)(psd_.header.height - dy) };
     if (!clipMask) {
       psdfx_surface d = dst.surface();
-      if (!withFx) psdfx_composite(&d, &src, sx - dx, sy - dy, blend, opacity * fill, nullptr, 0);
+      if (!withFx) psdfx_composite_layer(&d, &src, sx - dx, sy - dy, blend, opacity, fill, nullptr, 0);
       else psdfx_composite_with_effects(&d, &src, sx - dx, sy - dy, blend, opacity, fill, &fx, docBox,
                                         surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
       return;
@@ -1095,10 +1095,14 @@ private:
     // クリップされたレイヤ: 透明な面へ (効果込みで) 描いてから、クリップ範囲のマスク付きで重ねる
     Canvas tmp(dst.width, dst.height);
     psdfx_surface t = tmp.surface();
-    if (!withFx) psdfx_composite(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), fill, nullptr, 0);
-    else psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox,
-                                      surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
     psdfx_surface d = dst.surface();
+    if (!withFx) {
+      psdfx_composite(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, nullptr, 0);
+      psdfx_composite_layer(&d, &t, 0, 0, blend, opacity, fill, clipMask, dst.width);
+      return;
+    }
+    psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox,
+                                 surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
     psdfx_composite(&d, &t, 0, 0, blend, opacity, clipMask, dst.width);
   }
 

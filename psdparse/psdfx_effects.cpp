@@ -184,6 +184,25 @@ std::vector<uint8_t> paintSource(const psdfx_fill_source &src, int W, int H, int
 // 色の面 px に被覆率 cov を掛けた面を dst へ重ねる
 void compositeCoverage(psdfx_surface *dst, std::vector<uint8_t> &px, const Plane &cov,
                        int dx, int dy, uint32_t blend, float opacity) {
+  // 塗りが特別に効くモード (リニアバーンなど) では、効果の被覆率 x 不透明度で色を中立色へ
+  // 寄せてから全面で合成する (アルファでは混ぜない。Photoshop で確認)
+  float neutral = -1.f;
+  switch (blend) {
+  case PSDFX_KEY('l','b','r','n'): case PSDFX_KEY('i','d','i','v'): neutral = 1.f; break;
+  case PSDFX_KEY('l','d','d','g'): case PSDFX_KEY('d','i','v',' '): case PSDFX_KEY('d','i','f','f'): neutral = 0.f; break;
+  case PSDFX_KEY('v','L','i','t'): case PSDFX_KEY('l','L','i','t'): neutral = 0.5f; break;
+  default: break;
+  }
+  if (neutral >= 0.f) {
+    for (size_t i = 0; i < cov.v.size(); i++) {
+      const float k = px[i * 4 + 3] / 255.f * cov.v[i] * clamp01(opacity);
+      for (int c = 0; c < 3; c++) px[i * 4 + c] = to8(neutral + (px[i * 4 + c] / 255.f - neutral) * k);
+      px[i * 4 + 3] = k > 0.f ? 255 : 0;
+    }
+    psdfx_surface src{ px.data(), cov.w, cov.h, cov.w * 4 };
+    psdfx_composite(dst, &src, dx, dy, blend, 1.f, nullptr, 0);
+    return;
+  }
   for (size_t i = 0; i < cov.v.size(); i++) px[i * 4 + 3] = to8(px[i * 4 + 3] / 255.f * cov.v[i]);
   psdfx_surface src{ px.data(), cov.w, cov.h, cov.w * 4 };
   psdfx_composite(dst, &src, dx, dy, blend, opacity, nullptr, 0);

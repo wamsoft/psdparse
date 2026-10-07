@@ -151,10 +151,27 @@ int psdfx_blend_supported(uint32_t key) {
   }
 }
 
+// 塗りの不透明度が「特別」に効く描画モード (Photoshop の special eight)。塗りは
+// アルファを下げず、上の色をそのモードで効かない色 (中立色) へ寄せてから合成する。
+// ハードミックスは (下 - 塗り x (1 - 上)) / (1 - 塗り) を 0..1 に。Photoshop で確認
+static bool specialFill(uint32_t key, float &neutral) {
+  switch (key) {
+  case PSDFX_KEY('l','b','r','n'): case PSDFX_KEY('i','d','i','v'): neutral = 1.f; return true;
+  case PSDFX_KEY('l','d','d','g'): case PSDFX_KEY('d','i','v',' '):
+  case PSDFX_KEY('d','i','f','f'): neutral = 0.f; return true;
+  case PSDFX_KEY('v','L','i','t'): case PSDFX_KEY('l','L','i','t'): neutral = 0.5f; return true;
+  case PSDFX_KEY('h','M','i','x'): neutral = -1.f; return true;
+  default: return false;
+  }
+}
+
 static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
                           uint32_t key, float opacity, const uint8_t *mask, int mstride,
-                          bool atop) {
+                          bool atop, float fill = 1.f) {
   if (!dst || !src || !dst->pixels || !src->pixels || opacity <= 0.f) return;
+  float neutral = 0.f;
+  const bool special = fill < 1.f && specialFill(key, neutral);
+  if (!special) { opacity *= clamp01(fill); if (opacity <= 0.f) return; }
   if (key == PSDFX_KEY('p','a','s','s') || key == PSDFX_KEY('d','i','s','s'))
     key = PSDFX_KEY('n','o','r','m');
   const int x0 = std::max(0, dx), y0 = std::max(0, dy);
@@ -172,7 +189,17 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
       float ab = d[3] / 255.f;
       if (atop && ab <= 0.f) continue;
       float b[3] = { d[2] / 255.f, d[1] / 255.f, d[0] / 255.f };
-      const float sc[3] = { s[2] / 255.f, s[1] / 255.f, s[0] / 255.f };
+      float sc[3] = { s[2] / 255.f, s[1] / 255.f, s[0] / 255.f };
+      if (special) {
+        if (neutral < 0.f) {
+          // ハードミックス + 塗り: 下の色ごとに決まる値を、塗り 100% の通常の合成で重ねる
+          for (int i = 0; i < 3; i++)
+            sc[i] = fill <= 0.f ? b[i] : clamp01((b[i] - fill * (1.f - sc[i])) / std::max(1e-6f, 1.f - fill));
+          key = PSDFX_KEY('n','o','r','m');
+        } else {
+          for (int i = 0; i < 3; i++) sc[i] = neutral + (sc[i] - neutral) * fill;
+        }
+      }
       if (atop) {
         // source-atop: αo = αb、Co = αs B(Cb, Cs) + (1 - αs) Cb
         float B[3];
@@ -181,9 +208,9 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
         for (int i = 0; i < 3; i++) b[i] = as * B[i] + (1.f - as) * b[i];
       } else if (normal && ab <= 0.f) {
         b[0] = sc[0]; b[1] = sc[1]; b[2] = sc[2]; ab = as;
-      } else if (key == PSDFX_KEY('h','M','i','x')) {
-        // ハードミックス: しきい値の判定には不透明度を掛けた上の色を使う
-        // (cb + cs x 不透明度 >= 1。Photoshop の合成画像と照合して確認)
+      } else if (key == PSDFX_KEY('h','M','i','x') && ab < 0.999f) {
+        // ハードミックスを透明な下地に重ねるとき: しきい値の判定には不透明度を掛けた上の
+        // 色を使う (cb + cs x 不透明度 >= 1。不透明な下地では通常どおり。照合で確認)
         const float ao = as + ab - as * ab;
         for (int i = 0; i < 3; i++) {
           const float B = b[i] + sc[i] * op >= 1.f - 1e-6f ? 1.f : 0.f;
@@ -202,6 +229,12 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
 void psdfx_composite(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
                      uint32_t blend_key, float opacity, const uint8_t *mask, int mask_stride) {
   compositeImpl(dst, src, dx, dy, blend_key, opacity, mask, mask_stride, false);
+}
+
+void psdfx_composite_layer(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
+                           uint32_t blend_key, float opacity, float fill,
+                           const uint8_t *mask, int mask_stride) {
+  compositeImpl(dst, src, dx, dy, blend_key, opacity, mask, mask_stride, false, clamp01(fill));
 }
 
 void psdfx_composite_atop(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
