@@ -4,6 +4,7 @@
 #include "psdwrite.h"
 #include "psddesc.h"
 #include "psdengine.h"
+#include "psdlayer.h"
 
 #include <cmath>
 #include <cstring>
@@ -400,8 +401,20 @@ bool PSDFile::editTextLayer(int index,
     return true;
   }, errorOut);
   if (!ok && noEngine && errorOut) *errorOut = "text layer has no EngineData";
-  // パース済みの textData も追随させる (再ロードなしで参照できるように)
-  if (ok && newTxt) layerList[(size_t)index].textData.text = *newTxt;
+  // パース済みの textData も追随させる (再ロードなしで参照できるように)。
+  // 書き換えた TySh を読み直すので、本文だけでなく書式も新しい値になる。
+  if (ok) {
+    LayerInfo &lay = layerList[(size_t)index];
+    for (const auto &a : lay.extraData.additionalLayers) {
+      if (a.key != 'TySh' || !a.data) continue;
+      AdditionalLayerInfo copy(a);
+      copy.data->init();
+      lay.textData = TextLayerData();
+      loadLayerTypeTool(lay, copy);
+      normalizeTextUnits(lay.textData, header.hres);
+      break;
+    }
+  }
   return ok;
 }
 
@@ -592,13 +605,10 @@ bool PSDFile::setLayerRichText(int index, const u16str &newText,
     // の指定が乗っている場合は Txt2 側のスタイルシートを作り直さないと辻褄が
     // 合わないので、追随をあきらめて Txt2 を落とす。
     bool styled = false;
-    for (const TextRunSpec &r : runs) {
-      const RunStyleEdit &e = r.style;
-      if (e.hasFont || e.hasSize || e.hasColor || e.hasTracking || e.hasKerning ||
-          e.hasBold || e.hasItalic || e.hasUnderline) { styled = true; break; }
-    }
+    for (const TextRunSpec &r : runs)
+      if (r.style.any()) { styled = true; break; }
     for (const TextParagraphSpec &p : paragraphs)
-      if (p.hasJustification) { styled = true; break; }
+      if (p.anyStyle()) { styled = true; break; }
 
     if (styled && !formattingUnchanged) {
       dropTextEngineData();
@@ -631,21 +641,23 @@ bool PSDFile::setLayerRichText(int index, const u16str &newText,
 
 bool PSDFile::setLayerJustification(int index, int paraIndex, int justification,
                                     std::string *errorOut) {
+  TextParagraphSpec spec;
+  spec.hasJustification = true;
+  spec.justification = justification;
+  return setLayerParagraphStyle(index, paraIndex, spec, errorOut);
+}
+
+bool PSDFile::setLayerParagraphStyle(int index, int paraIndex, const TextParagraphSpec &spec,
+                                     std::string *errorOut) {
+  if (!spec.anyStyle()) {
+    if (errorOut) *errorOut = "no paragraph style given";
+    return false;
+  }
   bool ok = editTextLayer(index,
     [&](const std::string &in, std::string &out) {
-      return editEngineDataJustification(in.data(), in.size(), paraIndex,
-                                         justification, out);
+      return editEngineDataParagraphStyle(in.data(), in.size(), paraIndex, spec, out);
     }, nullptr, errorOut);
-  if (ok) {
-    invalidateTextEngineData();         // 行揃えは Txt2 へ写せない
-    LayerInfo &lay = layerList[(size_t)index];
-    for (size_t i = 0; i < lay.textData.paragraphs.size(); i++) {
-      if (paraIndex >= 0 && (size_t)paraIndex != i) continue;
-      lay.textData.paragraphs[i].justification = justification;
-    }
-    if (!lay.textData.paragraphs.empty())
-      lay.textData.justification = lay.textData.paragraphs[0].justification;
-  }
+  if (ok) invalidateTextEngineData();   // 段落の書式は Txt2 へ写せない
   return ok;
 }
 

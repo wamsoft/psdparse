@@ -161,15 +161,33 @@ layer it returns `None`.
       "bold": False,                           # FauxBold
       "italic": False,                         # FauxItalic
       "underline": False,                      # Underline
+      "leading": None,                         # line spacing in px; None = auto
+      "baseline_shift": 0.0,                   # px
+      "strikethrough": False,
+      "font_caps": 0,                          # 0 normal / 1 small caps / 2 all caps
+      "font_baseline": 0,                      # 0 normal / 1 superscript / 2 subscript
+      "horizontal_scale": 1.0,                 # 1.0 = 100%
+      "vertical_scale": 1.0,
+      "ligatures": True,
     },
     ...
   ],
   "paragraphs": [                             # paragraphs (split on '\r'), in text order
-    {"length": 8, "justification": 0},        # length in UTF-16 code units
+    {"length": 8, "justification": 0,         # length in UTF-16 code units
+     "first_line_indent": 0.0, "start_indent": 0.0, "end_indent": 0.0,   # px
+     "space_before": 0.0, "space_after": 0.0,                            # px
+     "auto_leading": 1.2, "hyphenate": False},
     ...
   ],
+  "warp": None,                               # or {"style": "warpArc", "value": 50.0,
+                                              #     "horizontal_distortion", "vertical_distortion",
+                                              #     "rotate": "horizontal"|"vertical"}
 }
 ```
+
+Lengths (`size_px`, `leading`, `baseline_shift`, indents, spacing) are in the
+same units: document pixels. Values a run or paragraph inherits from the
+document's default style sheet are scaled by dpi/72 like `size_px`.
 
 Notes:
 - **`length` is in UTF-16 code units**, matching Photoshop's EngineData
@@ -599,8 +617,10 @@ p.set_rich_text(i, "赤い字\r青い字",
   the difference** (extended or truncated); zero-length runs are dropped.
   Omitting `runs` (or passing `[]`) collapses to a single run, like `set_text`.
 - **`paragraphs`** — a list of `{"length": int, "justification": int}`
-  (0=left, 1=right, 2=center); same length-absorbing rule. Omitting it collapses
-  to a single paragraph.
+  (0=left, 1=right, 2=center), optionally with the paragraph keys of
+  `set_paragraph_style` below; same length-absorbing rule. Omitting it collapses
+  to a single paragraph. Run dicts likewise accept the keyword-only keys of
+  `set_run_style` (`leading`, `baseline_shift`, `strikethrough`, …).
 - A trailing `\r` is appended if missing (Photoshop's convention), so
   `length` accounting should include it — or just let the last run absorb it.
 - Lengths are **UTF-16 code units**, so astral characters (emoji) count as 2:
@@ -612,6 +632,29 @@ Alignment alone, without touching text or runs:
 p.set_justification(i, 2)                  # every paragraph -> center
 p.set_justification(i, 0, para_index=1)    # only the 2nd paragraph -> left
 ```
+
+Other paragraph values (px unless noted; only the ones you pass change):
+
+```python
+p.set_paragraph_style(i, 0, first_line_indent=12, start_indent=4, end_indent=6,
+                      space_before=8, space_after=10,
+                      auto_leading=1.5,      # multiplier used by auto leading
+                      hyphenate=True, justification=2)
+p.set_paragraph_style(i, space_after=6)      # para_index=-1 (default): every paragraph
+```
+
+Character values beyond the original set are keyword-only on `set_run_style`:
+
+```python
+p.set_run_style(i, 0, leading=40)            # px; turns auto leading off
+p.set_run_style(i, 0, leading="auto")        # back to auto
+p.set_run_style(i, 0, baseline_shift=-3, strikethrough=True, font_caps=2,
+                font_baseline=1, horizontal_scale=1.25, vertical_scale=0.9,
+                ligatures=False)
+```
+
+After any text edit, `layer.text` is re-read from the rewritten data, so it
+shows the new values without reloading the file.
 
 ### Text placement & text box
 

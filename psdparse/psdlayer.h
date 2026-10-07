@@ -10,6 +10,8 @@ namespace psd {
   bool loadLayerMetadata(LayerInfo &layer, AdditionalLayerInfo &additional);
   bool loadLayerFillOpacity(LayerInfo &layer, AdditionalLayerInfo &additional);
   bool loadLayerTypeTool(LayerInfo &layer, AdditionalLayerInfo &additional);
+  // テキストの長さ (FontSize / 行送り / インデント等) を px に揃える
+  void normalizeTextUnits(TextLayerData &td, double dpi);
   bool loadLayerVectorMask(LayerInfo &layer, AdditionalLayerInfo &additional);
   bool loadLayerSmartObject(LayerInfo &layer, AdditionalLayerInfo &additional);
 }

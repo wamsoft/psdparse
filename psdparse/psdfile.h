@@ -190,6 +190,12 @@ namespace psd {
     bool setLayerJustification(int index, int paraIndex, int justification,
                                std::string *errorOut = nullptr);
 
+    // 段落の書式 (行揃え / インデント / 段落前後のアキ / 自動行送り / ハイフネー
+    // ション) のうち spec で指定したものだけ変える (paraIndex < 0 で全段落)。
+    // spec.length は見ない。
+    bool setLayerParagraphStyle(int index, int paraIndex, const TextParagraphSpec &spec,
+                                std::string *errorOut = nullptr);
+
     // このテキストレイヤの EngineData が持つフォント名 (ResourceDict/FontSet)。
     // UI のフォント候補に使う。テキストレイヤでなければ false。
     bool getLayerFonts(int index, std::vector<std::string> &outUtf8Names,

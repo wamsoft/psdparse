@@ -86,6 +86,23 @@ namespace psd {
     bool   hasBold = false;      bool   bold = false;     // FauxBold
     bool   hasItalic = false;    bool   italic = false;   // FauxItalic
     bool   hasUnderline = false; bool   underline = false;// Underline
+    // 以下の長さは FontSize と同じ単位 (px)
+    bool   hasLeading = false;   double leading = 0;      // 行送り (指定すると自動をやめる)
+    bool   hasAutoLeading = false; bool autoLeading = true; // 自動行送りに戻す / やめる
+    bool   hasBaselineShift = false; double baselineShift = 0;
+    bool   hasStrikethrough = false; bool strikethrough = false;
+    bool   hasFontCaps = false;  int    fontCaps = 0;     // 0 通常 / 1 スモールキャップス / 2 オールキャップス
+    bool   hasFontBaseline = false; int fontBaseline = 0; // 0 通常 / 1 上付き / 2 下付き
+    bool   hasHorizontalScale = false; double horizontalScale = 1.0; // 1.0 = 100%
+    bool   hasVerticalScale = false;   double verticalScale = 1.0;
+    bool   hasLigatures = false; bool   ligatures = true;
+
+    bool any() const {
+      return hasFont || hasSize || hasColor || hasTracking || hasKerning || hasBold ||
+             hasItalic || hasUnderline || hasLeading || hasAutoLeading || hasBaselineShift ||
+             hasStrikethrough || hasFontCaps || hasFontBaseline || hasHorizontalScale ||
+             hasVerticalScale || hasLigatures;
+    }
   };
 
   // EngineDict/StyleRun/RunArray[runIndex] のスタイル値を編集して再直列化する。
@@ -112,6 +129,19 @@ namespace psd {
     int  length = 0;                // UTF-16 コードユニット数
     bool hasJustification = false;
     int  justification = 0;         // 0=左 1=右 2=中央
+    // インデントと段落前後のアキ (FontSize と同じ単位、px)
+    bool hasFirstLineIndent = false; double firstLineIndent = 0;
+    bool hasStartIndent = false;     double startIndent = 0;
+    bool hasEndIndent = false;       double endIndent = 0;
+    bool hasSpaceBefore = false;     double spaceBefore = 0;
+    bool hasSpaceAfter = false;      double spaceAfter = 0;
+    bool hasAutoLeading = false;     double autoLeading = 1.2;  // 自動行送りの倍率
+    bool hasHyphenate = false;       bool hyphenate = false;
+
+    bool anyStyle() const {
+      return hasJustification || hasFirstLineIndent || hasStartIndent || hasEndIndent ||
+             hasSpaceBefore || hasSpaceAfter || hasAutoLeading || hasHyphenate;
+    }
   };
 
   // 本文とラン構成 / 段落構成をまとめて差し替える。
@@ -132,6 +162,12 @@ namespace psd {
   // paraIndex < 0 で全段落。範囲外なら false。
   bool editEngineDataJustification(const char *data, size_t len, int paraIndex,
                                    int justification, std::string &out);
+
+  // 段落 paraIndex の書式 (行揃え / インデント / 段落前後のアキ / 自動行送り /
+  // ハイフネーション) のうち spec で指定したものだけ変える。length は見ない。
+  // paraIndex < 0 で全段落。範囲外なら false。
+  bool editEngineDataParagraphStyle(const char *data, size_t len, int paraIndex,
+                                    const TextParagraphSpec &spec, std::string &out);
 
   // ResourceDict/FontSet に載っているフォント名を列挙する (UI の候補用)。
   bool listEngineDataFonts(const char *data, size_t len,

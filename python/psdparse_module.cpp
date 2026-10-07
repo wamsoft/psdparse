@@ -67,17 +67,43 @@ py::object layerText(const psd::LayerInfo &l) {
       rd["color"] = py::make_tuple(r.color[0], r.color[1], r.color[2], r.color[3]); // RGBA 0..1
     else
       rd["color"] = py::none();
+    rd["leading"]          = r.autoLeading ? py::object(py::none()) : py::object(py::float_(r.leading)); // px, None = auto
+    rd["baseline_shift"]   = r.baselineShift;      // px
+    rd["strikethrough"]    = r.strikethrough;
+    rd["font_caps"]        = r.fontCaps;           // 0 normal / 1 small caps / 2 all caps
+    rd["font_baseline"]    = r.fontBaseline;       // 0 normal / 1 superscript / 2 subscript
+    rd["horizontal_scale"] = r.horizontalScale;    // 1.0 = 100%
+    rd["vertical_scale"]   = r.verticalScale;
+    rd["ligatures"]        = r.ligatures;
     runs.append(rd);
   }
   d["runs"] = runs;
   py::list paras;
   for (const auto &p : t.paragraphs) {
     py::dict pd;
-    pd["length"]        = p.length;          // UTF-16 code units
-    pd["justification"] = p.justification;   // 0=left 1=right 2=center
+    pd["length"]            = p.length;          // UTF-16 code units
+    pd["justification"]     = p.justification;   // 0=left 1=right 2=center
+    pd["first_line_indent"] = p.firstLineIndent; // px
+    pd["start_indent"]      = p.startIndent;
+    pd["end_indent"]        = p.endIndent;
+    pd["space_before"]      = p.spaceBefore;
+    pd["space_after"]       = p.spaceAfter;
+    pd["auto_leading"]      = p.autoLeading;     // multiplier for auto leading
+    pd["hyphenate"]         = p.hyphenate;
     paras.append(pd);
   }
   d["paragraphs"] = paras;                    // 段落別行揃え (段落=改行区切り)
+  if (t.warp.present) {
+    py::dict w;
+    w["style"]                 = t.warp.style;
+    w["value"]                 = t.warp.value;
+    w["horizontal_distortion"] = t.warp.perspective;
+    w["vertical_distortion"]   = t.warp.perspectiveOther;
+    w["rotate"]                = t.warp.rotate == "Vrtc" ? "vertical" : "horizontal";
+    d["warp"] = w;
+  } else {
+    d["warp"] = py::none();
+  }
   return std::move(d);
 }
 
@@ -788,6 +814,51 @@ py::handle dictGet(const py::dict &d, const char *key) {
   return d.contains(key) ? d[key] : py::handle();
 }
 
+// 0.13 で足した文字書式 (行送り / ベースライン / 取り消し線 / 大文字化 / 上付き・
+// 下付き / 比率 / 合字)。get(name) が未指定なら空ハンドルを返す。
+template <class Get>
+bool fillRunStyleExtras(psd::RunStyleEdit &e, Get get) {
+  bool any = false;
+  auto given = [](py::handle h) { return (bool)h && !h.is_none(); };
+  py::handle h;
+  h = get("leading");
+  if (given(h)) {
+    if (py::isinstance<py::str>(h)) {
+      if (h.cast<std::string>() != "auto")
+        throw std::invalid_argument("leading must be a number (px) or 'auto'");
+      e.hasAutoLeading = true; e.autoLeading = true;
+    } else {
+      e.hasLeading = true; e.leading = h.cast<double>();
+    }
+    any = true;
+  }
+  if (given(h = get("baseline_shift")))   { e.hasBaselineShift = true; e.baselineShift = h.cast<double>(); any = true; }
+  if (given(h = get("strikethrough")))    { e.hasStrikethrough = true; e.strikethrough = h.cast<bool>(); any = true; }
+  if (given(h = get("font_caps")))        { e.hasFontCaps = true; e.fontCaps = h.cast<int>(); any = true; }
+  if (given(h = get("font_baseline")))    { e.hasFontBaseline = true; e.fontBaseline = h.cast<int>(); any = true; }
+  if (given(h = get("horizontal_scale"))) { e.hasHorizontalScale = true; e.horizontalScale = h.cast<double>(); any = true; }
+  if (given(h = get("vertical_scale")))   { e.hasVerticalScale = true; e.verticalScale = h.cast<double>(); any = true; }
+  if (given(h = get("ligatures")))        { e.hasLigatures = true; e.ligatures = h.cast<bool>(); any = true; }
+  return any;
+}
+
+// 段落書式 (行揃え / インデント / アキ / 自動行送り / ハイフネーション)。
+template <class Get>
+bool fillParagraphStyle(psd::TextParagraphSpec &s, Get get) {
+  bool any = false;
+  auto given = [](py::handle h) { return (bool)h && !h.is_none(); };
+  py::handle h;
+  if (given(h = get("justification")))     { s.hasJustification = true; s.justification = h.cast<int>(); any = true; }
+  if (given(h = get("first_line_indent"))) { s.hasFirstLineIndent = true; s.firstLineIndent = h.cast<double>(); any = true; }
+  if (given(h = get("start_indent")))      { s.hasStartIndent = true; s.startIndent = h.cast<double>(); any = true; }
+  if (given(h = get("end_indent")))        { s.hasEndIndent = true; s.endIndent = h.cast<double>(); any = true; }
+  if (given(h = get("space_before")))      { s.hasSpaceBefore = true; s.spaceBefore = h.cast<double>(); any = true; }
+  if (given(h = get("space_after")))       { s.hasSpaceAfter = true; s.spaceAfter = h.cast<double>(); any = true; }
+  if (given(h = get("auto_leading")))      { s.hasAutoLeading = true; s.autoLeading = h.cast<double>(); any = true; }
+  if (given(h = get("hyphenate")))         { s.hasHyphenate = true; s.hyphenate = h.cast<bool>(); any = true; }
+  return any;
+}
+
 // set_rich_text の runs=[{...}] を TextRunSpec[] へ。
 std::vector<psd::TextRunSpec> toRunSpecs(py::handle runs) {
   std::vector<psd::TextRunSpec> out;
@@ -805,6 +876,7 @@ std::vector<psd::TextRunSpec> toRunSpecs(py::handle runs) {
                      dictGet(d, "color"), dictGet(d, "tracking"),
                      dictGet(d, "kerning"), dictGet(d, "bold"),
                      dictGet(d, "italic"), dictGet(d, "underline"));
+    fillRunStyleExtras(spec.style, [&](const char *k) { return dictGet(d, k); });
     out.push_back(spec);
   }
   return out;
@@ -823,8 +895,7 @@ std::vector<psd::TextParagraphSpec> toParagraphSpecs(py::handle paragraphs) {
                                   "(UTF-16 code units)");
     psd::TextParagraphSpec spec;
     spec.length = d["length"].cast<int>();
-    py::handle j = dictGet(d, "justification");
-    if (j && !j.is_none()) { spec.hasJustification = true; spec.justification = j.cast<int>(); }
+    fillParagraphStyle(spec, [&](const char *k) { return dictGet(d, k); });
     out.push_back(spec);
   }
   return out;
@@ -1360,12 +1431,22 @@ PYBIND11_MODULE(psdparse, m) {
          [](psd::PSDFile &self, int index, int run_index,
             py::object size_px, py::object color, py::object tracking,
             py::object kerning, py::object bold, py::object italic,
-            py::object underline, py::object font) {
+            py::object underline, py::object font, py::kwargs extra) {
             psd::RunStyleEdit e;
-            if (!fillRunStyleEdit(e, font, size_px, color, tracking, kerning,
-                                  bold, italic, underline))
-                throw std::invalid_argument("set_run_style: pass at least one of "
-                    "font/size_px/color/tracking/kerning/bold/italic/underline");
+            static const char *kExtra[] = { "leading", "baseline_shift", "strikethrough",
+              "font_caps", "font_baseline", "horizontal_scale", "vertical_scale", "ligatures" };
+            for (auto kv : extra) {
+              std::string k = py::str(kv.first);
+              bool known = false;
+              for (const char *x : kExtra) if (k == x) known = true;
+              if (!known) throw std::invalid_argument("set_run_style: unknown argument '" + k + "'");
+            }
+            bool any = fillRunStyleEdit(e, font, size_px, color, tracking, kerning,
+                                        bold, italic, underline);
+            any |= fillRunStyleExtras(e, [&](const char *k) {
+              return extra.contains(k) ? py::handle(extra[k]) : py::handle(); });
+            if (!any)
+                throw std::invalid_argument("set_run_style: pass at least one style value");
             setLayerRunStyle(self, index, run_index, e);
          },
          py::arg("index"), py::arg("run_index"),
@@ -1374,12 +1455,15 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("bold") = py::none(), py::arg("italic") = py::none(),
          py::arg("underline") = py::none(),
          // font は 0.9.0 で後から足したので、既存の位置引数の並びを崩さない
-         // ように末尾に置く。
+         // ように末尾に置く。leading 以降 (0.13) はキーワード専用。
          py::arg("font") = py::none(),
          "Edit style values of an existing style run (see text['runs']). Any of: "
          "font (str; appended to the document's font set if new), size_px "
          "(float), color ((r,g,b[,a]) 0..1), tracking (int), kerning (int), "
-         "bold/italic/underline (bool). Text and run lengths are unchanged; "
+         "bold/italic/underline (bool); keyword-only: leading (px, or 'auto'), "
+         "baseline_shift (px), strikethrough (bool), font_caps (0/1 small/2 all), "
+         "font_baseline (0/1 super/2 sub), horizontal_scale / vertical_scale (1.0 = "
+         "100%), ligatures (bool). Text and run lengths are unchanged; "
          "keys are added to the run if inherited. Raises for non-text layers or "
          "an out-of-range run index.")
     .def("set_rich_text",
@@ -1413,6 +1497,30 @@ PYBIND11_MODULE(psdparse, m) {
          "`para_index` selects one paragraph (see text['paragraphs']); the "
          "default -1 applies it to every paragraph. Text and run structure are "
          "unchanged.")
+    .def("set_paragraph_style",
+         [](psd::PSDFile &self, int index, int para_index, py::kwargs style) {
+            static const char *kKeys[] = { "justification", "first_line_indent",
+              "start_indent", "end_indent", "space_before", "space_after",
+              "auto_leading", "hyphenate" };
+            for (auto kv : style) {
+              std::string k = py::str(kv.first);
+              bool known = false;
+              for (const char *x : kKeys) if (k == x) known = true;
+              if (!known) throw std::invalid_argument("set_paragraph_style: unknown argument '" + k + "'");
+            }
+            psd::TextParagraphSpec spec;
+            if (!fillParagraphStyle(spec, [&](const char *k) {
+                  return style.contains(k) ? py::handle(style[k]) : py::handle(); }))
+              throw std::invalid_argument("set_paragraph_style: pass at least one style value");
+            std::string err;
+            raiseIfFailed(self.setLayerParagraphStyle(index, para_index, spec, &err), err);
+         },
+         py::arg("index"), py::arg("para_index") = -1,
+         "Edit paragraph formatting on a text layer. Keyword arguments: "
+         "justification (0 left / 1 right / 2 center), first_line_indent, "
+         "start_indent, end_indent, space_before, space_after (px, same units as "
+         "size_px), auto_leading (multiplier), hyphenate (bool). Only the given "
+         "values change. para_index=-1 (default) applies to every paragraph.")
     .def("set_text_engine_policy",
          [](psd::PSDFile &self, int policy) {
             self.setTextEngineDataPolicy((psd::PSDFile::TextEngineDataPolicy)policy);

@@ -611,6 +611,18 @@ namespace psd {
     bool        sizeInherited; // FontSize を既定 StyleSheet から継承したか。
                                // 継承分は nominal pt なので dpi/72 で px 化する
                                // (明示 run の FontSize は既に解決済み px)。内部用。
+    // 以下は FontSize と同じ単位 (px。既定から継承した分は dpi/72 で換算済み)
+    bool        autoLeading = true;  // 行送り自動 (AutoLeading)
+    float       leading = 0.0f;      // 行送り (autoLeading=false のとき有効)
+    float       baselineShift = 0.0f;
+    bool        strikethrough = false;
+    int         fontCaps = 0;        // 0=通常 1=スモールキャップス 2=オールキャップス
+    int         fontBaseline = 0;    // 0=通常 1=上付き 2=下付き
+    float       horizontalScale = 1.0f;  // 水平比率 (1.0 = 100%)
+    float       verticalScale = 1.0f;    // 垂直比率
+    bool        ligatures = true;
+    // leading / baselineShift を既定から継承したか (bit0 / bit1)。内部用。
+    unsigned    inheritedPxMask = 0;
 
     TextStyleRun()
       : length(0), fontSize(0.0f), color{0,0,0,1}, hasColor(false),
@@ -622,8 +634,28 @@ namespace psd {
   struct TextParagraph {
     int length;          // 段落の文字数 (UTF-16 コードユニット, RunLengthArray)
     int justification;   // 行揃え 0=左 1=右 2=中央 (3..=両端揃え系)
+    // インデントと段落前後のアキ (FontSize と同じ単位、px)
+    float firstLineIndent = 0.0f;
+    float startIndent = 0.0f;
+    float endIndent = 0.0f;
+    float spaceBefore = 0.0f;
+    float spaceAfter = 0.0f;
+    float autoLeading = 1.2f;   // 自動行送りの倍率
+    bool  hyphenate = false;
+    // 上の 5 つの長さを既定から継承したか (bit0..4)。内部用。
+    unsigned inheritedPxMask = 0;
 
     TextParagraph() : length(0), justification(0) {}
+  };
+
+  // テキストのワープ (TySh の warp descriptor)。style が "warpNone" ならワープ無し。
+  struct TextWarp {
+    bool present = false;
+    std::string style;          // "warpNone" / "warpArc" / "warpFlag" など
+    double value = 0;           // 曲げ (%)
+    double perspective = 0;     // 水平方向のゆがみ (%)
+    double perspectiveOther = 0;// 垂直方向のゆがみ (%)
+    std::string rotate;         // "Hrzn" (水平) / "Vrtc" (垂直)
   };
 
   // テキストレイヤ情報 (追加レイヤ情報 'TySh' 由来)。
@@ -635,6 +667,7 @@ namespace psd {
     int         justification;   // 段落の行揃え 0=左 1=右 2=中央 (先頭段落; 後方互換)
     std::vector<TextStyleRun> runs;
     std::vector<TextParagraph> paragraphs;  // 段落別 (行揃えが段落で変わる box text 用)
+    TextWarp    warp;
 
     TextLayerData()
       : present(false), transform{1,0,0,1,0,0},

@@ -148,9 +148,10 @@ Python バインディングが 0.10.0)。
 | Txt2 の本文 / ラン長の追随 | ✅ | 既定で `set_text` / `set_rich_text` が Txt2 も書き換える (v0.12.0)。`text_engine_texts()` で中身を確認できる |
 | Txt2 の書式 (スタイルシート) の追随 | ❌ | 数値エイリアスのシートを作り直す必要があるため。書式が変わる編集では Txt2 を削除して TySh へ倒す |
 | テキストレイヤのラスタ再生成 | ❌ | psdparse も **Photoshop も開いただけでは描き直さない**。Photoshop 側で各テキストレイヤを小突く必要がある (psdtext の `tools/update-text-layers.jsx` 参照) |
-| ワープ (warp) | ❌ | TySh warp descriptor 未処理 (編集時はバイト列のまま保存される) |
+| ワープ (warp) | 🟡 | 読み取りのみ: `text["warp"]` (`style` / `value` / `horizontal_distortion` / `vertical_distortion` / `rotate`)。未リリース。編集時はバイト列のまま保存される |
 | 非 RGB の FillColor | ❌ | `/Type 1` (RGB) のみ |
-| leading / 段落インデント / 段落前後アキ | ❌ | EngineData にキーはあるが未抽出・未編集 |
+| 行送り / ベースラインシフト / 取り消し線 / 大文字化 / 上付き・下付き / 比率 / 合字 | ✅ | 読み: `text["runs"]` の `leading` (None = 自動) / `baseline_shift` / `strikethrough` / `font_caps` / `font_baseline` / `horizontal_scale` / `vertical_scale` / `ligatures`。書き: `set_run_style(..., leading=, ...)` と `set_rich_text` の runs。未リリース |
+| 段落インデント / 段落前後のアキ / 自動行送り / ハイフネーション | ✅ | 読み: `text["paragraphs"]`。書き: `set_paragraph_style(i, para_index, ...)` と `set_rich_text` の paragraphs。未リリース |
 
 ## Descriptor ブロック (v0.4.0)
 
@@ -217,7 +218,7 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
   どちらからも同じことができます。
 - **未対応/限定的**: Multichannel ピクセル、調整レイヤの編集、ベクタ
   パスの編集、スマートオブジェクトの差し替え、効果込みの再合成 (composite 再描画)、
-  テキストの warp / leading / 段落インデント。画素編集は 8bit RGB のみ。
+  テキストの warp の編集と非 RGB の塗り色。画素編集は 8bit RGB のみ。
 - Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを
   返すのみ。

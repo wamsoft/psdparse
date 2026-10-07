@@ -413,10 +413,10 @@ namespace {
     // 継承する。 これを読まないと FontSize=0 になる (実表示は既定サイズ)。
     float defSize = 0.0f; int defFontIdx = -1; int defTracking = 0;
     float defColor[4] = {0, 0, 0, 1}; bool defHasColor = false;
+    Node *dssd = 0;   // 既定 StyleSheetData (下のラン解析でも継承元に使う)
     {
       Node *rd2 = dget(root, "ResourceDict");
       Node *sss = dget(rd2, "StyleSheetSet");
-      Node *dssd = 0;
       if (sss && sss->kind == Node::ARRAY && !sss->arr.empty()) {
         dssd = dget(sss->arr[0], "StyleSheetData");
         if (!dssd) dssd = dget(dget(sss->arr[0], "StyleSheet"), "StyleSheetData");
@@ -495,6 +495,29 @@ namespace {
               r.hasColor = true;
             }
           }
+          // ラン → 既定 StyleSheetData の順に引く。fromDefault は既定から取ったか。
+          auto look = [&](const char *key, bool &fromDefault) -> Node * {
+            Node *n = ssd ? dget(ssd, key) : 0;
+            fromDefault = false;
+            if (!n && dssd) { n = dget(dssd, key); fromDefault = n != 0; }
+            return n;
+          };
+          bool inh = false;
+          if (Node *n = look("AutoLeading", inh)) if (n->kind == Node::BOOL) r.autoLeading = n->bl;
+          if (Node *n = look("Leading", inh)) if (n->kind == Node::NUMBER) {
+            r.leading = (float)n->num;
+            if (inh) r.inheritedPxMask |= 1;
+          }
+          if (Node *n = look("BaselineShift", inh)) if (n->kind == Node::NUMBER) {
+            r.baselineShift = (float)n->num;
+            if (inh) r.inheritedPxMask |= 2;
+          }
+          if (Node *n = look("Strikethrough", inh)) if (n->kind == Node::BOOL) r.strikethrough = n->bl;
+          if (Node *n = look("FontCaps", inh)) if (n->kind == Node::NUMBER) r.fontCaps = (int)n->num;
+          if (Node *n = look("FontBaseline", inh)) if (n->kind == Node::NUMBER) r.fontBaseline = (int)n->num;
+          if (Node *n = look("HorizontalScale", inh)) if (n->kind == Node::NUMBER) r.horizontalScale = (float)n->num;
+          if (Node *n = look("VerticalScale", inh)) if (n->kind == Node::NUMBER) r.verticalScale = (float)n->num;
+          if (Node *n = look("Ligatures", inh)) if (n->kind == Node::BOOL) r.ligatures = n->bl;
           out.runs.push_back(r);
         }
       }
@@ -504,6 +527,13 @@ namespace {
       Node *paraRun = dget(engine, "ParagraphRun");
       Node *paraArr = dget(paraRun, "RunArray");
       Node *paraLen = dget(paraRun, "RunLengthArray");
+      // 既定の段落シート (ResourceDict/ParagraphSheetSet[0]/Properties)
+      Node *defProps = 0;
+      {
+        Node *pss = dget(dget(root, "ResourceDict"), "ParagraphSheetSet");
+        if (pss && pss->kind == Node::ARRAY && !pss->arr.empty())
+          defProps = dget(pss->arr[0], "Properties");
+      }
       if (paraArr && paraArr->kind == Node::ARRAY && !paraArr->arr.empty()) {
         for (size_t i = 0; i < paraArr->arr.size(); i++) {
           TextParagraph p;
@@ -511,8 +541,30 @@ namespace {
               paraLen->arr[i]->kind == Node::NUMBER)
             p.length = (int)paraLen->arr[i]->num;
           Node *props = dget(dget(paraArr->arr[i], "ParagraphSheet"), "Properties");
-          Node *just  = dget(props, "Justification");
-          if (just && just->kind == Node::NUMBER) p.justification = (int)just->num;
+          auto look = [&](const char *key, bool &fromDefault) -> Node * {
+            Node *n = props ? dget(props, key) : 0;
+            fromDefault = false;
+            if (!n && defProps) { n = dget(defProps, key); fromDefault = n != 0; }
+            return n;
+          };
+          bool inh = false;
+          if (Node *n = look("Justification", inh)) if (n->kind == Node::NUMBER) p.justification = (int)n->num;
+          const struct { const char *key; float TextParagraph::*field; } lens[] = {
+            { "FirstLineIndent", &TextParagraph::firstLineIndent },
+            { "StartIndent",     &TextParagraph::startIndent },
+            { "EndIndent",       &TextParagraph::endIndent },
+            { "SpaceBefore",     &TextParagraph::spaceBefore },
+            { "SpaceAfter",      &TextParagraph::spaceAfter },
+          };
+          for (int k = 0; k < 5; k++) {
+            Node *n = look(lens[k].key, inh);
+            if (n && n->kind == Node::NUMBER) {
+              p.*(lens[k].field) = (float)n->num;
+              if (inh) p.inheritedPxMask |= 1u << k;
+            }
+          }
+          if (Node *n = look("AutoLeading", inh)) if (n->kind == Node::NUMBER) p.autoLeading = (float)n->num;
+          if (Node *n = look("AutoHyphenate", inh)) if (n->kind == Node::BOOL) p.hyphenate = n->bl;
           out.paragraphs.push_back(p);
         }
         out.justification = out.paragraphs[0].justification;  // 後方互換
@@ -659,6 +711,31 @@ namespace {
     if (edit.hasItalic)    setBoolNode(ssd, "FauxItalic", edit.italic);
     if (edit.hasUnderline) setBoolNode(ssd, "Underline",  edit.underline);
     if (edit.hasColor)     setFillColorNode(ssd, edit.color);
+    if (edit.hasAutoLeading) setBoolNode(ssd, "AutoLeading", edit.autoLeading);
+    if (edit.hasLeading) {                 // 行送りを数値で指定 = 自動をやめる
+      setBoolNode(ssd, "AutoLeading", false);
+      setNumberNode(ssd, "Leading", edit.leading, false);
+    }
+    if (edit.hasBaselineShift)   setNumberNode(ssd, "BaselineShift", edit.baselineShift, false);
+    if (edit.hasStrikethrough)   setBoolNode(ssd, "Strikethrough", edit.strikethrough);
+    if (edit.hasFontCaps)        setNumberNode(ssd, "FontCaps", (double)edit.fontCaps, true);
+    if (edit.hasFontBaseline)    setNumberNode(ssd, "FontBaseline", (double)edit.fontBaseline, true);
+    if (edit.hasHorizontalScale) setNumberNode(ssd, "HorizontalScale", edit.horizontalScale, false);
+    if (edit.hasVerticalScale)   setNumberNode(ssd, "VerticalScale", edit.verticalScale, false);
+    if (edit.hasLigatures)       setBoolNode(ssd, "Ligatures", edit.ligatures);
+  }
+
+  // 段落の Properties へ TextParagraphSpec の書式を適用する (has* が立っているものだけ)
+  static void applyParagraphStyle(Node *props, const TextParagraphSpec &p) {
+    if (!props) return;
+    if (p.hasJustification)   setNumberNode(props, "Justification", (double)p.justification, true);
+    if (p.hasFirstLineIndent) setNumberNode(props, "FirstLineIndent", p.firstLineIndent, false);
+    if (p.hasStartIndent)     setNumberNode(props, "StartIndent", p.startIndent, false);
+    if (p.hasEndIndent)       setNumberNode(props, "EndIndent", p.endIndent, false);
+    if (p.hasSpaceBefore)     setNumberNode(props, "SpaceBefore", p.spaceBefore, false);
+    if (p.hasSpaceAfter)      setNumberNode(props, "SpaceAfter", p.spaceAfter, false);
+    if (p.hasAutoLeading)     setNumberNode(props, "AutoLeading", p.autoLeading, false);
+    if (p.hasHyphenate)       setBoolNode(props, "AutoHyphenate", p.hyphenate);
   }
 
   // 指定された長さの並びを本文長へ合わせる。長すぎれば切り詰め、短ければ
@@ -991,9 +1068,8 @@ namespace {
       rebuildRun(dget(engine, "ParagraphRun"), lengths, [&](Node *item, size_t i) {
         if (i >= kept.size() || kept[i] == (size_t)-1) return;
         const TextParagraphSpec &p = paragraphs[kept[i]];
-        if (!p.hasJustification) return;
-        Node *props = dget(dget(item, "ParagraphSheet"), "Properties");
-        if (props) setNumberNode(props, "Justification", (double)p.justification, true);
+        if (!p.anyStyle()) return;
+        applyParagraphStyle(dget(dget(item, "ParagraphSheet"), "Properties"), p);
       });
     }
 
@@ -1005,6 +1081,14 @@ namespace {
 
   bool editEngineDataJustification(const char *data, size_t len, int paraIndex,
                                    int justification, std::string &out) {
+    TextParagraphSpec spec;
+    spec.hasJustification = true;
+    spec.justification = justification;
+    return editEngineDataParagraphStyle(data, len, paraIndex, spec, out);
+  }
+
+  bool editEngineDataParagraphStyle(const char *data, size_t len, int paraIndex,
+                                    const TextParagraphSpec &spec, std::string &out) {
     Parser ps(data, len);
     Node *root = ps.parseValue();
     if (!root || root->kind != Node::DICT) { delete root; return false; }
@@ -1020,7 +1104,7 @@ namespace {
       if (paraIndex >= 0 && (size_t)paraIndex != i) continue;
       Node *props = dget(dget(paraArr->arr[i], "ParagraphSheet"), "Properties");
       if (!props) continue;
-      setNumberNode(props, "Justification", (double)justification, true);
+      applyParagraphStyle(props, spec);
       any = true;
     }
     if (!any) { delete root; return false; }

@@ -299,21 +299,11 @@ Data::processParsed()
 
   relinkGroups();
 
-  // テキスト run の FontSize を px に正規化する (レイヤ解析後・解像度確定後)。 明示
-  // run の FontSize は既に解決済み px だが、 既定 StyleSheet から継承した分は nominal
-  // pt なので dpi/72 を掛ける (300dpi なら 12pt → 50px)。
-  {
-    double sc = header.hres / 72.0;
-    if (sc != 1.0) {
-      for (uint32_t li = 0; li < layerList.size(); li++) {
-        TextLayerData &td = layerList[li].textData;
-        if (!td.present) continue;
-        for (size_t ri = 0; ri < td.runs.size(); ri++) {
-          if (td.runs[ri].sizeInherited)
-            td.runs[ri].fontSize *= (float)sc;
-        }
-      }
-    }
+  // テキストの長さ (FontSize / 行送り / インデント等) を px に正規化する
+  // (レイヤ解析後・解像度確定後)。
+  for (uint32_t li = 0; li < layerList.size(); li++) {
+    TextLayerData &td = layerList[li].textData;
+    if (td.present) normalizeTextUnits(td, header.hres);
   }
 
   return success;

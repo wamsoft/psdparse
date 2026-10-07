@@ -107,6 +107,25 @@ namespace psd {
     return true;
   }
 
+  // テキストの長さを px に揃える。明示された run / 段落の値は既に解決済み px だが、
+  // 既定の StyleSheet / 段落シートから継承した分は nominal pt なので dpi/72 を
+  // 掛ける (300dpi なら 12pt → 50px)。
+  void normalizeTextUnits(TextLayerData &td, double dpi)
+  {
+    const float sc = (float)(dpi / 72.0);
+    if (sc == 1.0f) return;
+    for (auto &r : td.runs) {
+      if (r.sizeInherited) r.fontSize *= sc;
+      if (r.inheritedPxMask & 1) r.leading *= sc;
+      if (r.inheritedPxMask & 2) r.baselineShift *= sc;
+    }
+    for (auto &p : td.paragraphs) {
+      float *f[5] = { &p.firstLineIndent, &p.startIndent, &p.endIndent, &p.spaceBefore, &p.spaceAfter };
+      for (int k = 0; k < 5; k++)
+        if (p.inheritedPxMask & (1u << k)) *f[k] *= sc;
+    }
+  }
+
   // 'TySh' Type tool object setting (Photoshop 6.0+)。
   //   version(2) transform(double*6) textVer(2) descVer(4) <text descriptor>
   //   warpVer(2) descVer(4) <warp descriptor> left top right bottom
@@ -129,20 +148,46 @@ namespace psd {
     (void)descVer;
 
     Descriptor text;
-    if (!text.load(r)) {
-      // 途中まで読めていれば itemMap には有効な項目が入っている
+    const bool textOk = text.load(r);
+    // 途中まで読めていれば itemMap には有効な項目が入っている
+
+    // ワープ: warpVer(2) + descVer(4) + warp descriptor
+    td.warp = TextWarp();
+    if (textOk && r->rest() >= 6) {
+      (void)r->getInt16();
+      (void)r->getInt32();
+      Descriptor warp;
+      if (warp.load(r)) {
+        TextWarp &w = td.warp;
+        w.present = true;
+        if (auto *e = dynamic_cast<DescriptorEnumerated*>(warp.item("warpStyle").find()))
+          w.style = e->enumId;
+        auto num = [&](const char *key) {
+          DescriptorItem *it = warp.item(key).find();
+          if (auto *d = dynamic_cast<DescriptorDouble*>(it)) return d->val;
+          if (auto *u = dynamic_cast<DescriptorUnitFloat*>(it)) return u->val;
+          if (auto *n = dynamic_cast<DescriptorInteger*>(it)) return (double)n->val;
+          return 0.0;
+        };
+        w.value            = num("warpValue");
+        w.perspective      = num("warpPerspective");
+        w.perspectiveOther = num("warpPerspectiveOther");
+        if (auto *e = dynamic_cast<DescriptorEnumerated*>(warp.item("warpRotate").find()))
+          w.rotate = e->enumId;
+      }
     }
 
     // 本文 ('Txt ' — キー末尾に空白)。EngineData が取れれば後で上書きされる。
-    DescriptorString *txt = text.item("Txt ");
+    // (型を確かめてから使う。壊れたファイルで別の型が入っていても誤読しない)
+    auto *txt = dynamic_cast<DescriptorString*>(text.item("Txt ").find());
     if (txt) td.text = txt->val;
 
     // 縦横 ('Ornt' enum: Hrzn / Vrtc)
-    DescriptorEnumerated *ornt = text.item("Ornt");
+    auto *ornt = dynamic_cast<DescriptorEnumerated*>(text.item("Ornt").find());
     td.orientation = (ornt && ornt->enumId == "Vrtc") ? "vertical" : "horizontal";
 
     // ラン単位スタイル (EngineData)
-    DescriptorRawData *eng = text.item("EngineData");
+    auto *eng = dynamic_cast<DescriptorRawData*>(text.item("EngineData").find());
     if (eng && !eng->bytes.empty()) {
       parseEngineData(eng->bytes.data(), eng->bytes.size(), td);
     }
