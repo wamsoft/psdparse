@@ -351,6 +351,27 @@ d.selection.fill(app.foregroundColor); d.selection.deselect();
 """
 
 
+def grad_layer(style, angle=30, smooth=4096, scale=100, reverse=False, stops=((0, (255, 0, 0)), (4096, (0, 0, 255))), mids=50):
+    lines = ['var d0 = new ActionDescriptor(); var r0 = new ActionReference(); r0.putClass(sTID("contentLayer")); d0.putReference(cTID("null"), r0);',
+             'var ld = new ActionDescriptor(); var gl = new ActionDescriptor();',
+             f'gl.putEnumerated(cTID("Type"), cTID("GrdT"), cTID("{style}")); gl.putUnitDouble(cTID("Angl"), cTID("#Ang"), {angle});',
+             f'gl.putUnitDouble(cTID("Scl "), cTID("#Prc"), {scale}); gl.putBoolean(cTID("Rvrs"), {"true" if reverse else "false"});',
+             'var g = new ActionDescriptor(); g.putString(cTID("Nm  "), "c"); g.putEnumerated(cTID("GrdF"), cTID("GrdF"), cTID("CstS"));',
+             f'g.putDouble(cTID("Intr"), {smooth});', 'var cl = new ActionList();']
+    for loc, (r, gg, b) in stops:
+        lines += ['var s = new ActionDescriptor(); var c = new ActionDescriptor();',
+                  f'c.putDouble(cTID("Rd  "), {r}); c.putDouble(cTID("Grn "), {gg}); c.putDouble(cTID("Bl  "), {b});',
+                  's.putObject(cTID("Clr "), cTID("RGBC"), c); s.putEnumerated(cTID("Type"), cTID("Clry"), cTID("UsrS"));',
+                  f's.putInteger(cTID("Lctn"), {loc}); s.putInteger(cTID("Mdpn"), {mids}); cl.putObject(cTID("Clrt"), s);']
+    lines += ['g.putList(cTID("Clrs"), cl); var tl = new ActionList();',
+              'var t = new ActionDescriptor(); t.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100); t.putInteger(cTID("Lctn"), 0); t.putInteger(cTID("Mdpn"), 50); tl.putObject(cTID("TrnS"), t);',
+              'var t2 = new ActionDescriptor(); t2.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100); t2.putInteger(cTID("Lctn"), 4096); t2.putInteger(cTID("Mdpn"), 50); tl.putObject(cTID("TrnS"), t2);',
+              'g.putList(cTID("Trns"), tl); gl.putObject(cTID("Grad"), cTID("Grdn"), g);',
+              'ld.putObject(cTID("Type"), sTID("gradientLayer"), gl); d0.putObject(cTID("Usng"), sTID("contentLayer"), ld);',
+              'executeAction(cTID("Mk  "), d0, DialogModes.NO);']
+    return "\n".join(lines)
+
+
 def solid_layer(rgb, mode, opacity=100, fill=100):
     """全面を単色で塗ったレイヤ (描画モード / 不透明度 / 塗り)"""
     r, g, b = rgb
@@ -401,6 +422,10 @@ def cases():
         "mode_hard_mix_fill": ("cube", solid_layer((40, 120, 200), "HARDMIX", 100, 50), 3, 0.5),
         "mode_hard_mix_opacity": ("cube", solid_layer((40, 120, 200), "HARDMIX", 50, 100), 2, 0.5),
         "mode_vivid_light_fill": ("cube", solid_layer((40, 120, 200), "VIVIDLIGHT", 100, 50), 2, 0.5),
+        "grad_radial": ("white", grad_layer("Rdl "), 2, 0.5),
+        "grad_diamond": ("white", grad_layer("Dmnd"), 6, 0.8),
+        "grad_angle": ("white", grad_layer("Angl"), 255, 0.5),
+        "grad_linear_smooth": ("white", grad_layer("Lnr ", angle=-60, stops=((0, (255, 0, 0)), (2048, (0, 255, 0)), (4096, (0, 0, 255))), mids=30), 3, 0.5),
         "fx_outer_glow_soft": ("black", square_layer(60, 60, 100, 100) + outer_glow(20), 12, 0.5),
         "fx_outer_glow_precise": ("black", square_layer(60, 60, 100, 100) + outer_glow(20, 25, precise=True), 15, 0.5),
         "fx_inner_glow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + inner_glow(10), 20, 0.5),
