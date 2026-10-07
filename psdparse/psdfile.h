@@ -19,6 +19,21 @@ namespace psd {
     IMAGE_MODE_MASKEDIMAGE, // マスクをアルファに繰り込んだイメージデータ
   };
 
+  // 文書合成 (PSDFile::compositeImage) の指定
+  struct CompositeOptions {
+    bool effects = true;            // レイヤー効果を描く
+    bool background = false;        // 不透明な背景色の上へ合成する (false なら透明)
+    uint8_t backgroundColor[3] = {255, 255, 255};   // R, G, B
+    int64_t maxPixels = 1LL << 28;  // これより大きい文書は合成しない
+  };
+
+  // 合成で再現できなかったもの (結果が Photoshop と違いうる箇所) の数
+  struct CompositeStats {
+    int skippedAdjustments = 0;     // 調整レイヤ (未対応)
+    int unsupportedClipBase = 0;    // グループを下地にしたクリッピング (未対応)
+    int unsupportedEffects = 0;     // 再現できない効果
+  };
+
   // PSD ファイルクラス
   //
   //   load(path)            : ファイルを mmap で開く (全読み込みしない)。
@@ -266,7 +281,15 @@ namespace psd {
     // ファイルが巨大な幅・高さ・チャンネル長を宣言していても、出力バッファを
     // 確保する前にこれで弾ける (getMergedImage / getLayerImage も中で確かめる)。
     bool canDecodeMergedImage();
+    // 合成画像に透明度があるか (色チャンネルの次のチャンネルが透明度か)。
+    // getMergedImage は透明度があれば白を外した色を返し、無ければ不透明で返す。
+    bool mergedHasTransparency() const;
     bool canDecodeLayerImage(const LayerInfo &layer, ImageMode mode);
+
+    // 文書をレイヤから合成する (保存されている合成画像ではなく、いまのレイヤの
+    // 状態から作る)。結果は width*height*4 の BGRA (ストレートアルファ)。
+    bool compositeImage(std::vector<uint8_t> &bgra, const CompositeOptions &opt = CompositeOptions(),
+                        CompositeStats *stats = nullptr);
 
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);

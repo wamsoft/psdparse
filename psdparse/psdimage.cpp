@@ -1556,6 +1556,19 @@ namespace psd {
     return true;
   }
 
+  // 合成画像の色チャンネルの次が合成の透明度か。レイヤ数が負 (合成にαあり) の
+  // ファイルか、その余分なチャンネルの名前が "Transparency" なら透明度とみなす。
+  bool PSDFile::mergedHasTransparency() const
+  {
+    if (header.channels <= colorChannelCount(header.mode)) return false;
+    if (mergedAlpha) return true;
+    if (!alphaChannels.empty()) {
+      static const char16_t kName[] = u"Transparency";
+      return alphaChannels[0].name == u16str(kName);
+    }
+    return false;
+  }
+
   // 合成画像の全チャンネルを展開する。各プレーンは header.depth の生サンプル
   // (16/32bit は big-endian のまま)。色チャンネルの後ろに、透明度 / アルファ /
   // スポットチャンネルが header.channels まで続く。
@@ -1662,6 +1675,9 @@ namespace psd {
     // チャネルデータ展開 (decodeMergedPlanes)
     std::vector<std::vector<uint8_t>> planes;
     if (!decodeMergedPlanes(planes)) return false;
+    // 色チャンネルの次のチャンネルが合成の透明度か (アルファ / スポットチャンネル
+    // のこともある)。透明度でなければ不透明として扱う。
+    const bool hasTransparency = mergedHasTransparency();
     int channels = (int)planes.size();
     std::vector<uint8_t*> decodedChannels(channels);
     std::vector<int>      channelIds(channels);
@@ -1695,7 +1711,7 @@ namespace psd {
       }
       break;
     case COLOR_MODE_RGB:
-      if (channelIds.size() > 3) {
+      if (channelIds.size() > 3 && hasTransparency) {
         channelIds[3] = CH_ID_TRANSP;
       }
       switch (header.depth) {
@@ -1756,6 +1772,26 @@ namespace psd {
       break;
     default:
       break;
+    }
+
+    // Photoshop は透明のある文書の合成画像を「白の上に乗せた色」で保存する
+    // (色 = 本来の色 x α + 白 x (1 - α))。白を外して本来の色へ戻す。
+    if (hasTransparency && header.mode == COLOR_MODE_RGB) {
+      for (int y = 0; y < imageHeight; y++) {
+        uint32_t *pix = (uint32_t *)((uint8_t *)buf + (ptrdiff_t)bufPitchByte * y);
+        for (int x = 0; x < imageWidth; x++, pix++) {
+          const uint32_t v = *pix;
+          const int a = (v >> format.aShift) & 0xff;
+          if (a == 0 || a == 255) continue;
+          auto un = [&](int shift) {
+            int c = (v >> shift) & 0xff;
+            int r = ((c + a - 255) * 255 + a / 2) / a;
+            return (uint32_t)(r < 0 ? 0 : r > 255 ? 255 : r) << shift;
+          };
+          *pix = un(format.rShift) | un(format.gShift) | un(format.bShift) |
+                 ((uint32_t)a << format.aShift);
+        }
+      }
     }
 
 #ifdef ENABLE_BMP_OUTPUT

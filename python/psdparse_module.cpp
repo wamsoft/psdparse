@@ -351,6 +351,30 @@ py::object layerSmartObject(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+// Layer-based composite of the document.
+py::tuple psdComposite(psd::PSDFile &self, bool effects, py::object background) {
+  psd::CompositeOptions opt;
+  opt.effects = effects;
+  if (!background.is_none()) {
+    auto seq = background.cast<py::sequence>();
+    if (py::len(seq) != 3) throw std::invalid_argument("background must be (r, g, b)");
+    opt.background = true;
+    for (int i = 0; i < 3; i++) opt.backgroundColor[i] = (uint8_t)seq[(size_t)i].cast<int>();
+  }
+  std::vector<uint8_t> out;
+  psd::CompositeStats st;
+  {
+    py::gil_scoped_release release;
+    if (!self.compositeImage(out, opt, &st))
+      throw std::runtime_error("cannot composite this document (size)");
+  }
+  py::dict s;
+  s["skipped_adjustments"]   = st.skippedAdjustments;
+  s["unsupported_clip_base"] = st.unsupportedClipBase;
+  s["unsupported_effects"]   = st.unsupportedEffects;
+  return py::make_tuple(py::bytes((const char *)out.data(), out.size()), s);
+}
+
 py::list psdAnnotations(psd::PSDFile &self) {
   py::list out;
   for (const auto &a : self.annotations) {
@@ -1971,6 +1995,17 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("index"), py::arg("mode") = "masked",
          "Extract pixels for layer `index` as BGRA bytes. "
          "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).")
+    .def_property_readonly("merged_has_transparency", &psd::PSDFile::mergedHasTransparency,
+         "True when the stored merged image has a transparency channel (the extra "
+         "channel after the color channels is the merged transparency, not an "
+         "alpha / spot channel). merged_image() is opaque otherwise.")
+    .def("composite", &psdComposite, py::arg("effects") = true, py::arg("background") = py::none(),
+         "Composite the document from its layers (not the stored merged image): "
+         "blend modes, groups (pass-through and isolated), clipping, masks, "
+         "opacity / fill opacity, and layer effects when effects=True. Returns "
+         "(bgra_bytes, stats); stats counts what could not be reproduced "
+         "(adjustment layers are skipped for now). background=(r, g, b) "
+         "composites onto an opaque color instead of transparency.")
     .def_property_readonly("annotations", &psdAnnotations,
          "Notes ('Anno') as dicts {'kind' ('text' / 'sound'), 'open', 'icon_rect', "
          "'popup_rect' (top, left, bottom, right), 'color_space', 'color', 'author', "

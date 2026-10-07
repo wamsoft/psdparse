@@ -23,7 +23,11 @@ namespace psd {
 
     if (additional.size >= 12) {
       int signature = additional.data->getInt32();      // 読み捨て
-      layer.blendMode = blendKeyToMode(additional.data->getInt32());
+      (void)signature;
+      // グループのブレンドは lsct 側が本物 (レコード側は 'norm' のまま 'pass' が
+      // ここに入る)。レコードの blendModeKey は保存のため変えずに別に持つ。
+      layer.sectionBlendKey = additional.data->getInt32();
+      layer.blendMode = blendKeyToMode(layer.sectionBlendKey);
       if (additional.size >= 16) {
         int subType = additional.data->getInt32();      // 読み捨て
       }

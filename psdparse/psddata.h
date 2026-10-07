@@ -780,6 +780,10 @@ namespace psd {
     bool isLaterVer5()             const { return (flag & (1 << 3)) != 0; }
     bool isPixelDataIrrelevant()   const { return (flag & (1 << 4)) != 0; }
 
+    // グループの区切り情報 ('lsct') にあるブレンドキー。0 なら無し。グループの
+    // 実際のブレンド (例 'pass' = 通過) はレコードの blendModeKey ではなくこちら。
+    int sectionBlendKey = 0;
+
     // ベクタマスク ('vmsk' / 'vsms')。processParsed で設定。
     VectorMask vectorMask;
     // スマートオブジェクト ('SoLd' / 'SoLE' / 'PlLd')。processParsed で設定。
