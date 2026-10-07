@@ -619,11 +619,13 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     }
   }
   });
-  if (!bevelOuterHi.v.empty()) {
-    std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
-    compositeCoverage(&Ss, ps, bevelOuterSh, 0, 0, bv.shadow_blend, bv.shadow_opacity);
-    compositeCoverage(&Ss, ph, bevelOuterHi, 0, 0, bv.highlight_blend, bv.highlight_opacity);
-  }
-
   psdfx_composite(dst, &Ss, ox, oy, blend, opacity, nullptr, 0);
+
+  if (!bevelOuterHi.v.empty()) {
+    // 形の外のベベルは、レイヤ (外側の境界線を含む) を重ねたあとの画像へ直接重ねる
+    // (白地に覆い焼きカラーなら何も変わらず、外側の境界線には陰が付く。Photoshop で確認)
+    std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
+    compositeCoverage(dst, ps, bevelOuterSh, ox, oy, bv.shadow_blend, bv.shadow_opacity * opacity);
+    compositeCoverage(dst, ph, bevelOuterHi, ox, oy, bv.highlight_blend, bv.highlight_opacity * opacity);
+  }
 }

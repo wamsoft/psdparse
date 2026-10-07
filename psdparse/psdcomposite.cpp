@@ -737,10 +737,11 @@ private:
 
   // --- レイヤー効果 (lfx2) → psdfx_layer_effects ------------------------------
 
-  // 効果の descriptor のブレンド (列挙名) をレイヤのブレンドキーへ
+  // 効果の descriptor のブレンド (列挙名) をレイヤのブレンドキーへ。4 文字の ID
+  // ("CBrn") のほか、長い名前 ("colorBurn") で保存されていることもある
   static uint32_t blendFromEnum(Descriptor *d, const char *key) {
     auto *e = d ? dynamic_cast<DescriptorEnumerated*>(d->item(key).find()) : nullptr;
-    return blendFromEnumId(e ? e->enumId : std::string("Nrml"));
+    return blendFromName(e ? e->enumId : std::string("Nrml"));
   }
 
   static uint32_t blendFromEnumId(const std::string &v) {

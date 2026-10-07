@@ -465,7 +465,7 @@ def cases():
         "fx_inner_shadow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + shadow("IrSh", 10, distance=8), 6, 0.5),
         "fx_drop_shadow": ("black", square_layer(60, 60, 100, 100) + shadow("DrSh", 20, spread=50), 8, 0.5),
         "fx_bevel_inner": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(), 18, 0.5),
-        "fx_bevel_emboss": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel("Embs"), 25, 0.6),
+        "fx_bevel_emboss": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel("Embs"), 18, 0.5),
         "fx_bevel_chisel": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(tech="PrBL"), 36, 0.5),
         "fx_drop_shadow_gauss_contour": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) +
                                          with_contour(shadow("DrSh", 20), GAUSS_CONTOUR), 8, 0.5),
