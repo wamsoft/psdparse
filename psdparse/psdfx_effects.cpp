@@ -382,6 +382,9 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
       // ぼかしただけの被覆率の 8.33 倍で頭打ち (範囲・大きさによらない。Photoshop で測定)
       for (size_t i = 0; i < gl.v.size(); i++) gl.v[i] = std::min(1.f, raw.v[i] * 8.33f);
     }
+    // 光彩 (外側) はレイヤの形の下には出ない (半透明のレイヤや比較 (暗) などでも透けない。
+    // Photoshop で確認)
+    for (size_t i = 0; i < gl.v.size(); i++) gl.v[i] *= 1.f - A.v[i];
     compositeCoverage(dst, px, gl, ox, oy, og.blend, og.opacity * opacity);
   }
 

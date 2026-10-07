@@ -516,6 +516,9 @@ def cases():
         "fx_bevel_inner": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(), 18, 0.5),
         "fx_bevel_emboss": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel("Embs"), 18, 0.5),
         "fx_bevel_chisel": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(tech="PrBL"), 36, 0.5),
+        # 光彩 (外側) はレイヤの形の下に出ない (半透明・比較 (暗) のレイヤでも透けない)
+        "fx_outer_glow_under_darken": ("black", square_layer(50, 50, 110, 110, (40, 160, 120)) +
+                                       'sq.blendMode = BlendMode.DARKEN; sq.opacity = 60;' + outer_glow(20), 6, 0.5),
         "fx_drop_shadow_gauss_contour": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) +
                                          with_contour(shadow("DrSh", 20), GAUSS_CONTOUR), 8, 0.5),
         "fx_outer_glow_ring_contour": ("black", square_layer(50, 50, 110, 110, (0, 0, 255)) +
