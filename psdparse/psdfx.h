@@ -320,6 +320,10 @@ typedef struct psdfx_layer_effects {
   const psdfx_stroke *more_strokes;            int more_stroke_count;
   const psdfx_overlay *more_color_overlays;    int more_color_overlay_count;
   const psdfx_overlay *more_gradient_overlays; int more_gradient_overlay_count;
+  /* レイヤの中身の上に描き直す面 (layer と同じ大きさ・位置、NULL 可)。内側の効果
+   * (オーバーレイ / サテン / 光彩 (内側) / シャドウ (内側)) のあと、ベベルと境界線の
+   * 前に重ねる。シェイプの線はこの位置に来る (Photoshop で確認) */
+  const psdfx_surface *content_top;
 } psdfx_layer_effects;
 
 /* 効果がレイヤの外へはみ出す量 (px)。描画範囲を広げるのに使う。 */

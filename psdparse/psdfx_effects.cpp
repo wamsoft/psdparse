@@ -412,6 +412,26 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   }
   });
 
+  // 中身の上に描き直す面 (シェイプの線): 内側の効果の上、ベベル / 境界線の下
+  if (const psdfx_surface *top = fx->content_top) {
+    if (top->pixels && top->width == layer->width && top->height == layer->height) {
+      for (int y = 0; y < layer->height; y++) {
+        const uint8_t *row = top->pixels + (size_t)y * top->stride;
+        for (int x = 0; x < layer->width; x++) {
+          const size_t i = (size_t)(y + m) * W + x + m;
+          const float a = A.v[i];
+          if (a <= 0.f || row[x * 4 + 3] == 0) continue;
+          const float c = std::min(1.f, row[x * 4 + 3] / 255.f / a) * fillOnContent;
+          uint8_t *q = &S[i * 4];
+          const float sa = q[3] / 255.f, ra = c + sa * (1.f - c);
+          for (int k = 0; k < 3; k++)
+            q[k] = ra > 0.f ? to8((row[x * 4 + k] / 255.f * c + q[k] / 255.f * sa * (1.f - c)) / ra) : 0;
+          q[3] = to8(ra);
+        }
+      }
+    }
+  }
+
   const psdfx_bevel &bv = fx->bevel;
   Plane bevelOuterHi, bevelOuterSh;
   if (bv.enabled && bv.size > 0) {

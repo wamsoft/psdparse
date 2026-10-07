@@ -433,6 +433,31 @@ private:
     return true;
   }
 
+  // シェイプの線だけを文書大の面 line へ描く (線の塗り x 線の形 x 線の不透明度 x
+  // ユーザーマスク)。クリッピングの下地では、線はクリップされたレイヤの上に乗る
+  // (照合で確認)。線が無ければ false。
+  bool shapeStrokeSurface(LayerInfo &l, Canvas &line, int left = 0, int top = 0) {
+    const VectorMask &vm = l.vectorMask;
+    if (!vm.present || vm.disabled() || l.layerType == LAYER_TYPE_FILL) return false;
+    ShapeInfo si;
+    psdfx_stroke_style st;
+    std::vector<double> dashes;
+    if (!strokeStyle(l, si, st, dashes) || !si.stroke.content || !si.stroke.contentKind) return false;
+    PathBuf pb;
+    toPsdfx(vm.path, psd_.header.width, psd_.header.height, pb);
+    const size_t n = (size_t)line.width * line.height;
+    std::vector<uint8_t> sm(n);
+    psdfx_stroke_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill, &st,
+                      sm.data(), line.width, line.height, line.width, left, top);
+    if (!paintContent(l, si.stroke.contentKind, *si.stroke.content, line, left, top)) return false;
+    const float op = (float)si.stroke.opacity;
+    for (size_t i = 0; i < n; i++)
+      line.px[i * 4 + 3] = (uint8_t)(line.px[i * 4 + 3] * sm[i] / 255.f * op + 0.5f);
+    LayerInfo maskLayer;
+    if (userMaskLayer(l, maskLayer)) applyUserMask(maskLayer, line, left, top);
+    return true;
+  }
+
   // --- 調整レイヤ ---------------------------------------------------------------
 
   // 調整レイヤを target (文書大の面) へ掛ける。target の色を調整し、レイヤの
@@ -1083,6 +1108,13 @@ private:
     FxStore store;
     const bool withFx = opt_.effects && layerEffects(l, fx, store);
     psdfx_surface src = surface.surface();
+    // シェイプの線は内側の効果 (オーバーレイなど) の上に乗る
+    Canvas line;
+    psdfx_surface lineSurf{};
+    if (withFx) {
+      line = Canvas(surface.width, surface.height);
+      if (shapeStrokeSurface(l, line, sx, sy)) { lineSurf = line.surface(); fx.content_top = &lineSurf; }
+    }
     const double docBox[4] = { (double)-dx, (double)-dy,
                                (double)(psd_.header.width - dx), (double)(psd_.header.height - dy) };
     if (!clipMask) {
@@ -1323,11 +1355,18 @@ private:
         clipMask[(size_t)dy * canvas.width + dx] = base.px[((size_t)y * base.width + x) * 4 + 3];
       }
     }
+    // シェイプの線はクリップされたレイヤの上に描き直す
+    Canvas line(canvas.width, canvas.height);
+    const bool hasLine = shapeStrokeSurface(l, line);
     if (flagBlock(l, 'clbl', 1) == 0) {
       // 「クリップしたレイヤーをグループとして描画」が切: 下地を描いてから、クリップ
       // されたレイヤを下地の形の範囲で直接下の画像へ重ねる
       drawLayer(l, base, bx, by, canvas, 0, 0, opacity, fill, (uint32_t)l.blendModeKey, nullptr);
       drawClipped(clipped, canvas, clipMask.data());
+      if (hasLine) {
+        psdfx_surface d = canvas.surface(), s = line.surface();
+        psdfx_composite(&d, &s, 0, 0, (uint32_t)l.blendModeKey, opacity * fill, nullptr, 0);
+      }
       return;
     }
     {
@@ -1340,7 +1379,7 @@ private:
         Canvas content(canvas.width, canvas.height);
         psdfx_surface cd = content.surface(), bs = base.surface();
         psdfx_composite(&cd, &bs, bx, by, PSDFX_KEY('n','o','r','m'), fill, nullptr, 0);
-        drawClipped(clipped, content, clipMask.data());
+        drawClipped(clipped, content, clipMask.data());   // シェイプの線は drawLayer が上に描く
         content.shape.assign(clipMask.size(), 0);
         for (int y = 0; y < base.height; y++) {
           const int dy = by + y;
@@ -1357,6 +1396,10 @@ private:
       }
     }
     drawClipped(clipped, group, clipMask.data());
+    if (hasLine) {
+      psdfx_surface d = group.surface(), s = line.surface();
+      psdfx_composite(&d, &s, 0, 0, PSDFX_KEY('n','o','r','m'), fill, nullptr, 0);
+    }
     psdfx_surface dst = canvas.surface(), src = group.surface();
     psdfx_composite(&dst, &src, 0, 0, (uint32_t)l.blendModeKey, opacity, nullptr, 0);
   }
