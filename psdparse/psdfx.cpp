@@ -237,6 +237,12 @@ void psdfx_composite_layer(psdfx_surface *dst, const psdfx_surface *src, int dx,
   compositeImpl(dst, src, dx, dy, blend_key, opacity, mask, mask_stride, false, clamp01(fill));
 }
 
+void psdfx_composite_layer_atop(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
+                                uint32_t blend_key, float opacity, float fill,
+                                const uint8_t *mask, int mask_stride) {
+  compositeImpl(dst, src, dx, dy, blend_key, opacity, mask, mask_stride, true, clamp01(fill));
+}
+
 void psdfx_composite_atop(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
                           uint32_t blend_key, float opacity) {
   compositeImpl(dst, src, dx, dy, blend_key, opacity, nullptr, 0, true);

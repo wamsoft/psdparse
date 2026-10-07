@@ -60,6 +60,14 @@ void psdfx_composite_layer(psdfx_surface *dst, const psdfx_surface *src, int dx,
                            const uint8_t *mask, int mask_stride);
 
 /*
+ * psdfx_composite_layer の source-atop 版 (dst のアルファを変えない)。mask は src と
+ * 同じ大きさで、src のアルファに掛ける。クリッピングに使う。
+ */
+void psdfx_composite_layer_atop(psdfx_surface *dst, const psdfx_surface *src, int dx, int dy,
+                                uint32_t blend_key, float opacity, float fill,
+                                const uint8_t *mask, int mask_stride);
+
+/*
  * クリッピング用: src を dst へ重ねるが、dst のアルファは変えない
  * (dst が不透明な所にだけ描く。source-atop)。
  */

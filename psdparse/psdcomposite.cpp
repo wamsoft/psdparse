@@ -1096,14 +1096,18 @@ private:
     Canvas tmp(dst.width, dst.height);
     psdfx_surface t = tmp.surface();
     psdfx_surface d = dst.surface();
+    // クリップの範囲 (下地の形の中) に、下地のアルファを変えずに重ねる (source-atop。
+    // 下地が半透明でもアルファは下地のまま。照合で確認)
+    std::vector<uint8_t> inside((size_t)dst.width * dst.height);
+    for (size_t i = 0; i < inside.size(); i++) inside[i] = clipMask[i] ? 255 : 0;
     if (!withFx) {
       psdfx_composite(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, nullptr, 0);
-      psdfx_composite_layer(&d, &t, 0, 0, blend, opacity, fill, clipMask, dst.width);
+      psdfx_composite_layer_atop(&d, &t, 0, 0, blend, opacity, fill, inside.data(), dst.width);
       return;
     }
     psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox,
                                  surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
-    psdfx_composite(&d, &t, 0, 0, blend, opacity, clipMask, dst.width);
+    psdfx_composite_layer_atop(&d, &t, 0, 0, blend, opacity, 1.f, inside.data(), dst.width);
   }
 
   // 画素を持つレイヤ 1 枚を面にする (マスク込み)。left / top は面の左上の位置。空なら false。
@@ -1229,14 +1233,34 @@ private:
       if (key == 'pass' && l.fill_opacity >= 255) {
         // 通過グループは下の画像と混ざるように描くが、その効き目はグループの中身の
         // 形の中だけ (中が調整レイヤだけなら何も変わらない。照合で確認)。その上へ
-        // クリップされたレイヤを範囲内に重ねる
+        // クリップされたレイヤの分は「独立して描いた中身にクリップを重ねたもの」と
+        // 「重ねないもの」をそれぞれ元の下の画像に重ねた差として足す (透明な下地でも
+        // アルファが増えすぎない)
+        const Canvas before = canvas;
         Canvas after = canvas;
         renderGroup(idx, after);
         std::vector<uint8_t> inside(clipMask.size());
         for (size_t i = 0; i < inside.size(); i++) inside[i] = clipMask[i] ? 255 : 0;
         psdfx_surface dst = canvas.surface(), src = after.surface();
         psdfx_lerp(&dst, &src, 1.f, inside.data(), canvas.width);
-        drawClipped(clipped, canvas, clipMask.data());
+        Canvas withC = group;
+        drawClipped(clipped, withC, clipMask.data());
+        Canvas a = before, b = before;
+        psdfx_surface as = a.surface(), bs = b.surface(), ws = withC.surface(), gs = group.surface();
+        psdfx_composite(&as, &ws, 0, 0, PSDFX_KEY('n','o','r','m'), 1.f, nullptr, 0);
+        psdfx_composite(&bs, &gs, 0, 0, PSDFX_KEY('n','o','r','m'), 1.f, nullptr, 0);
+        for (size_t i = 0; i < clipMask.size(); i++) {
+          uint8_t *o = &canvas.px[i * 4];
+          const uint8_t *w = &a.px[i * 4], *n = &b.px[i * 4];
+          if (std::memcmp(w, n, 4) == 0) continue;
+          const float oa = o[3] / 255.f, wa = w[3] / 255.f, na = n[3] / 255.f;
+          const float ra = std::min(1.f, std::max(0.f, oa + wa - na));
+          for (int c = 0; c < 3; c++) {
+            const float pc = o[c] / 255.f * oa + w[c] / 255.f * wa - n[c] / 255.f * na;
+            o[c] = ra > 0.f ? (uint8_t)(std::min(1.f, std::max(0.f, pc / ra)) * 255.f + 0.5f) : 0;
+          }
+          o[3] = (uint8_t)(ra * 255.f + 0.5f);
+        }
         return;
       }
       drawClipped(clipped, group, clipMask.data());
