@@ -24,7 +24,7 @@ const double kPi = 3.14159265358979323846;
 // 効果ごとに最も合う値を選んだ (影 0.4、内側の影・サテン・外側の光彩 0.3、内側の光彩 0.5)。
 const double kSigmaDropShadow = 0.4;
 const double kSigmaInnerShadow = 0.3;
-const double kSigmaOuterGlow = 0.3;
+const double kSigmaOuterGlow = 0.44;   // 箱ぼかし 3 回で半径 0.42 x 大きさ (Photoshop で測定)
 const double kSigmaInnerGlow = 0.5;
 const double kSigmaSatin = 0.3;
 const double kSigmaBevel = 0.5;
@@ -299,8 +299,23 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   });
   const psdfx_glow &og = fx->outer_glow;
   if (og.enabled && og.opacity > 0) {
-    Plane gl = spreadBlur(A, og.spread, og.size, kSigmaOuterGlow);
-    applyRange(gl, og.range);
+    Plane gl;
+    if (og.precise) {
+      // 精細: 形からの距離 d で (大きさ + 1 - d) / (大きさ + 1) の直線 (スプレッドの分は先に広げる)
+      const double sp = std::min(1.0, std::max(0.0, og.spread)) * og.size, rest = og.size - sp;
+      Plane din = distanceTo(A, true);
+      gl = Plane(W, H);
+      for (size_t i = 0; i < gl.v.size(); i++) {
+        const double d = std::max(0.0, din.v[i] - sp);
+        gl.v[i] = std::max(A.v[i], clamp01((float)((rest + 1.0 - d) / (rest + 1.0))));
+      }
+      // 範囲は 0.5 / 範囲 倍 (50% で直線そのまま)
+      const double k = og.range > 0 ? 0.5 / og.range : 1.0;
+      for (auto &v : gl.v) v = clamp01((float)(v * k));
+    } else {
+      gl = spreadBlur(A, og.spread, og.size, kSigmaOuterGlow);
+      applyRange(gl, og.range);
+    }
     std::vector<uint8_t> px = glowColor(og, gl, false);
     compositeCoverage(dst, px, gl, ox, oy, og.blend, og.opacity * opacity);
   }
