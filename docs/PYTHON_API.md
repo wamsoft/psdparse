@@ -59,7 +59,8 @@ p.header.height      # int
 p.header.channels    # int
 p.header.depth       # int (8 / 16 / 32)
 p.header.mode        # int (use psdparse.COLOR_MODE_* constants to compare)
-p.header.version     # int (1 or 2)
+p.header.version     # int (1 = PSD, 2 = PSB)
+p.header.is_psb      # bool -- version == 2 (large document format)
 ```
 
 ### Layers
@@ -70,6 +71,8 @@ p.roots              # list[int] -- top-level layer indices (tree view)
 p.children(i)        # list[int] -- direct children of layers[i]; i=-1 for roots
 p.merged_alpha       # bool
 p.is_loaded          # bool
+p.layer_source       # None, or "Lr16" / "Lr32" when a 16/32-bit document keeps
+                     # its layers in that document-level block (save() rewrites it)
 ```
 
 See [Layer hierarchy](#layer-hierarchy) for how the flat list and the tree view

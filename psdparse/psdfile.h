@@ -296,7 +296,8 @@ namespace psd {
     // **Photoshop は Txt2 をレイヤ毎の TySh より優先して読む**ので、TySh だけ
     // 書き換えても編集が Photoshop に届かない。
     //
-    // 差し替えられるのは 1 キーだけ (それ以上を要求したら false)。
+    // 元のファイルに無いキーは足せない (false)。レイヤ一覧を持つ Lr16 / Lr32 は
+    // 保存時にレイヤから書き直すので、ここからは差し替えられない。
     bool hasDocumentAdditionalInfo(int key);
     bool getDocumentAdditionalInfo(int key, std::string &out);
     bool setDocumentAdditionalInfo(int key, const char *data, size_t size);

@@ -823,7 +823,9 @@ PYBIND11_MODULE(psdparse, m) {
     .def_readonly("depth",    &psd::Header::depth)
     .def_readonly("mode",     &psd::Header::mode)
     .def_readonly("hres",     &psd::Header::hres)   // 水平解像度 dpi (既定 72)
-    .def_readonly("vres",     &psd::Header::vres);  // 垂直解像度 dpi
+    .def_readonly("vres",     &psd::Header::vres)   // 垂直解像度 dpi
+    .def_property_readonly("is_psb", &psd::Header::isPSB,
+         "True for a PSB (large document format, version 2) file.");
 
   py::class_<psd::ChannelInfo>(m, "ChannelInfo")
     .def_readonly("id",     &psd::ChannelInfo::id)
@@ -1059,8 +1061,12 @@ PYBIND11_MODULE(psdparse, m) {
          "but gets a fresh layer_id (max existing lyid + 1, like Photoshop).")
     .def("copy_layer_from",
          [](psd::PSDFile &self, const psd::PSDFile &src, int src_index, int dest_index) {
+            if (src_index < 0 || src_index >= (int)src.layerList.size())
+              throw std::out_of_range("source layer index out of range");
             int r = self.copyLayerFrom(src, src_index, dest_index);
-            if (r < 0) throw std::out_of_range("source layer index out of range");
+            if (r < 0)
+              throw std::invalid_argument("source must have the same bit depth and the same "
+                                          "PSD/PSB format as this file");
             return r;
          },
          py::arg("source"), py::arg("src_index"), py::arg("dest_index") = -1,
@@ -1444,6 +1450,18 @@ PYBIND11_MODULE(psdparse, m) {
     .def_readonly("is_loaded", &psd::PSDFile::isLoaded)
     .def_readonly("header",    &psd::PSDFile::header)
     .def_readonly("layers",    &psd::PSDFile::layerList)
+    .def_property_readonly("layer_source", [](const psd::PSDFile &self) -> py::object {
+           if (self.layerSourceKey == 0) return py::none();
+           char k[5] = { (char)((self.layerSourceKey >> 24) & 0xff),
+                         (char)((self.layerSourceKey >> 16) & 0xff),
+                         (char)((self.layerSourceKey >> 8) & 0xff),
+                         (char)(self.layerSourceKey & 0xff), 0 };
+           return py::str(k);
+         },
+         "Where the layers were read from: None for the regular layer info, or "
+         "'Lr16' / 'Lr32' for 16/32-bit documents, where Photoshop stores the "
+         "layers in a document-level block and leaves the layer info empty. "
+         "save() rewrites that block from the current layer list.")
     .def_readonly("merged_alpha", &psd::PSDFile::mergedAlpha)
     .def("merged_image", &mergedImage)
     .def("layer_image", &layerImage,

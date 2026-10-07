@@ -180,11 +180,6 @@ Data::processParsed()
     LayerExtraData &extra = layerList[i].extraData;
     for (uint32_t j = 0; j < extra.additionalLayers.size(); j++) {
       AdditionalLayerInfo &additional = extra.additionalLayers[j];
-      if (additional.sigType != 0) { // !8BIM
-        std::cerr << "not support: additional layer sig type = '8B64'\n";
-        continue;
-      }
-
       switch (additional.key) {
       // --- 調整レイヤ ---
       case 'grdm': // Gradient settings (Photoshop 6.0)
@@ -354,6 +349,17 @@ private:
   int size_;
 };
 
+// PSB では一部の長さフィールドが 8 バイトになる。int に収まらない値
+// (2GB 超) は扱えないので、残りバイト数で頭打ちにする (呼び出し側の
+// cloneRange / SubBlock が範囲外へはみ出さないように)。
+inline uint32_t readLength(IteratorBase &r, bool wide) {
+  uint64_t v = wide ? (uint64_t)r.getInt64(true) : (uint64_t)(uint32_t)r.getInt32(true);
+  int avail = r.rest();
+  if (avail < 0) avail = 0;
+  if (v > (uint64_t)avail) v = (uint64_t)avail;
+  return (uint32_t)v;
+}
+
 inline bool matchSig(IteratorBase &r, const char *sig4) {
   char buf[4];
   if (r.getData(buf, 4) != 4) return false;
@@ -472,7 +478,7 @@ void parseLayerBlendingRange(IteratorBase &r, LayerBlendingRange &b) {
   }
 }
 
-void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex) {
+void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex, bool psb) {
   // layer mask
   {
     uint32_t s = (uint32_t)r.getInt32(true);
@@ -512,9 +518,7 @@ void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex) {
     else if (std::memcmp(sig, "8B64", 4) == 0) sigType = 1;
     else break;
     int key = r.getInt32(true);
-    uint32_t dataSize = (uint32_t)r.getInt32(true);
-    int avail = r.rest();
-    if (dataSize > (uint32_t)avail) dataSize = (uint32_t)avail;
+    uint32_t dataSize = readLength(r, psb && isLongLengthKey(key));
     ex.additionalLayers.push_back(
         AdditionalLayerInfo(sigType, key, (int)dataSize,
                             r.cloneRange(0, (int)dataSize)));
@@ -527,6 +531,7 @@ void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex) {
 }
 
 void parseLayerRecord(IteratorBase &r, Data &data) {
+  const bool psb = data.header.isPSB();
   data.layerList.push_back(LayerInfo());
   LayerInfo &lay = data.layerList.back();
   lay.top    = r.getInt32(true);
@@ -538,8 +543,10 @@ void parseLayerRecord(IteratorBase &r, Data &data) {
   uint16_t channelCount = (uint16_t)r.getInt16(true);
   for (uint16_t i = 0; i < channelCount; i++) {
     int16_t  id  = r.getInt16(true);
-    int32_t  len = r.getInt32(true);
-    lay.channels.push_back(ChannelInfo(id, len));
+    // PSB ではチャンネル長が 8 バイト。
+    int64_t  len = psb ? r.getInt64(true) : (int64_t)(uint32_t)r.getInt32(true);
+    if (len < 0 || len > 0x7fffffff) len = 0x7fffffff;
+    lay.channels.push_back(ChannelInfo(id, (int)len));
   }
   char sig[4];
   r.getData(sig, 4); // "8BIM"
@@ -556,9 +563,11 @@ void parseLayerRecord(IteratorBase &r, Data &data) {
   // SubBlock とは別 clone なので干渉しない。
   if (extraSize > 0) lay.extraData.rawBytes = r.cloneRange(0, (int)extraSize);
   SubBlock blk(r, (int)extraSize);
-  if (extraSize > 0) parseLayerExtraData(blk.reader(), lay.extraData);
+  if (extraSize > 0) parseLayerExtraData(blk.reader(), lay.extraData, psb);
 }
 
+// layer info の本体 (長さフィールドの後ろ): レイヤ数 + レコード群 + チャンネル
+// 画像データ。通常の layer info と、Lr16 / Lr32 ブロックの中身はこの形。
 void parseLayerInfo(IteratorBase &r, Data &data) {
   int16_t count = r.getInt16(true);
   data.mergedAlpha = count < 0;
@@ -581,14 +590,81 @@ void parseGlobalLayerMaskInfo(IteratorBase &r, GlobalLayerMaskInfo &g) {
   // trailing filler bytes are ignored
 }
 
+// layerAndMaskTrailing を追加情報ブロックの並びとして読み、位置を
+// data.globalBlocks に記録する。
+//
+// 詰め物は書き手によって 4 の倍数だったり 2 の倍数だったり無かったりするので、
+// 長さを 4 の倍数へ切り上げた位置 (Photoshop の書き方) を第一候補に、次の
+// シグネチャか末尾がちょうど来る詰め物の長さを探して記録する。どれも合わ
+// なければそこで読むのをやめ、残りは未解釈のまま転送する。
+void scanGlobalBlocks(Data &data) {
+  IteratorBase *t = data.layerAndMaskTrailing;
+  const bool psb = data.header.isPSB();
+  const int total = t->size();
+  std::vector<uint8_t> head(16);
+  auto readAt = [&](int p, uint8_t *dst, int n) {
+    if (p < 0 || p + n > total) return false;
+    t->init();
+    IteratorBase *h = t->cloneRange(p, n);
+    int got = h ? h->getData(dst, n) : 0;
+    delete h;
+    return got == n;
+  };
+  auto isSig = [&](int p) {
+    uint8_t s[4];
+    if (!readAt(p, s, 4)) return false;
+    return std::memcmp(s, "8BIM", 4) == 0 || std::memcmp(s, "8B64", 4) == 0;
+  };
+  auto zeros = [&](int p, int n) {
+    uint8_t z[3];
+    if (n == 0) return true;
+    if (!readAt(p, z, n)) return false;
+    for (int i = 0; i < n; i++) if (z[i] != 0) return false;
+    return true;
+  };
+  int p = 0;
+  while (p + 12 <= total && isSig(p)) {
+    GlobalBlockInfo b;
+    if (!readAt(p, head.data(), 8)) break;
+    b.sigType = std::memcmp(head.data(), "8B64", 4) == 0 ? 1 : 0;
+    b.key     = (int)(((uint32_t)head[4] << 24) | ((uint32_t)head[5] << 16) |
+                      ((uint32_t)head[6] << 8) | (uint32_t)head[7]);
+    b.offset  = p;
+    const int lenBytes = (psb && isLongLengthKey(b.key)) ? 8 : 4;
+    if (!readAt(p + 8, head.data(), lenBytes)) break;
+    uint64_t len = 0;
+    for (int i = 0; i < lenBytes; i++) len = (len << 8) | head[(size_t)i];
+    b.dataOffset = p + 8 + lenBytes;
+    if (len > (uint64_t)(total - b.dataOffset)) break;
+    b.dataLength = (int)len;
+    const int end = b.dataOffset + b.dataLength;
+    const int pads[5] = { (4 - (b.dataLength & 3)) & 3, 0, 1, 2, 3 };
+    int pad = -1;
+    for (int k : pads) {
+      int next = end + k;
+      if (next > total || !zeros(end, k)) continue;
+      if (next == total || isSig(next)) { pad = k; break; }
+    }
+    if (pad < 0) break;
+    b.padding = pad;
+    data.globalBlocks.push_back(b);
+    p = end + pad;
+  }
+  data.globalBlocksEnd = p;
+}
+
 void parseLayerAndMask(IteratorBase &outer, Data &data) {
-  uint32_t total = (uint32_t)outer.getInt32(true);
+  const bool psb = data.header.isPSB();
+  uint32_t total = readLength(outer, psb);
   if (total == 0) return;
   SubBlock blk(outer, (int)total);
   IteratorBase &r = blk.reader();
   // layer info
   {
-    uint32_t s = (uint32_t)r.getInt32(true);
+    uint32_t s = readLength(r, psb);
+    // 16/32bit 文書ではレイヤが Lr16 / Lr32 側にあるので、こちらの本体を
+    // 保存時にそのまま書き戻せるよう保持しておく (要らなければ後で捨てる)。
+    if (s > 0) data.layerInfoRaw = r.cloneRange(0, (int)s);
     SubBlock layerBlk(r, (int)s);
     if (s > 0) parseLayerInfo(layerBlk.reader(), data);
   }
@@ -600,9 +676,30 @@ void parseLayerAndMask(IteratorBase &outer, Data &data) {
     SubBlock gblk(r, (int)s);
     if (s > 0) parseGlobalLayerMaskInfo(gblk.reader(), data.globalLayerMaskInfo);
   }
-  // 残りは Lr16/Lr32 などの secondary layer info。本実装では未解釈だが、
-  // ラウンドトリップ save のため生バイトとして保持しておく。
-  if (r.rest() > 0) data.layerAndMaskTrailing = r.cloneRange(0, r.rest());
+  // 残りは文書ぜんたいの追加情報ブロック (Lr16/Lr32, Txt2, lnk2 など)。
+  // ラウンドトリップ save のため生バイトとして保持し、ブロックの位置だけ読む。
+  if (r.rest() > 0) {
+    data.layerAndMaskTrailing = r.cloneRange(0, r.rest());
+    scanGlobalBlocks(data);
+  }
+  // 16/32bit 文書: layer info 本体が空で、レイヤは Lr16 / Lr32 にある。
+  if (data.layerList.empty()) {
+    for (const auto &b : data.globalBlocks) {
+      if (b.key != 'Lr16' && b.key != 'Lr32' && b.key != 'Layr') continue;
+      data.layerSourceKey = b.key;
+      data.layerAndMaskTrailing->init();
+      IteratorBase *body = data.layerAndMaskTrailing->cloneRange(b.dataOffset, b.dataLength);
+      if (body) {
+        if (b.dataLength > 0) parseLayerInfo(*body, data);
+        delete body;
+      }
+      break;
+    }
+  }
+  if (data.layerSourceKey == 0) {
+    delete data.layerInfoRaw;
+    data.layerInfoRaw = 0;
+  }
 }
 
 void parseImageData(IteratorBase &r, Data &data) {

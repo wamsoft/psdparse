@@ -5,6 +5,8 @@
 #include "psddesc.h"
 
 #include <vector>
+#include <map>
+#include <string>
 #include <cstring>
 
 namespace psd {
@@ -162,6 +164,41 @@ namespace psd {
 		int mode;
 		double hres = 72.0;   // 水平解像度 dpi (image resource 1005)。 既定 72。
 		double vres = 72.0;   // 垂直解像度 dpi。
+
+		// PSB (large document format, version 2) か。PSB ではセクション長・
+		// チャンネル長・一部の追加情報の長さが 8 バイトになり、RLE の行バイト数
+		// テーブルも 1 行 4 バイトになる。
+		bool isPSB() const { return version == 2; }
+	};
+
+	// PSB で長さフィールドが 8 バイトになる追加情報キー。仕様書が挙げる 13 種に、
+	// 仕様書には無いが Photoshop が 8 バイトで書くもの (psd-tools も同じ扱い)
+	// を加えたもの。PSD (version 1) ではどれも 4 バイト。
+	inline bool isLongLengthKey(int key) {
+		switch (key) {
+		case 'LMsk': case 'Lr16': case 'Lr32': case 'Layr': case 'Mt16':
+		case 'Mt32': case 'Mtrn': case 'Alph': case 'FMsk': case 'lnk2':
+		case 'FEid': case 'FXid': case 'PxSD':
+		case 'lnk3': case 'lnkE': case 'pths': case 'extd': case 'extn':
+		case 'FELS': case 'cinf': case 'artd':
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	// レイヤ&マスク情報の末尾 (global layer mask info の後ろ) に並ぶ、文書
+	// ぜんたいの追加情報ブロック 1 件の位置。offset 類は layerAndMaskTrailing
+	// 先頭からのバイト位置。中身は読まずに位置だけ覚え、書き出しでは元の
+	// 範囲をそのまま転送する (巨大な lnk2 をメモリに載せないため)。
+	struct GlobalBlockInfo {
+		int sigType = 0;      // 0: '8BIM' / 1: '8B64'
+		int key = 0;
+		int offset = 0;       // ブロック先頭 (シグネチャ) の位置
+		int dataOffset = 0;   // 中身の先頭
+		int dataLength = 0;   // 中身の長さ (長さフィールドの値)
+		int padding = 0;      // 中身の後ろの詰め物バイト数
+		int total() const { return dataOffset - offset + dataLength + padding; }
 	};
 
   // RGBAカラー
@@ -538,8 +575,7 @@ namespace psd {
 			   mergedAlpha(false), channelImageData(0),
 			   globalLayerMaskInfoRaw(0),
 			   layerAndMaskTrailing(0),
-			   trailingPatched(false), trailingPatchKey(0),
-			   trailingPatchOffset(0), trailingPatchLength(0),
+			   globalBlocksEnd(0), layerSourceKey(0), layerInfoRaw(0),
 			   imageData(0)
 		{
 		}
@@ -555,12 +591,16 @@ namespace psd {
 			delete channelImageData; channelImageData = 0;
 			delete globalLayerMaskInfoRaw; globalLayerMaskInfoRaw = 0;
 			delete layerAndMaskTrailing; layerAndMaskTrailing = 0;
-			trailingPatched = false; trailingPatchKey = 0;
-			trailingPatchOffset = 0; trailingPatchLength = 0;
-			trailingPatchBytes.clear();
+			globalBlocks.clear(); globalBlocksEnd = 0;
+			globalBlockPatches.clear();
+			layerSourceKey = 0;
+			delete layerInfoRaw; layerInfoRaw = 0;
 			delete imageData; imageData = 0;
 		}
 
+
+		// RLE の行バイト数テーブルの 1 行あたりのバイト数 (PSD は 2、PSB は 4)。
+		int rowCountBytes() const { return header.isPSB() ? 4 : 2; }
 
 		// レイヤをレイヤIDで取得
     LayerInfo *getLayerById(int layerId);
@@ -629,16 +669,26 @@ namespace psd {
 		// まま保持。ラウンドトリップ save 用。
 		IteratorBase *layerAndMaskTrailing;
 
-		// 文書末尾の追加情報 (Txt2 など) を 1 ブロックだけ差し替える / 削除する
-		// ための指定。巨大な lnk2 (リンク済みスマートオブジェクト) を丸ごと
-		// メモリへ写さずに済むよう、「layerAndMaskTrailing のこの範囲を、この
-		// 内容へ置き換える」形で持つ。offset / length は常に**元の** trailing
-		// 上の位置なので、同じキーへの差し替えを繰り返しても破綻しない。
-		bool        trailingPatched;
-		int         trailingPatchKey;
-		int         trailingPatchOffset;
-		int         trailingPatchLength;
-		std::string trailingPatchBytes;   // 空なら削除
+		// layerAndMaskTrailing を追加情報ブロックの並びとして読んだ結果。
+		// globalBlocksEnd 以降はブロックとして読めなかった残りで、書き出しでは
+		// そのまま転送する。
+		std::vector<GlobalBlockInfo> globalBlocks;
+		int globalBlocksEnd;
+
+		// 文書末尾の追加情報 (Txt2 など) の差し替え / 削除。キー → 新しい
+		// ブロック全体 ('8BIM' + key + 長さ + 中身 + 詰め物)。空文字列なら削除。
+		// 巨大な lnk2 などを丸ごとメモリへ写さずに済むよう、差し替えたブロック
+		// だけを持ち、残りは元の範囲から転送する。
+		std::map<int, std::string> globalBlockPatches;
+
+		// レイヤ一覧の出どころ。0 なら通常の layer info。16/32bit 文書では
+		// Photoshop はレイヤを末尾の 'Lr16' / 'Lr32' (まれに 'Layr') に置き、
+		// layer info 本体は空にする。その場合ここにキーが入り、保存時は
+		// そのブロックをレイヤ一覧から書き直す。
+		int layerSourceKey;
+		// layerSourceKey != 0 のときの、元の layer info 本体 (長さフィールドの
+		// 後ろ)。空 (長さ 0) なら 0。保存時にそのまま書き戻す。
+		IteratorBase *layerInfoRaw;
 		
 		// 合成済み画像データ
 		IteratorBase *imageData;

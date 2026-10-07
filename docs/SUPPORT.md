@@ -30,7 +30,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 |---|:---:|---|
 | ヘッダ (幅/高さ/チャンネル/深度/モード/版) | ✅ | `PSDFile.header` |
 | 解像度 (dpi, image resource 1005) | ✅ | `header.hres` / `header.vres` |
-| PSB (large document, version 2) | ❌ | `version` は読めるが、PSB 特有の 8 byte 長フィールドの分岐が無く未対応 |
+| PSB (large document, version 2) | ✅ | `header.is_psb`。8 byte 長のセクション / チャンネル / 追加情報キー、4 byte の RLE 行長に対応。読み取り・編集・保存とも可 (未リリース)。ただし内部のオフセットは 32bit なので 2GB を超えるファイルは不可 |
 | ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
 
 ## 編集して保存 (edit & save, v0.7.0–v0.10.0)
@@ -78,6 +78,8 @@ Python バインディングが 0.10.0)。
 |---|:---:|---|
 | Raw / RLE(PackBits) / ZIP(±prediction) | ✅ | 展開対応。PackBits は符号化 (save 時のレイヤ画素書き出し) も対応 |
 | ビット深度 1 / 8 / 16 / 32 | ✅ | それ以外は非対応 |
+| 16/32bit 文書のレイヤ (`Lr16` / `Lr32`) | ✅ | Photoshop は 16/32bit のレイヤを layer info ではなく文書末尾の `Lr16` / `Lr32` に置く。これを読み、構造編集後の保存ではそのブロックを書き直す (`PSDFile.layer_source`、未リリース)。画素編集は 8bit のみ |
+| 16/32bit のマスク合成 (`layer_image(i)`) | ✅ | 以前は big-endian の値を整数のまま掛けていて誤っていた (未リリース版で修正) |
 
 ## カラーモード (ピクセル展開: `merged_image` / `layer_image`)
 

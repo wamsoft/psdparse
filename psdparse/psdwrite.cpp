@@ -213,7 +213,7 @@ inline void writeLuniBlock(WriterBase &w, const u16str &name) {
 // mask / blending ranges は生バイト (maskRaw/blendRaw) をそのまま転送し、
 // pascal 名を書き直し、additional info は各エントリを複製する。ただし 'luni' は
 // lay.layerNameUnicode で置き換える (無ければ末尾に追加)。
-inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
+inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay, bool psb) {
   const LayerExtraData &ex = lay.extraData;
   // layer mask: 編集済みならフィールドから直列化、そうでなければ生バイトを転送。
   if (ex.layerMask.present && ex.layerMask.edited) {
@@ -255,7 +255,7 @@ inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
     } else {
       w.putData(a.sigType == 1 ? "8B64" : "8BIM", 4);
       w.putUint32BE((uint32_t)a.key);
-      w.putUint32BE((uint32_t)a.size);
+      w.putLengthBE((uint64_t)(uint32_t)a.size, psb && isLongLengthKey(a.key));
       if (a.data) w.copyAllFrom(a.data);
     }
   }
@@ -270,7 +270,7 @@ inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay) {
   }
 }
 
-inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {
+inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay, bool psb) {
   w.putInt32BE(lay.top);
   w.putInt32BE(lay.left);
   w.putInt32BE(lay.bottom);
@@ -278,7 +278,7 @@ inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {
   w.putUint16BE((uint16_t)lay.channels.size());
   for (const auto &ch : lay.channels) {
     w.putInt16BE((int16_t)ch.id);
-    w.putUint32BE((uint32_t)ch.length);
+    w.putLengthBE((uint64_t)(uint32_t)ch.length, psb);   // PSB は 8 バイト
   }
   w.putData("8BIM", 4);
   // blendModeKey は parse 時に getInt32(true) で読んだ値 (host int)。書く時も
@@ -296,7 +296,7 @@ inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {
   if (lay.extraData.useRawBytes && lay.extraData.rawBytes) {
     w.copyAllFrom(lay.extraData.rawBytes);       // 未編集: 生バイトをそのまま
   } else {
-    writeLayerExtraFromFields(w, lay);           // 編集済み: フィールドから再構築
+    writeLayerExtraFromFields(w, lay, psb);      // 編集済み: フィールドから再構築
   }
   int64_t extraEnd = w.tell();
   w.seek(extraSizePos);
@@ -304,14 +304,14 @@ inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay) {
   w.seek(extraEnd);
 }
 
-inline void writeLayerInfo(WriterBase &w, const Data &data) {
-  int64_t sizePos = w.tell();
-  w.putUint32BE(0); // placeholder
-  int64_t bodyStart = w.tell();
+// layer info の本体 (レイヤ数 + レコード群 + チャンネル画像データ)。通常の
+// layer info と Lr16 / Lr32 ブロックの中身で共通。末尾の詰め物は呼び出し側。
+inline void writeLayerInfoBody(WriterBase &w, const Data &data) {
+  const bool psb = data.header.isPSB();
   int16_t count = (int16_t)data.layerList.size();
   if (data.mergedAlpha) count = (int16_t)(-count);
   w.putInt16BE(count);
-  for (const auto &lay : data.layerList) writeLayerRecord(w, lay);
+  for (const auto &lay : data.layerList) writeLayerRecord(w, lay, psb);
   // channel image data.
   //   未編集 (layersDirty==false): 元の連結ブロブをそのまま転送 → 末尾パディング
   //     まで含めてバイト一致のラウンドトリップを保証。
@@ -328,12 +328,73 @@ inline void writeLayerInfo(WriterBase &w, const Data &data) {
       }
     }
   }
+}
+
+inline void writeLayerInfo(WriterBase &w, const Data &data) {
+  const bool psb = data.header.isPSB();
+  // レイヤが Lr16 / Lr32 側にある文書: こちらは元の本体 (多くは空) をそのまま。
+  if (data.layerSourceKey != 0) {
+    if (data.layerInfoRaw) {
+      w.putLengthBE((uint64_t)(uint32_t)data.layerInfoRaw->size(), psb);
+      w.copyAllFrom(data.layerInfoRaw);
+    } else {
+      w.putLengthBE(0, psb);
+    }
+    return;
+  }
+  int64_t sizePos = w.tell();
+  w.putLengthBE(0, psb); // placeholder
+  int64_t bodyStart = w.tell();
+  writeLayerInfoBody(w, data);
   int64_t bodyEnd = w.tell();
   // PSD 仕様: layer info の長さは 2 の倍数 padding が必要。
   if ((bodyEnd - bodyStart) & 1) { w.putZero(1); bodyEnd++; }
   w.seek(sizePos);
-  w.putUint32BE((uint32_t)(bodyEnd - bodyStart));
+  w.putLengthBE((uint64_t)(bodyEnd - bodyStart), psb);
   w.seek(bodyEnd);
+}
+
+// 文書末尾の追加情報ブロック列を書く。元の範囲をそのまま転送するのが基本で、
+//   * レイヤ一覧を持つブロック (Lr16 / Lr32) はレイヤから書き直す
+//   * globalBlockPatches にあるキーは差し替え (空なら削除)
+// とする。ブロックとして読めなかった残り (globalBlocksEnd 以降) もそのまま。
+inline void writeGlobalBlocks(WriterBase &w, const Data &data) {
+  IteratorBase *t = data.layerAndMaskTrailing;
+  if (!t) return;
+  const bool psb = data.header.isPSB();
+  auto copyRange = [&](int off, int len) {
+    if (len <= 0) return;
+    t->init();
+    IteratorBase *r = t->cloneRange(off, len);
+    if (r) { w.copyAllFrom(r); delete r; }
+  };
+  for (const auto &b : data.globalBlocks) {
+    if (b.key == data.layerSourceKey) {
+      const bool wide = psb && isLongLengthKey(b.key);
+      w.putData(b.sigType == 1 ? "8B64" : "8BIM", 4);
+      w.putUint32BE((uint32_t)b.key);
+      int64_t sizePos = w.tell();
+      w.putLengthBE(0, wide);
+      int64_t start = w.tell();
+      writeLayerInfoBody(w, data);
+      int64_t end = w.tell();
+      uint64_t len = (uint64_t)(end - start);
+      w.seek(sizePos);
+      w.putLengthBE(len, wide);
+      w.seek(end);
+      // 長さが元と同じなら元の詰め物を、変わったら 4 の倍数へ。
+      int pad = (len == (uint64_t)(uint32_t)b.dataLength) ? b.padding : (int)((4 - (len & 3)) & 3);
+      w.putZero((size_t)pad);
+      continue;
+    }
+    auto pit = data.globalBlockPatches.find(b.key);
+    if (pit != data.globalBlockPatches.end()) {
+      if (!pit->second.empty()) w.putData(pit->second.data(), pit->second.size());
+      continue;
+    }
+    copyRange(b.offset, b.total());
+  }
+  copyRange(data.globalBlocksEnd, t->size() - data.globalBlocksEnd);
 }
 
 inline void writeGlobalLayerMaskInfo(WriterBase &w, const Data &data) {
@@ -352,41 +413,16 @@ inline void writeGlobalLayerMaskInfo(WriterBase &w, const Data &data) {
 }
 
 inline void writeLayerAndMask(WriterBase &w, const Data &data) {
+  const bool psb = data.header.isPSB();
   int64_t sizePos = w.tell();
-  w.putUint32BE(0);
+  w.putLengthBE(0, psb);
   int64_t bodyStart = w.tell();
   writeLayerInfo(w, data);
   writeGlobalLayerMaskInfo(w, data);
-  // global layer mask info より後ろにあった secondary layer info (Lr16/Lr32 等)
-  if (data.layerAndMaskTrailing && data.trailingPatched) {
-    // 文書末尾の追加情報のうち 1 ブロックだけ差し替える / 削除する。
-    // 前後は元のバイトをそのまま流すので、巨大な lnk2 があってもメモリに
-    // 載せずに済む。
-    IteratorBase *t = data.layerAndMaskTrailing;
-    t->init();
-    int total = t->size();
-    int off   = data.trailingPatchOffset;
-    int after = off + data.trailingPatchLength;
-    if (off > 0) {
-      t->init();
-      IteratorBase *head = t->cloneRange(0, off);
-      w.copyAllFrom(head);
-      delete head;
-    }
-    if (!data.trailingPatchBytes.empty())
-      w.putData(data.trailingPatchBytes.data(), data.trailingPatchBytes.size());
-    if (after < total) {
-      t->init();
-      IteratorBase *tail = t->cloneRange(after, total - after);
-      w.copyAllFrom(tail);
-      delete tail;
-    }
-  } else if (data.layerAndMaskTrailing) {
-    w.copyAllFrom(data.layerAndMaskTrailing);
-  }
+  writeGlobalBlocks(w, data);
   int64_t bodyEnd = w.tell();
   w.seek(sizePos);
-  w.putUint32BE((uint32_t)(bodyEnd - bodyStart));
+  w.putLengthBE((uint64_t)(bodyEnd - bodyStart), psb);
   w.seek(bodyEnd);
 }
 

@@ -826,6 +826,9 @@ int PSDFile::duplicateLayer(int index) {
 
 int PSDFile::copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex) {
   if (srcIndex < 0 || srcIndex >= (int)src.layerList.size()) return -1;
+  // チャンネルデータは符号化したまま持ち込むので、RLE の行バイト数の幅
+  // (PSD / PSB) とビット深度が揃っていないと壊れる。
+  if (src.header.isPSB() != header.isPSB() || src.header.depth != header.depth) return -1;
   LayerInfo copy = src.layerList[(size_t)srcIndex]; // channel/extra は src を参照
   copy.owner  = this;   // owner はどこからも参照されないが整合のため付け替え
   copy.parent = nullptr;
@@ -841,102 +844,63 @@ int PSDFile::copyLayerFrom(const PSDFile &src, int srcIndex, int destIndex) {
 // --- 文書末尾の追加情報 (Txt2 など) ------------------------------------------
 //
 // レイヤ&マスク情報の末尾には、文書ぜんたいに効く追加情報ブロックが
-//   '8BIM' | '8B64' + key(4) + length(4) + data + (4 の倍数への詰め物)
-// の並びで置かれている。psdparse は普段ここを丸ごと素通しするが、Txt2
-// (文書ぜんたいのテキストエンジン状態) だけは書き換え / 削除が要る。
-// Photoshop は Txt2 をレイヤ毎の TySh より優先して読むため、TySh だけ直しても
-// 編集が届かない。
+//   '8BIM' | '8B64' + key(4) + length(4 / PSB の一部キーは 8) + data + 詰め物
+// の並びで置かれている (位置は読み込み時に globalBlocks へ記録済み)。
+// psdparse は普段ここを丸ごと素通しするが、Txt2 (文書ぜんたいのテキスト
+// エンジン状態) などは書き換え / 削除が要る。Photoshop は Txt2 をレイヤ毎の
+// TySh より優先して読むため、TySh だけ直しても編集が届かない。
 namespace {
 
-// trailing を先頭から辿って key のブロックを探す。見つかったら
-//   blockOffset … ブロック先頭 ('8BIM' の位置)
-//   blockTotal  … 詰め物まで含めたブロック長
-//   dataOffset  … 中身の先頭
-//   dataLength  … 中身の長さ
-// を返す。
-bool scanTrailingBlock(IteratorBase *t, int key, int &blockOffset, int &blockTotal,
-                       int &dataOffset, int &dataLength) {
-  if (!t) return false;
-  t->init();
-  const int total = t->size();
-  int p = 0;
-  while (p + 12 <= total) {
-    uint8_t hdr[12];
-    t->init();
-    IteratorBase *h = t->cloneRange(p, 12);
-    int got = h ? h->getData(hdr, 12) : 0;
-    delete h;
-    if (got != 12) return false;
-    if (std::memcmp(hdr, "8BIM", 4) != 0 && std::memcmp(hdr, "8B64", 4) != 0) return false;
-    int k = ((int)hdr[4] << 24) | ((int)hdr[5] << 16) | ((int)hdr[6] << 8) | (int)hdr[7];
-    uint32_t len = ((uint32_t)hdr[8] << 24) | ((uint32_t)hdr[9] << 16) |
-                   ((uint32_t)hdr[10] << 8) | (uint32_t)hdr[11];
-    if (len > (uint32_t)(total - p - 12)) return false;
-    int next = p + 12 + (int)len;
-    next += (4 - (next % 4)) % 4;              // 4 の倍数へ詰める
-    if (next > total) next = total;
-    if (k == key) {
-      blockOffset = p;
-      blockTotal  = next - p;
-      dataOffset  = p + 12;
-      dataLength  = (int)len;
-      return true;
-    }
-    p = next;
-  }
-  return false;
+const GlobalBlockInfo *findGlobalBlock(const Data &d, int key) {
+  for (const auto &b : d.globalBlocks)
+    if (b.key == key) return &b;
+  return nullptr;
 }
 
 } // anonymous namespace
 
 bool PSDFile::getDocumentAdditionalInfo(int key, std::string &out) {
   // すでに差し替え済みならそちらを返す (編集を積み重ねられるように)。
-  if (trailingPatched && trailingPatchKey == key) {
-    if (trailingPatchBytes.size() < 12) return false;   // 削除済み
-    out.assign(trailingPatchBytes.begin() + 12, trailingPatchBytes.end());
-    // 詰め物を落とす
-    uint32_t len = ((uint32_t)(uint8_t)trailingPatchBytes[8]  << 24) |
-                   ((uint32_t)(uint8_t)trailingPatchBytes[9]  << 16) |
-                   ((uint32_t)(uint8_t)trailingPatchBytes[10] <<  8) |
-                    (uint32_t)(uint8_t)trailingPatchBytes[11];
-    if (len <= out.size()) out.resize(len);
+  auto pit = globalBlockPatches.find(key);
+  if (pit != globalBlockPatches.end()) {
+    const std::string &blk = pit->second;
+    if (blk.empty()) return false;                     // 削除済み
+    const int lenBytes = (header.isPSB() && isLongLengthKey(key)) ? 8 : 4;
+    uint64_t len = 0;
+    for (int i = 0; i < lenBytes; i++) len = (len << 8) | (uint8_t)blk[(size_t)(8 + i)];
+    out.assign(blk, (size_t)(8 + lenBytes), (size_t)len);
     return true;
   }
-  int bo, bt, dof, dlen;
-  if (!scanTrailingBlock(layerAndMaskTrailing, key, bo, bt, dof, dlen)) return false;
-  out.assign((size_t)dlen, '\0');
-  if (dlen > 0) {
+  const GlobalBlockInfo *b = findGlobalBlock(*this, key);
+  if (!b) return false;
+  out.assign((size_t)b->dataLength, '\0');
+  if (b->dataLength > 0) {
     layerAndMaskTrailing->init();
-    IteratorBase *d = layerAndMaskTrailing->cloneRange(dof, dlen);
-    int got = d ? d->getData(&out[0], dlen) : 0;
+    IteratorBase *d = layerAndMaskTrailing->cloneRange(b->dataOffset, b->dataLength);
+    int got = d ? d->getData(&out[0], b->dataLength) : 0;
     delete d;
-    if (got != dlen) return false;
+    if (got != b->dataLength) return false;
   }
   return true;
 }
 
 bool PSDFile::setDocumentAdditionalInfo(int key, const char *data, size_t size) {
-  int bo, bt, dof, dlen;
-  if (!scanTrailingBlock(layerAndMaskTrailing, key, bo, bt, dof, dlen)) return false;
-  if (trailingPatched && trailingPatchKey != key) return false;  // 差し替えは 1 キーまで
+  const GlobalBlockInfo *b = findGlobalBlock(*this, key);
+  if (!b) return false;
+  if (key == layerSourceKey) return false;   // レイヤ一覧は保存時に書き直す
 
   std::string blk;
   if (data) {
-    // '8BIM' + key + length + data + 詰め物
-    blk.append("8BIM", 4);
+    // シグネチャは元のまま + key + 長さ + data + 4 の倍数への詰め物
+    blk.append(b->sigType == 1 ? "8B64" : "8BIM", 4);
     for (int i = 3; i >= 0; i--) blk.push_back((char)((key >> (i * 8)) & 0xff));
-    uint32_t n = (uint32_t)size;
-    for (int i = 3; i >= 0; i--) blk.push_back((char)((n >> (i * 8)) & 0xff));
+    const int lenBytes = (header.isPSB() && isLongLengthKey(key)) ? 8 : 4;
+    uint64_t n = (uint64_t)size;
+    for (int i = lenBytes - 1; i >= 0; i--) blk.push_back((char)((n >> (i * 8)) & 0xff));
     blk.append(data, size);
-    // trailing 先頭からの位置が 4 の倍数になるよう詰める
-    size_t endPos = (size_t)bo + blk.size();
-    blk.append((4 - (endPos % 4)) % 4, '\0');
+    blk.append((4 - (size % 4)) % 4, '\0');
   }
-  trailingPatched      = true;
-  trailingPatchKey     = key;
-  trailingPatchOffset  = bo;
-  trailingPatchLength  = bt;
-  trailingPatchBytes   = blk;
+  globalBlockPatches[key] = blk;
   return true;
 }
 
@@ -945,9 +909,9 @@ bool PSDFile::removeDocumentAdditionalInfo(int key) {
 }
 
 bool PSDFile::hasDocumentAdditionalInfo(int key) {
-  if (trailingPatched && trailingPatchKey == key) return trailingPatchBytes.size() >= 12;
-  int bo, bt, dof, dlen;
-  return scanTrailingBlock(layerAndMaskTrailing, key, bo, bt, dof, dlen);
+  auto pit = globalBlockPatches.find(key);
+  if (pit != globalBlockPatches.end()) return !pit->second.empty();
+  return findGlobalBlock(*this, key) != nullptr;
 }
 
 // --- Txt2 (文書ぜんたいの Text Engine Data) の追随 ----------------------------

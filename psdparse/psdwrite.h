@@ -50,6 +50,14 @@ public:
                      (uint8_t)(v >>  8), (uint8_t) v };
     putData(b, 4);
   }
+  void putUint64BE(uint64_t v) {
+    putUint32BE((uint32_t)(v >> 32));
+    putUint32BE((uint32_t)(v & 0xffffffffu));
+  }
+  // 長さフィールド。wide (PSB の 8 バイト長) なら 64bit で書く。
+  void putLengthBE(uint64_t v, bool wide) {
+    if (wide) putUint64BE(v); else putUint32BE((uint32_t)v);
+  }
   void putInt16BE(int16_t v)   { putUint16BE((uint16_t)v); }
   void putInt32BE(int32_t v)   { putUint32BE((uint32_t)v); }
 

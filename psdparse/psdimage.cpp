@@ -486,6 +486,32 @@ namespace psd {
     }
   }
 
+  // 展開直後 (big-endian) のサンプル 1 個を 0..1 で読み書きする。
+  //   uint8_t: 8bit / uint16_t: 16bit 整数 / uint32_t: 32bit float
+  template <typename T> double loadSample(const uint8_t *p);
+  template <> inline double loadSample<uint8_t>(const uint8_t *p) { return p[0] / 255.0; }
+  template <> inline double loadSample<uint16_t>(const uint8_t *p) {
+    return ((p[0] << 8) | p[1]) / 65535.0;
+  }
+  template <> inline double loadSample<uint32_t>(const uint8_t *p) {
+    pun32 v;
+    v.i = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+    return v.f;
+  }
+  template <typename T> void storeSample(uint8_t *p, double v);
+  template <> inline void storeSample<uint8_t>(uint8_t *p, double v) {
+    p[0] = (uint8_t)(std::min(1.0, std::max(0.0, v)) * 255.0 + 0.5);
+  }
+  template <> inline void storeSample<uint16_t>(uint8_t *p, double v) {
+    uint16_t x = (uint16_t)(std::min(1.0, std::max(0.0, v)) * 65535.0 + 0.5);
+    p[0] = (uint8_t)(x >> 8); p[1] = (uint8_t)(x & 0xff);
+  }
+  template <> inline void storeSample<uint32_t>(uint8_t *p, double v) {
+    pun32 x; x.f = (float)v;
+    p[0] = (uint8_t)(x.i >> 24); p[1] = (uint8_t)(x.i >> 16);
+    p[2] = (uint8_t)(x.i >> 8);  p[3] = (uint8_t)(x.i & 0xff);
+  }
+
   // アルファチャネルにマスクチャネルをマージ
   template <typename T>
   void
@@ -505,15 +531,15 @@ namespace psd {
     int w = r - l; int h = b - t;
     if (w > 0 && h > 0) {
       // maskをalphaにマージ
+      // チャネルは展開直後の big-endian のまま (16bit は整数、32bit は float)。
+      // 0..1 に正規化して掛け、同じ表現へ戻す。
       int aOffsetX = l - al; int aOffsetY = t - at;
       int mOffsetX = l - ml; int mOffsetY = t - mt;
-      static float f = 1.0f / ((1LL << (sizeof(T) * 8)) - 1);
       for (int y = 0; y < h; y++) {
-        T *ap  = (T*)(aCh + (aOffsetY + y) * aPitch + aOffsetX);
-        T *mp  = (T*)(mCh + (mOffsetY + y) * mPitch + mOffsetX);
-        T *out = ap;
-        for (int x = 0; x < w; x++) {
-          *out++ = (T)(*ap++ * *mp++ * f);
+        uint8_t *ap = aCh + (aOffsetY + y) * aPitch + aOffsetX * (int)sizeof(T);
+        uint8_t *mp = mCh + (mOffsetY + y) * mPitch + mOffsetX * (int)sizeof(T);
+        for (int x = 0; x < w; x++, ap += sizeof(T), mp += sizeof(T)) {
+          storeSample<T>(ap, loadSample<T>(ap) * loadSample<T>(mp));
         }
       }
     } else {
@@ -599,40 +625,52 @@ namespace psd {
   // --------------------------------------------------------------------------
 
   // RLE圧縮(PackBits)を展開する
-  inline uint32_t decodePackBits(uint8_t *dst, uint8_t *src, int height,
-                                 int channels=1, int targetCh=0, int lineDataOffset=0)
+  //   dstSize / srcSize: 展開先 / 入力の大きさ。壊れたデータや、矩形と食い違う
+  //     チャンネル (マスク矩形が空なのに -2 チャンネルがある等) でも範囲外へ
+  //     読み書きしないよう、どちらかの端に着いたらそこで打ち切る。
+  //   countBytes: 行バイト数テーブルの 1 行あたりのバイト数 (PSD は 2、PSB は 4)
+  // 戻り値はこのチャンネルの行データの合計バイト数 (次チャンネルの開始位置用)。
+  inline uint32_t decodePackBits(uint8_t *dst, size_t dstSize,
+                                 const uint8_t *src, size_t srcSize, int height,
+                                 int channels=1, int targetCh=0, size_t lineDataOffset=0,
+                                 int countBytes=2)
   {
-    uint32_t headerSize   = sizeof(int16_t) * height * channels;
-    int16_t  *lineBytesBE = (int16_t*)src + height * targetCh;
-    uint8_t  *lineData    = src + headerSize + lineDataOffset;
-    uint8_t  *decoded     = dst;
-    uint32_t readBytes    = 0;
+    const size_t headerSize = (size_t)countBytes * height * channels;
+    const size_t tableAt    = (size_t)countBytes * height * targetCh;
+    if (height <= 0 || tableAt + (size_t)countBytes * height > srcSize) return 0;
+    const uint8_t *lineBytesBE = src + tableAt;
+    size_t   in        = headerSize + lineDataOffset;   // src 上の読み位置
+    size_t   out       = 0;                             // dst 上の書き位置
+    uint32_t readBytes = 0;
 
-    for (int y = 0; y < height; y++, lineBytesBE++) {
-#ifdef PSD_LITTLE_ENDIAN
-      int16_t lineBytes = byteSwap16(*lineBytesBE);
-#else
-      int16_t lineBytes = *lineBytesBE;
-#endif
-      for (int x = 0; x < lineBytes; ) {
-        uint8_t length = *lineData++;
-        x++;
-        if (length > 128) {
-          // ランレングス分同値コピー
-          length = (~length + 1) + 1;
-          memset(decoded, *lineData, length);
-          lineData++;
-          x++;
-        } else if (length < 128) {
-          // ランがないのでベタコピー
-          length = length + 1;
-          memcpy(decoded, lineData, length);
-          lineData += length;
-          x += length;
-        }
-        decoded += length;
-      }
+    for (int y = 0; y < height; y++, lineBytesBE += countBytes) {
+      uint32_t lineBytes = 0;
+      for (int i = 0; i < countBytes; i++) lineBytes = (lineBytes << 8) | lineBytesBE[i];
       readBytes += lineBytes;
+      size_t lineEnd = in + lineBytes;
+      if (lineEnd > srcSize) lineEnd = srcSize;
+      while (in < lineEnd) {
+        uint8_t header = src[in++];
+        if (header > 128) {
+          // ランレングス分同値コピー
+          size_t n = (size_t)(257 - header);
+          if (in >= lineEnd) break;
+          uint8_t v = src[in++];
+          if (n > dstSize - out) n = dstSize - out;
+          memset(dst + out, v, n);
+          out += n;
+        } else if (header < 128) {
+          // ランがないのでベタコピー
+          size_t n = (size_t)header + 1;
+          if (n > lineEnd - in) n = lineEnd - in;
+          size_t w = n > dstSize - out ? dstSize - out : n;
+          memcpy(dst + out, src + in, w);
+          in  += n;
+          out += w;
+        }
+        // 128 は何もしない (PackBits の no-op)
+      }
+      in = lineEnd;
     }
 
     return readBytes;
@@ -855,7 +893,7 @@ namespace psd {
       
       // 展開先チャネルバッファ&チャネルidのセット
       int bufSize = channel.isMaskChannel() ? maskChannelBytes : imageChannelBytes;
-      uint8_t *decodedChannel = new uint8_t[bufSize];
+      uint8_t *decodedChannel = new uint8_t[bufSize]();   // 展開が途中で切れても未初期化を見せない
       uint8_t channelId       = channel.id;
 
       int width = channel.isMaskChannel() ? maskWidth : imageWidth;
@@ -867,7 +905,9 @@ namespace psd {
         channel.imageData->getData(decodedChannel, bufSize);
         break;
       case 1: // RLE(PackBits)
-        decodePackBits(decodedChannel, tmpSourceBuffer, height);
+        decodePackBits(decodedChannel, (size_t)bufSize,
+                       tmpSourceBuffer, (size_t)(dataLength > 0 ? dataLength : 0),
+                       height, 1, 0, 0, rowCountBytes());
         break;
       case 2:	// zip (w/o prediction)
 #ifdef USE_ZLIB
@@ -1084,20 +1124,26 @@ namespace psd {
     }
   }
 
+  // 行バイト数テーブルの 1 エントリ (countBytes = 2 / PSB は 4) を BE で書く。
+  void putRowCount(std::vector<uint8_t> &out, size_t pos, size_t v, int countBytes) {
+    for (int i = countBytes - 1; i >= 0; i--, v >>= 8)
+      out[pos + (size_t)i] = (uint8_t)(v & 0xff);
+  }
+
   // 1 チャンネル分の RLE バイト列を作る:
-  //   [00 01] (compression=1) + [height 個の行バイト数 int16 BE] + [各行の圧縮データ]
-  std::shared_ptr<std::vector<uint8_t>> buildRleChannel(const uint8_t *plane, int w, int h) {
+  //   [00 01] (compression=1) + [height 個の行バイト数 (BE, PSD は 2 / PSB は 4 バイト)]
+  //   + [各行の圧縮データ]
+  std::shared_ptr<std::vector<uint8_t>> buildRleChannel(const uint8_t *plane, int w, int h,
+                                                        int countBytes = 2) {
     auto buf = std::make_shared<std::vector<uint8_t>>();
     std::vector<uint8_t> &out = *buf;
     out.push_back(0); out.push_back(1);          // compression word = 1 (RLE)
     size_t countPos = out.size();
-    out.resize(out.size() + (size_t)h * 2, 0);   // 行バイト数テーブルのプレースホルダ
+    out.resize(out.size() + (size_t)h * countBytes, 0);   // 行バイト数テーブル
     for (int y = 0; y < h; y++) {
       size_t before = out.size();
       packBitsEncodeRow(out, plane + (size_t)y * w, w);
-      size_t rowBytes = out.size() - before;     // 想定画像サイズでは 65535 未満
-      out[countPos + (size_t)y * 2]     = (uint8_t)((rowBytes >> 8) & 0xff);
-      out[countPos + (size_t)y * 2 + 1] = (uint8_t)(rowBytes & 0xff);
+      putRowCount(out, countPos + (size_t)y * countBytes, out.size() - before, countBytes);
     }
     return buf;
   }
@@ -1112,7 +1158,8 @@ namespace psd {
 
   // BGRA を 4 チャンネル (-1:A, 0:R, 1:G, 2:B) に分解して RLE 符号化し lay に設定。
   // 既存のマスクチャンネル (-2/-3) は末尾に保持する (画素差し替えでマスクを失わない)。
-  void buildLayerChannels(LayerInfo &lay, const uint8_t *bgra, int w, int h) {
+  void buildLayerChannels(LayerInfo &lay, const uint8_t *bgra, int w, int h,
+                          int countBytes) {
     int px = w * h;
     std::vector<uint8_t> R((size_t)px), G((size_t)px), B((size_t)px), A((size_t)px);
     for (int i = 0; i < px; i++) {
@@ -1127,7 +1174,7 @@ namespace psd {
       { -1, &A }, { 0, &R }, { 1, &G }, { 2, &B },
     };
     for (const auto &c : chs) {
-      auto cbuf = buildRleChannel(c.p->data(), w, h);
+      auto cbuf = buildRleChannel(c.p->data(), w, h, countBytes);
       ChannelInfo ci(c.id, (int)cbuf->size());
       ci.imageData = new VectorReader(cbuf);   // push_back で clone (buf を共有)
       lay.channels.push_back(ci);
@@ -1228,7 +1275,7 @@ namespace psd {
       lay.layerNameUnicode = utf8ToU16(lay.layerName);
       lay.extraData.layerName = lay.layerName;
       const uint8_t dummy = 0;
-      buildLayerChannels(lay, &dummy, 0, 0);   // 幅高さ 0 → 各チャンネル 2 バイト
+      buildLayerChannels(lay, &dummy, 0, 0, rowCountBytes());   // 幅高さ 0 → 各チャンネル 2 バイト
       lay.extraData.rawBytes =
         new VectorReader(buildFolderExtra(lay.layerName, lay.layerId,
                                           lsctType, blendKey));
@@ -1254,7 +1301,7 @@ namespace psd {
     if (!bgra || width <= 0 || height <= 0) return false;
     if (header.depth != 8 || header.mode != COLOR_MODE_RGB) return false;
     LayerInfo &lay = layerList[(size_t)index];
-    buildLayerChannels(lay, bgra, width, height);
+    buildLayerChannels(lay, bgra, width, height, rowCountBytes());
     lay.right  = lay.left + width;
     lay.bottom = lay.top  + height;
     lay.width  = width;
@@ -1288,7 +1335,7 @@ namespace psd {
     lay.layerName = nameUtf8 ? nameUtf8 : "";
     lay.layerNameUnicode = utf8ToU16(lay.layerName);
     lay.extraData.layerName = lay.layerName;
-    buildLayerChannels(lay, bgra, width, height);
+    buildLayerChannels(lay, bgra, width, height, rowCountBytes());
     auto extra = buildLayerExtra(lay.layerName, lay.layerId);
     lay.extraData.rawBytes = new VectorReader(extra);
     int pos = (destIndex < 0 || destIndex > (int)layerList.size())
@@ -1336,7 +1383,8 @@ namespace psd {
     auto buf = std::make_shared<std::vector<uint8_t>>();
     buf->push_back(0); buf->push_back(1);                 // compression = 1 (RLE)
     const size_t countPos = buf->size();
-    buf->resize(buf->size() + (size_t)h * nch * 2, 0);
+    const int cb = rowCountBytes();
+    buf->resize(buf->size() + (size_t)h * nch * cb, 0);
 
     std::vector<uint8_t> row((size_t)w), enc;
     size_t line = 0;
@@ -1347,8 +1395,7 @@ namespace psd {
       packBitsEncodeRow(enc, row.data(), w);
       for (int y = 0; y < h; y++) {
         buf->insert(buf->end(), enc.begin(), enc.end());
-        (*buf)[countPos + line * 2]     = (uint8_t)((enc.size() >> 8) & 0xff);
-        (*buf)[countPos + line * 2 + 1] = (uint8_t)(enc.size() & 0xff);
+        putRowCount(*buf, countPos + line * cb, enc.size(), cb);
         line++;
       }
     }
@@ -1368,7 +1415,7 @@ namespace psd {
     for (const auto &c : lay.channels)
       if (!c.isMaskChannel()) kept.push_back(c);
     lay.channels.swap(kept);
-    auto cbuf = buildRleChannel(gray, width, height);
+    auto cbuf = buildRleChannel(gray, width, height, rowCountBytes());
     ChannelInfo mc(CH_ID_UMASK, (int)cbuf->size());   // -2
     mc.imageData = new VectorReader(cbuf);
     lay.channels.push_back(mc);
@@ -1434,7 +1481,7 @@ namespace psd {
     std::vector<uint8_t*> decodedChannels(channels);
     std::vector<int>      channelIds(channels);
     for (int i = 0; i < channels; i ++)	{
-      decodedChannels[i] = new uint8_t[imageChannelBytes];
+      decodedChannels[i] = new uint8_t[imageChannelBytes]();
       channelIds[i] = i;
     }
     
@@ -1451,8 +1498,10 @@ namespace psd {
       {
         uint32_t nextOffset = 0;
         for (int i = 0; i < channels; i ++)	{
-          nextOffset += decodePackBits(decodedChannels[i], tmpSourceBuffer,
-                                       imageHeight, channels, i, nextOffset);
+          nextOffset += decodePackBits(decodedChannels[i], (size_t)imageChannelBytes,
+                                       tmpSourceBuffer, (size_t)dataLength,
+                                       imageHeight, channels, i, nextOffset,
+                                       rowCountBytes());
         }
       }
       break;
