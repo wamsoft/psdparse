@@ -396,7 +396,10 @@ private:
     if (isGrad) {
       store.cs.emplace_back(); store.as.emplace_back();
       if (!descGradient(dynamic_cast<Descriptor*>(d->item("Grad").find()), store.cs.back(),
-                        store.as.back(), f.gradient)) return false;
+                        store.as.back(), f.gradient)) {
+        st_.unsupportedEffects++;   // ノイズグラデーション (乱数で色が決まる) など
+        return false;
+      }
       f.kind = PSDFX_FILL_GRADIENT;
       f.gradient_style = gradientStyle(d);
       f.angle = num(d, "Angl", 90);
@@ -479,6 +482,13 @@ private:
     Descriptor d;
     if (!readDescriptor(l, 'lfx2', 8, d)) return false;
     if (!flag(&d, "masterFXSwitch", true)) return false;
+    // 'infx' (内部効果を描画モードとしてまとめる): 1 バイト目が 1 なら
+    for (const auto &a : l.extraData.additionalLayers) {
+      if (a.key != 'infx' || !a.data) continue;
+      IteratorBase *r = a.data->clone(); r->init();
+      fx.blend_interior_as_group = r->rest() > 0 && r->getCh() != 0;
+      delete r;
+    }
     // 効果全体の拡大率 'Scl ' は保存されている値に反映済みなので掛けない
     const double sc = 1.0;
     const int gAngle = globalAngle(), gAlt = globalAltitude();
@@ -573,17 +583,18 @@ private:
     return out;
   }
 
-  // 1 枚のレイヤを (効果込みで) dst へ重ねる。clipAtop なら dst の不透明な所にだけ。
+  // 1 枚のレイヤを (効果込みで) dst へ重ねる。clipMask (dst と同じ大きさ) があれば
+  // その範囲にだけ (クリッピング)。
   // チャンネル制限があれば、外したチャンネルを重ねる前の値に戻す。
   void drawLayer(LayerInfo &l, Canvas &surface, int sx, int sy, Canvas &dst, int dx, int dy,
-                 float opacity, float fill, uint32_t blend, bool clipAtop) {
+                 float opacity, float fill, uint32_t blend, const uint8_t *clipMask) {
     const std::vector<int> excluded = excludedChannels(l);
     if (excluded.empty()) {
-      drawLayerImpl(l, surface, sx, sy, dst, dx, dy, opacity, fill, blend, clipAtop);
+      drawLayerImpl(l, surface, sx, sy, dst, dx, dy, opacity, fill, blend, clipMask);
       return;
     }
     const std::vector<uint8_t> before = dst.px;
-    drawLayerImpl(l, surface, sx, sy, dst, dx, dy, opacity, fill, blend, clipAtop);
+    drawLayerImpl(l, surface, sx, sy, dst, dx, dy, opacity, fill, blend, clipMask);
     for (int ch : excluded) {
       if (ch < 0 || ch > 2) continue;
       const int off = 2 - ch;   // BGRA の並びでの位置
@@ -592,32 +603,28 @@ private:
   }
 
   void drawLayerImpl(LayerInfo &l, Canvas &surface, int sx, int sy, Canvas &dst, int dx, int dy,
-                     float opacity, float fill, uint32_t blend, bool clipAtop) {
+                     float opacity, float fill, uint32_t blend, const uint8_t *clipMask) {
     psdfx_layer_effects fx;
     FxStore store;
     const bool withFx = opt_.effects && layerEffects(l, fx, store);
     psdfx_surface src = surface.surface();
-    if (!withFx) {
-      psdfx_surface d = dst.surface();
-      if (clipAtop) psdfx_composite_atop(&d, &src, sx - dx, sy - dy, blend, opacity * fill);
-      else psdfx_composite(&d, &src, sx - dx, sy - dy, blend, opacity * fill, nullptr, 0);
-      return;
-    }
     const double docBox[4] = { (double)-dx, (double)-dy,
                                (double)(psd_.header.width - dx), (double)(psd_.header.height - dy) };
-    if (!clipAtop) {
+    if (!clipMask) {
       psdfx_surface d = dst.surface();
-      psdfx_composite_with_effects(&d, &src, sx - dx, sy - dy, blend, opacity, fill, &fx, docBox,
-                                   surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
+      if (!withFx) psdfx_composite(&d, &src, sx - dx, sy - dy, blend, opacity * fill, nullptr, 0);
+      else psdfx_composite_with_effects(&d, &src, sx - dx, sy - dy, blend, opacity, fill, &fx, docBox,
+                                        surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
       return;
     }
-    // クリップされたレイヤの効果: 透明な面へ描いてから source-atop で
+    // クリップされたレイヤ: 透明な面へ (効果込みで) 描いてから、クリップ範囲のマスク付きで重ねる
     Canvas tmp(dst.width, dst.height);
     psdfx_surface t = tmp.surface();
-    psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox,
-                                 surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
+    if (!withFx) psdfx_composite(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), fill, nullptr, 0);
+    else psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox,
+                                      surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
     psdfx_surface d = dst.surface();
-    psdfx_composite_atop(&d, &t, 0, 0, blend, opacity);
+    psdfx_composite(&d, &t, 0, 0, blend, opacity, clipMask, dst.width);
   }
 
   // 画素を持つレイヤ 1 枚を面にする (マスク込み)。left / top は面の左上の位置。空なら false。
@@ -722,13 +729,23 @@ private:
     const float fill = l.fill_opacity / 255.f;
 
     if (clipped.empty()) {
-      drawLayer(l, base, bx, by, canvas, 0, 0, opacity, fill, (uint32_t)l.blendModeKey, false);
+      drawLayer(l, base, bx, by, canvas, 0, 0, opacity, fill, (uint32_t)l.blendModeKey, nullptr);
       return;
     }
-    // 下地 (効果込み) の上にクリップされたレイヤを source-atop で重ね、まとめて下へ。
-    // 下地の効果の外側 (影など) もクリップの範囲になるよう、文書大の面で扱う。
+    // 下地 (効果込み) の上にクリップされたレイヤを重ね、まとめて下へ。クリップの範囲は
+    // 下地の画素の形 (塗りの不透明度や効果は含まない。照合で確認)。
     Canvas group(canvas.width, canvas.height);
-    drawLayer(l, base, bx, by, group, 0, 0, 1.f, fill, PSDFX_KEY('n','o','r','m'), false);
+    drawLayer(l, base, bx, by, group, 0, 0, 1.f, fill, PSDFX_KEY('n','o','r','m'), nullptr);
+    std::vector<uint8_t> clipMask((size_t)canvas.width * canvas.height, 0);
+    for (int y = 0; y < base.height; y++) {
+      const int dy = by + y;
+      if (dy < 0 || dy >= canvas.height) continue;
+      for (int x = 0; x < base.width; x++) {
+        const int dx = bx + x;
+        if (dx < 0 || dx >= canvas.width) continue;
+        clipMask[(size_t)dy * canvas.width + dx] = base.px[((size_t)y * base.width + x) * 4 + 3];
+      }
+    }
     for (int ci : clipped) {
       LayerInfo &c = psd_.layerList[(size_t)ci];
       if (!visible(c)) continue;
@@ -738,7 +755,7 @@ private:
       int cx = 0, cy = 0;
       if (!layerSurface(c, cs, cx, cy)) continue;
       drawLayer(c, cs, cx, cy, group, 0, 0, c.opacity / 255.f, c.fill_opacity / 255.f,
-                (uint32_t)c.blendModeKey, true);
+                (uint32_t)c.blendModeKey, clipMask.data());
     }
     psdfx_surface dst = canvas.surface(), src = group.surface();
     psdfx_composite(&dst, &src, 0, 0, (uint32_t)l.blendModeKey, opacity, nullptr, 0);
@@ -749,6 +766,10 @@ private:
     const float opacity = g.opacity / 255.f;
     const int key = g.sectionBlendKey ? g.sectionBlendKey : g.blendModeKey;
     std::vector<uint8_t> mask = documentMask(g);
+    if (g.artboard.present) {
+      renderArtboard(idx, canvas);
+      return;
+    }
     if (key == 'pass') {
       if (opacity >= 1.f && mask.empty()) {
         renderChildren(idx, canvas);
@@ -768,8 +789,37 @@ private:
                     mask.empty() ? nullptr : mask.data(), canvas.width);
   }
 
-  static void scaleAlpha(Canvas &c, float k) {
-    for (size_t i = 3; i < c.px.size(); i += 4) c.px[i] = (uint8_t)(c.px[i] * k + 0.5f);
+  // アートボード: 枠を背景色で塗った独立した面へ中身を描き、枠の外を落として重ねる。
+  // 背景: 1 白 (既定) / 2 黒 / 3 透明 / 4 指定色
+  void renderArtboard(int idx, Canvas &canvas) {
+    LayerInfo &g = psd_.layerList[(size_t)idx];
+    const ArtboardInfo &ab = g.artboard;
+    const int x0 = std::max(0, (int)std::floor(ab.left)), y0 = std::max(0, (int)std::floor(ab.top));
+    const int x1 = std::min(canvas.width, (int)std::ceil(ab.right));
+    const int y1 = std::min(canvas.height, (int)std::ceil(ab.bottom));
+    Canvas buf(canvas.width, canvas.height);
+    uint8_t bg[4] = { 255, 255, 255, 255 };   // B, G, R, A
+    switch (ab.backgroundType) {
+    case 2: bg[0] = bg[1] = bg[2] = 0; break;
+    case 3: bg[3] = 0; break;
+    case 4:
+      if (ab.hasColor) {
+        bg[0] = (uint8_t)std::min(255.0, std::max(0.0, ab.color[2]));
+        bg[1] = (uint8_t)std::min(255.0, std::max(0.0, ab.color[1]));
+        bg[2] = (uint8_t)std::min(255.0, std::max(0.0, ab.color[0]));
+      }
+      break;
+    default: break;
+    }
+    if (bg[3])
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) std::memcpy(&buf.px[((size_t)y * buf.width + x) * 4], bg, 4);
+    renderChildren(idx, buf);
+    for (int y = 0; y < buf.height; y++)
+      for (int x = 0; x < buf.width; x++)
+        if (x < x0 || x >= x1 || y < y0 || y >= y1) buf.px[((size_t)y * buf.width + x) * 4 + 3] = 0;
+    psdfx_surface dst = canvas.surface(), src = buf.surface();
+    psdfx_composite(&dst, &src, 0, 0, PSDFX_KEY('n','o','r','m'), g.opacity / 255.f, nullptr, 0);
   }
 };
 

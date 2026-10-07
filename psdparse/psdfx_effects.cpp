@@ -263,9 +263,11 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     }
   }
   if (lb[0] > lb[2]) { lb[0] = left; lb[1] = top; lb[2] = left + layer->width; lb[3] = top + layer->height; }
-  // 形の中: レイヤの色を (形の中での透明度 x 塗りの不透明度) で。形の外は空
+  // 形の中: レイヤの色を (形の中での透明度 x 塗りの不透明度) で。形の外は空。
+  // 内部効果をまとめるときは、塗りの不透明度は内側の効果のあとでまとめて掛ける。
+  const float fillOnContent = fx->blend_interior_as_group ? 1.f : clamp01(fill_opacity);
   for (size_t i = 0; i < A.v.size(); i++)
-    S[i * 4 + 3] = A.v[i] > 0.f ? to8(clamp01(C.v[i] / A.v[i]) * clamp01(fill_opacity)) : 0;
+    S[i * 4 + 3] = A.v[i] > 0.f ? to8(clamp01(C.v[i] / A.v[i]) * fillOnContent) : 0;
 
   // --- 外側の効果 (下地へ) ---
   const psdfx_shadow &ds = fx->drop_shadow;
@@ -372,8 +374,9 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     }
   }
 
-  // 形の中の被覆率 → 実際のアルファ
-  for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i]);
+  // 形の中の被覆率 → 実際のアルファ (内部効果をまとめるなら塗りの不透明度もここで)
+  const float fillAfter = fx->blend_interior_as_group ? clamp01(fill_opacity) : 1.f;
+  for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i] * fillAfter);
 
   // --- 境界線 (形の上、外側は形の外へ) ---
   const psdfx_stroke &st = fx->stroke;

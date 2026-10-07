@@ -246,6 +246,9 @@ typedef struct psdfx_layer_effects {
   psdfx_overlay color_overlay, gradient_overlay, pattern_overlay;
   psdfx_satin satin;
   psdfx_bevel bevel;
+  /* 「内部効果を描画モードとしてまとめる」: オーバーレイ / 内側の効果にも塗りの
+   * 不透明度を掛ける (既定 0 = 塗りの不透明度はレイヤの画素だけ) */
+  int blend_interior_as_group;
 } psdfx_layer_effects;
 
 /* 効果がレイヤの外へはみ出す量 (px)。描画範囲を広げるのに使う。 */
