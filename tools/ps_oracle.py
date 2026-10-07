@@ -235,6 +235,119 @@ def white_png(folder):
     return path
 
 
+
+# --- レイヤー効果 / 描画モード ------------------------------------------------
+
+def square_layer(x0, y0, x1, y1, rgb=(255, 255, 255)):
+    r, g, b = rgb
+    return f"""
+var sq = d.artLayers.add(); sq.name = "shape";
+app.foregroundColor.rgb.red = {r}; app.foregroundColor.rgb.green = {g}; app.foregroundColor.rgb.blue = {b};
+d.selection.select([[{x0},{y0}],[{x1},{y0}],[{x1},{y1}],[{x0},{y1}]]);
+d.selection.fill(app.foregroundColor); d.selection.deselect();
+"""
+
+
+def ellipse_layer(x0, y0, x1, y1, rgb=(255, 255, 255)):
+    r, g, b = rgb
+    return f"""
+var sq = d.artLayers.add(); sq.name = "shape";
+app.foregroundColor.rgb.red = {r}; app.foregroundColor.rgb.green = {g}; app.foregroundColor.rgb.blue = {b};
+var sd = new ActionDescriptor(); var sr = new ActionReference(); sr.putProperty(cTID("Chnl"), cTID("fsel")); sd.putReference(cTID("null"), sr);
+var el = new ActionDescriptor(); el.putUnitDouble(cTID("Top "), cTID("#Pxl"), {y0}); el.putUnitDouble(cTID("Left"), cTID("#Pxl"), {x0});
+el.putUnitDouble(cTID("Btom"), cTID("#Pxl"), {y1}); el.putUnitDouble(cTID("Rght"), cTID("#Pxl"), {x1});
+sd.putObject(cTID("T   "), cTID("Elps"), el); sd.putBoolean(cTID("AntA"), true);
+executeAction(cTID("setd"), sd, DialogModes.NO);
+d.selection.fill(app.foregroundColor); d.selection.deselect();
+"""
+
+
+def _color(var, rgb):
+    r, g, b = rgb
+    return f'var {var} = new ActionDescriptor(); {var}.putDouble(cTID("Rd  "), {r}); {var}.putDouble(cTID("Grn "), {g}); {var}.putDouble(cTID("Bl  "), {b});'
+
+
+def effect(key, fields):
+    """fields: JSX 文の列 (変数 e に追加)。key: OrGl / IrGl / DrSh / IrSh / ebbl / ChFX / FrFX"""
+    body = "\n".join(fields)
+    return f"""
+var d0 = new ActionDescriptor(); var r0 = new ActionReference();
+r0.putProperty(cTID("Prpr"), cTID("Lefx")); r0.putEnumerated(cTID("Lyr "), cTID("Ordn"), cTID("Trgt"));
+d0.putReference(cTID("null"), r0);
+var fx = new ActionDescriptor(); fx.putUnitDouble(cTID("Scl "), cTID("#Prc"), 100);
+var e = new ActionDescriptor(); e.putBoolean(cTID("enab"), true);
+{body}
+fx.putObject(cTID("{key}"), cTID("{key}"), e);
+d0.putObject(cTID("T   "), cTID("Lefx"), fx);
+executeAction(cTID("setd"), d0, DialogModes.NO);
+"""
+
+
+def outer_glow(size, rng=50, spread=0, precise=False, rgb=(255, 0, 0), mode="Nrml", opacity=100):
+    return effect("OrGl", [
+        f'e.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("{mode}"));', _color("c", rgb), 'e.putObject(cTID("Clr "), cTID("RGBC"), c);',
+        f'e.putUnitDouble(cTID("Opct"), cTID("#Prc"), {opacity});',
+        f'e.putEnumerated(cTID("GlwT"), cTID("BETE"), cTID("{"PrBL" if precise else "SfBL"}"));',
+        f'e.putUnitDouble(cTID("Ckmt"), cTID("#Pxl"), {spread}); e.putUnitDouble(cTID("blur"), cTID("#Pxl"), {size});',
+        f'e.putUnitDouble(cTID("Inpr"), cTID("#Prc"), {rng}); e.putUnitDouble(cTID("ShdN"), cTID("#Prc"), 0);'])
+
+
+def inner_glow(size, rng=50, spread=0, precise=False, rgb=(255, 0, 0), center=False):
+    return effect("IrGl", [
+        'e.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Nrml"));', _color("c", rgb), 'e.putObject(cTID("Clr "), cTID("RGBC"), c);',
+        'e.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100);',
+        f'e.putEnumerated(cTID("GlwT"), cTID("BETE"), cTID("{"PrBL" if precise else "SfBL"}"));',
+        f'e.putUnitDouble(cTID("Ckmt"), cTID("#Pxl"), {spread}); e.putUnitDouble(cTID("blur"), cTID("#Pxl"), {size});',
+        f'e.putUnitDouble(cTID("Inpr"), cTID("#Prc"), {rng}); e.putUnitDouble(cTID("ShdN"), cTID("#Prc"), 0);',
+        f'e.putEnumerated(cTID("glwS"), cTID("IGSr"), cTID("{"SrcC" if center else "SrcE"}"));'])
+
+
+def shadow(key, size, distance=0, spread=0, angle=90, rgb=(255, 0, 0)):
+    return effect(key, [
+        'e.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Nrml"));', _color("c", rgb), 'e.putObject(cTID("Clr "), cTID("RGBC"), c);',
+        'e.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100); e.putBoolean(cTID("uglg"), false);',
+        f'e.putUnitDouble(cTID("lagl"), cTID("#Ang"), {angle}); e.putUnitDouble(cTID("Dstn"), cTID("#Pxl"), {distance});',
+        f'e.putUnitDouble(cTID("Ckmt"), cTID("#Pxl"), {spread}); e.putUnitDouble(cTID("blur"), cTID("#Pxl"), {size});',
+        'e.putUnitDouble(cTID("Nose"), cTID("#Prc"), 0); e.putBoolean(cTID("AntA"), false);'])
+
+
+def bevel(style="InrB", tech="SfBL", depth=100, up=True, size=10, soften=0, angle=120, altitude=30,
+          hi=(255, 255, 255), sh=(0, 0, 0), hmode="Scrn", smode="Mltp", hop=75, sop=75):
+    return effect("ebbl", [
+        f'e.putEnumerated(cTID("hglM"), cTID("BlnM"), cTID("{hmode}"));', _color("hc", hi), 'e.putObject(cTID("hglC"), cTID("RGBC"), hc);',
+        f'e.putUnitDouble(cTID("hglO"), cTID("#Prc"), {hop});',
+        f'e.putEnumerated(cTID("sdwM"), cTID("BlnM"), cTID("{smode}"));', _color("sc", sh), 'e.putObject(cTID("sdwC"), cTID("RGBC"), sc);',
+        f'e.putUnitDouble(cTID("sdwO"), cTID("#Prc"), {sop});',
+        f'e.putEnumerated(cTID("bvlT"), cTID("bvlT"), cTID("{tech}"));',
+        f'e.putEnumerated(cTID("bvlS"), cTID("BESl"), cTID("{style}"));',
+        'e.putBoolean(cTID("uglg"), false);',
+        f'e.putUnitDouble(cTID("lagl"), cTID("#Ang"), {angle}); e.putUnitDouble(cTID("Lald"), cTID("#Ang"), {altitude});',
+        f'e.putUnitDouble(cTID("srgR"), cTID("#Prc"), {depth});',
+        f'e.putUnitDouble(cTID("blur"), cTID("#Pxl"), {size});',
+        f'e.putEnumerated(cTID("bvlD"), cTID("BESs"), cTID("{"In  " if up else "Out "}"));',
+        'e.putBoolean(sTID("antialiasGloss"), false);',
+        f'e.putUnitDouble(cTID("Sftn"), cTID("#Pxl"), {soften});',
+        'e.putBoolean(sTID("useShape"), false); e.putBoolean(sTID("useTexture"), false);'])
+
+
+def solid_layer(rgb, mode, opacity=100, fill=100):
+    """全面を単色で塗ったレイヤ (描画モード / 不透明度 / 塗り)"""
+    r, g, b = rgb
+    return f"""
+var sl = d.artLayers.add(); sl.name = "solid";
+app.foregroundColor.rgb.red = {r}; app.foregroundColor.rgb.green = {g}; app.foregroundColor.rgb.blue = {b};
+d.selection.selectAll(); d.selection.fill(app.foregroundColor); d.selection.deselect();
+sl.blendMode = BlendMode.{mode}; sl.opacity = {opacity}; sl.fillOpacity = {fill};
+"""
+
+
+def black_png(folder):
+    path = os.path.join(folder, "_black.png")
+    if not os.path.exists(path):
+        Image.fromarray(np.zeros((160, 160, 3), np.uint8), "RGB").save(path)
+    return path
+
+
 # ケース名 -> (元画像, JSX, 許す最大誤差 (0..255)、平均誤差の上限)
 def cases():
     return {
@@ -263,6 +376,22 @@ def cases():
         "pf_blue_preserve": ("cube", photo_filter((0, 90, 255), 60, True), 8, 0.5),
         "mask_feather_2": ("white", masked_black(2), 4, 0.5),
         "mask_feather_15": ("white", masked_black(15), 3, 0.5),
+        "mode_linear_burn_fill": ("cube", solid_layer((40, 120, 200), "LINEARBURN", 100, 50), 2, 0.5),
+        "mode_hard_mix_fill": ("cube", solid_layer((40, 120, 200), "HARDMIX", 100, 50), 3, 0.5),
+        "mode_hard_mix_opacity": ("cube", solid_layer((40, 120, 200), "HARDMIX", 50, 100), 2, 0.5),
+        "mode_vivid_light_fill": ("cube", solid_layer((40, 120, 200), "VIVIDLIGHT", 100, 50), 2, 0.5),
+        "fx_outer_glow_soft": ("black", square_layer(60, 60, 100, 100) + outer_glow(20), 12, 0.5),
+        "fx_outer_glow_precise": ("black", square_layer(60, 60, 100, 100) + outer_glow(20, 25, precise=True), 15, 0.5),
+        "fx_inner_glow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + inner_glow(10), 20, 0.5),
+        "fx_inner_shadow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + shadow("IrSh", 10, distance=8), 12, 0.5),
+        "fx_drop_shadow": ("black", square_layer(60, 60, 100, 100) + shadow("DrSh", 20, spread=50), 12, 0.5),
+        "fx_bevel_inner": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(), 18, 0.5),
+        "fx_bevel_emboss": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel("Embs"), 25, 0.6),
+        "fx_bevel_chisel": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(tech="PrBL"), 36, 0.5),
+        "fx_bevel_linear_burn": ("black", ellipse_layer(17, 20, 140, 143, (249, 237, 52)) +
+                                 bevel(size=60, hi=(251, 250, 137), sh=(244, 210, 21), hmode="Scrn",
+                                       smode="linearBurn", hop=0, sop=70).replace('cTID("linearBurn")', 'sTID("linearBurn")'),
+                                 15, 0.5),
     }
 
 
@@ -272,7 +401,7 @@ def main(argv):
         return 1
     out = argv[0]
     os.makedirs(out, exist_ok=True)
-    bases = {"cube": cube_png(out), "ramp": ramp_png(out), "white": white_png(out)}
+    bases = {"cube": cube_png(out), "ramp": ramp_png(out), "white": white_png(out), "black": black_png(out)}
     limits = {}
     for name, (base, js, mx, mean) in cases().items():
         limits[name] = {"max": mx, "mean": mean}
