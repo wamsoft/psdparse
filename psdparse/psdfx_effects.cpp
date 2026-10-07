@@ -475,26 +475,44 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i] * fillAfter);
 
   // --- 境界線 (形の上、外側は形の外へ) ---
-  // 境界線の「形の内側」は被覆率 50% (8bit で 127) 以上。濃度 50% のマスクで
-  // 半透明になった所も内側に数える (Photoshop の合成画像と照合して確認)
-  const float kStrokeIn = 126.5f / 255.f;
   eachBottomUp(fx->stroke, fx->more_strokes, fx->more_stroke_count, [&](const psdfx_stroke &st) {
   if (st.enabled && st.opacity > 0 && st.size > 0) {
     Plane cov(W, H);
     const double sz = st.position == PSDFX_STROKE_CENTER ? st.size * 0.5 : st.size;
+    // 形の各画素 q を「半径 線幅 + A(q)」の円とみなした和 (外側)、内側は 1 - A(q) で
+    // 同じことをしたもの。被覆率 = clamp(線幅 - D)、D = min_q (|p - q| - A(q))。
+    // アルファのしきい値ごとの距離変換の最小で求める。硬い縁では従来の
+    // 「縁からの距離」と同じで、ぼかした縁ではアルファの付いた画素すべてが形に入る
+    // (Photoshop で測定)
+    auto softDistance = [&](bool outside) {
+      Plane D(W, H, 1e9f);
+      static const float kLevels[] = { 1.f / 255, 1.f / 16, 2.f / 16, 3.f / 16, 4.f / 16, 5.f / 16, 6.f / 16,
+                                       7.f / 16, 8.f / 16, 9.f / 16, 10.f / 16, 11.f / 16, 12.f / 16,
+                                       13.f / 16, 14.f / 16, 15.f / 16, 254.5f / 255 };
+      for (float t : kLevels) {
+        Plane d = outside ? distanceTo(A, true, t) : distanceTo(A, false, 1.f - t + 1e-6f);
+        for (size_t i = 0; i < D.v.size(); i++) D.v[i] = std::min(D.v[i], d.v[i] - t);
+      }
+      return D;
+    };
+    // 外側の分は、通常モードならレイヤの下に重ねる (形の中の半透明な所で中身の色が残る)
+    Plane under;
+    const bool normalStroke = st.blend == PSDFX_KEY('n','o','r','m');
     if (st.position != PSDFX_STROKE_INSIDE) {
-      Plane din = distanceTo(A, true, kStrokeIn);
+      Plane D = softDistance(true);
+      under = Plane(W, H);
       for (size_t i = 0; i < cov.v.size(); i++) {
-        const bool in = A.v[i] >= kStrokeIn;
-        cov.v[i] = in ? 1.f - A.v[i] : clamp01((float)(sz + 1.0 - din.v[i]));
+        const float c = clamp01((float)(sz - D.v[i]));
+        under.v[i] = c;
       }
     }
+    // 内側の分は中身の色を置き換え、アルファは中身のまま (source-atop。Photoshop で確認)
+    Plane inner;
     if (st.position != PSDFX_STROKE_OUTSIDE) {
-      Plane dout = distanceTo(A, false, kStrokeIn);
-      for (size_t i = 0; i < cov.v.size(); i++) {
-        const bool in = A.v[i] >= kStrokeIn;
-        if (in) cov.v[i] = std::max(cov.v[i], A.v[i] * clamp01((float)(sz + 1.0 - dout.v[i])));
-      }
+      Plane D = softDistance(false);
+      inner = Plane(W, H);
+      for (size_t i = 0; i < inner.v.size(); i++)
+        if (A.v[i] > 0.f) inner.v[i] = clamp01((float)(sz - D.v[i]));
     }
     // グラデーションの線は、形の範囲を外側の線幅 - 1 だけ広げた枠に描く
     // (Photoshop の合成画像と照合して確認)
@@ -504,7 +522,38 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     const double grow = std::max(0.0, std::ceil(outW) - 1.0);
     sb[0] -= grow; sb[1] -= grow; sb[2] += grow; sb[3] += grow;
     std::vector<uint8_t> px = paintSource(st.fill, W, H, ox, oy, sb, doc_box);
-    compositeCoverage(&Ss, px, cov, 0, 0, st.blend, st.opacity);
+    if (normalStroke) {
+      // 通常モード: 線と中身を形 A で分け合う (Photoshop で確認)
+      //   外側: 形の外の分 c x (1 - A) を足す (形の中は中身のまま。塗り 0% でも形の中に入らない)
+      //   内側: 形の中の分 c で中身を置き換える (中身が透明でも形の中には線が出る)
+      const float op = clamp01(st.opacity);
+      for (size_t i = 0; i < A.v.size(); i++) {
+        uint8_t *q = &S[i * 4];
+        float sa = q[3] / 255.f;
+        float pr[3] = { q[0] / 255.f * sa, q[1] / 255.f * sa, q[2] / 255.f * sa };
+        const float a = A.v[i];
+        const float pa = px[i * 4 + 3] / 255.f;
+        const float st3[3] = { px[i * 4] / 255.f, px[i * 4 + 1] / 255.f, px[i * 4 + 2] / 255.f };
+        if (!inner.v.empty() && inner.v[i] > 0.f && a > 0.f) {
+          const float c = inner.v[i] * op * pa;
+          for (int k = 0; k < 3; k++) pr[k] = pr[k] * (1.f - c) + st3[k] * c * a;
+          sa = sa * (1.f - c) + c * a;
+        }
+        if (!under.v.empty() && under.v[i] > 0.f) {
+          const float c = under.v[i] * op * pa * (1.f - a);
+          for (int k = 0; k < 3; k++) pr[k] += st3[k] * c;
+          sa = std::min(1.f, sa + c);
+        }
+        q[3] = to8(sa);
+        for (int k = 0; k < 3; k++) q[k] = sa > 0.f ? to8(pr[k] / sa) : 0;
+      }
+    } else {
+      if (!under.v.empty())
+        for (size_t i = 0; i < cov.v.size(); i++) cov.v[i] = A.v[i] > 0.f ? under.v[i] * (1.f - A.v[i]) : under.v[i];
+      if (!inner.v.empty())
+        for (size_t i = 0; i < cov.v.size(); i++) cov.v[i] = std::max(cov.v[i], A.v[i] * inner.v[i]);
+      compositeCoverage(&Ss, px, cov, 0, 0, st.blend, st.opacity);
+    }
   }
   });
   if (!bevelOuterHi.v.empty()) {
