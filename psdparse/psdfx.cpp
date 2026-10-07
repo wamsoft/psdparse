@@ -181,6 +181,16 @@ static void compositeImpl(psdfx_surface *dst, const psdfx_surface *src, int dx, 
         for (int i = 0; i < 3; i++) b[i] = as * B[i] + (1.f - as) * b[i];
       } else if (normal && ab <= 0.f) {
         b[0] = sc[0]; b[1] = sc[1]; b[2] = sc[2]; ab = as;
+      } else if (key == PSDFX_KEY('h','M','i','x')) {
+        // ハードミックス: しきい値の判定には不透明度を掛けた上の色を使う
+        // (cb + cs x 不透明度 >= 1。Photoshop の合成画像と照合して確認)
+        const float ao = as + ab - as * ab;
+        for (int i = 0; i < 3; i++) {
+          const float B = b[i] + sc[i] * op >= 1.f - 1e-6f ? 1.f : 0.f;
+          const float co = (1.f - as) * ab * b[i] + (1.f - ab) * as * sc[i] + as * ab * B;
+          b[i] = ao > 0.f ? co / ao : 0.f;
+        }
+        ab = ao;
       } else {
         blendPixel(key, b, ab, sc, as);
       }
