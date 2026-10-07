@@ -124,6 +124,7 @@ Read-only view of one layer.
 | `blending_ranges` | `dict` \| `None` | "Blend If" ranges (`None` when absent) — see below |
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
+| `name_raw` | `bytes` | the Pascal layer name as stored (system encoding). `name` decodes it as UTF-8 and falls back to `name_unicode` (or replacement characters) instead of raising |
 | `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
 | `legacy_effects` | `dict` \| `None` | old-style effects (`lrFX`) as `{type: values}`: `common_state`, `drop_shadow`, `inner_shadow`, `outer_glow`, `inner_glow`, `bevel`, `solid_fill`; colors are `[color_space, c0, c1, c2, c3]`, blend modes 4-char keys, blur / intensity / distance the stored 32-bit values |
 | `adjustment` | `dict` \| `None` | adjustment layer parameters `{"type", "key", ...}` — see [Adjustment layers](#adjustment-layers) |

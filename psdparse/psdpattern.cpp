@@ -202,6 +202,10 @@ bool PSDFile::getPatternImage(int index, std::vector<uint8_t> &bgra, int &width,
     const size_t rowBytes = (size_t)w * bpp;
     const uint8_t *src = &one[r.p];
     const size_t srcLen = start + len - r.p;
+    // 宣言寸法がデータ量に見合わなければ確保する前に断る (RLE は最大 64 倍)
+    const int64_t need = (int64_t)rowBytes * h;
+    if ((compression == 0 && need > (int64_t)srcLen) ||
+        (compression == 1 && need > (int64_t)srcLen * 64)) return false;
     std::vector<uint8_t> plane;
     if (compression == 0) {
       if (srcLen < rowBytes * h) return false;

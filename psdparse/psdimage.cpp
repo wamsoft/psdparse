@@ -828,10 +828,73 @@ namespace psd {
     }
   }
 
+  // 圧縮データ encodedLen バイトから復元できるバイト数の上限の目安。壊れたファイルが
+  // 宣言する巨大な寸法を、確保する前に弾くために使う。
+  //   raw: そのまま / RLE (PackBits): 2 バイトで最大 128 バイト / ZIP: zlib の最大伸長率
+  static int64_t maxDecodedBytes(int compression, int64_t encodedLen) {
+    if (encodedLen < 0) return 0;
+    switch (compression) {
+    case 0:  return encodedLen;
+    case 1:  return encodedLen * 64;
+    case 2:
+    case 3:  return encodedLen * 1032 + 1024;
+    default: return 0;
+    }
+  }
+
+  static int64_t bytesPerPlane(int width, int height, int depth) {
+    if (width <= 0 || height <= 0) return 0;
+    if (depth == 1) return (int64_t)((width + 7) / 8) * height;
+    return (int64_t)width * height * (depth / 8);
+  }
+
+  bool PSDFile::canDecodeLayerImage(const LayerInfo &layer, ImageMode mode)
+  {
+    const LayerMask &mask = layer.extraData.layerMask;
+    const int w = (mode == IMAGE_MODE_MASK) ? mask.width : layer.width;
+    const int h = (mode == IMAGE_MODE_MASK) ? mask.height : layer.height;
+    if (w <= 0 || h <= 0 || w > 300000 || h > 300000) return false;
+    if (header.depth != 1 && header.depth != 8 && header.depth != 16 && header.depth != 32) return false;
+    for (const auto &ch : layer.channels) {
+      if (!ch.imageData) continue;
+      const bool isMask = ch.isMaskChannel();
+      if (mode == IMAGE_MODE_IMAGE && isMask) continue;
+      if (mode == IMAGE_MODE_MASK && !isMask) continue;
+      const int64_t need = isMask ? bytesPerPlane(mask.width, mask.height, header.depth)
+                                  : bytesPerPlane(layer.width, layer.height, header.depth);
+      if (need == 0) continue;
+      IteratorBase *r = ch.imageData->clone();
+      r->init();
+      const int avail = r->rest();
+      const int comp = avail >= 2 ? r->getInt16() : -1;
+      delete r;
+      const int64_t len = std::min<int64_t>((int64_t)ch.length - 2, (int64_t)avail - 2);
+      if (need > maxDecodedBytes(comp, len)) return false;
+    }
+    return true;
+  }
+
+  bool PSDFile::canDecodeMergedImage()
+  {
+    if (!imageData) return false;
+    if (header.width <= 0 || header.height <= 0 ||
+        header.width > 300000 || header.height > 300000 ||
+        header.channels <= 0 || header.channels > 56) return false;
+    const int64_t need = bytesPerPlane(header.width, header.height, header.depth) * header.channels;
+    if (need == 0) return false;
+    IteratorBase *r = imageData->clone();
+    r->init();
+    const int avail = r->rest();
+    const int comp = avail >= 2 ? r->getInt16() : -1;
+    delete r;
+    return need <= maxDecodedBytes(comp, (int64_t)avail - 2);
+  }
+
   // レイヤー画像を取得
   bool PSDFile::getLayerImage(const LayerInfo &layer, void *buf, const ColorFormat &format,
                               int bufPitchByte, ImageMode mode)
   {
+    if (!canDecodeLayerImage(layer, mode)) return false;
     const psd::LayerMask &mask  = layer.extraData.layerMask;
 
     int imageWidth  = layer.width;
@@ -841,6 +904,13 @@ namespace psd {
     
     int maskWidth   = mask.width;
     int maskHeight  = mask.height;
+    // 壊れた矩形 (負 / 巨大) では展開しない。マスクだけ壊れているならマスク無し扱い。
+    auto sane = [](int w, int h) {
+      return w > 0 && h > 0 && w <= 300000 && h <= 300000 && (int64_t)w * h <= (1LL << 28);
+    };
+    if (!sane(maskWidth, maskHeight)) { maskWidth = 0; maskHeight = 0; }
+    if (mode != IMAGE_MODE_MASK && !sane(imageWidth, imageHeight)) return false;
+    if (mode == IMAGE_MODE_MASK && maskWidth == 0) return false;
     int maskPixels  = maskWidth * maskHeight;
     int maskChannelBytes  = 0;
 
@@ -898,6 +968,9 @@ namespace psd {
       channel.imageData->init();
       int compressionId = channel.imageData->getInt16();
       int dataLength    = channel.length - 2; // 2: 頭についてる compress id 分減らす
+      // 宣言長は実際に残っているデータ量までに抑える (壊れた長さで巨大な確保をしない)
+      if (dataLength > channel.imageData->rest()) dataLength = channel.imageData->rest();
+      if (dataLength < 0) dataLength = 0;
       if (compressionId != 0) {
         // 圧縮の場合は一時ソースバッファにコピーしておく
         if (dataLength > tmpSourceBufferSize) {
@@ -950,9 +1023,10 @@ namespace psd {
 
       // TODO real user mask と user mask が同時に入ってるケース
       switch (channel.id) {
-      case CH_ID_TRANSP:     alphaChannelIndex = i; break;
-      case CH_ID_UMASK:      maskChannelIndex  = i; break;
-      case CH_ID_REAL_UMASK: maskChannelIndex  = i; break;
+      // decodedChannels 上の位置で覚える (飛ばしたチャンネルがあるとずれるので i ではない)
+      case CH_ID_TRANSP:     alphaChannelIndex = (int)decodedChannels.size(); break;
+      case CH_ID_UMASK:      maskChannelIndex  = (int)decodedChannels.size(); break;
+      case CH_ID_REAL_UMASK: maskChannelIndex  = (int)decodedChannels.size(); break;
       default: break;
       }
 
@@ -962,6 +1036,24 @@ namespace psd {
     
     if (tmpSourceBuffer) {
       delete[] tmpSourceBuffer;
+    }
+
+    // 色チャンネルが欠けている (壊れたファイル) と合成で null を参照するので、
+    // 足りない分を 0 で埋めたチャンネルとして補う。
+    if (mode != IMAGE_MODE_MASK) {
+      int need = 0;
+      switch (header.mode) {
+      case COLOR_MODE_RGB: case COLOR_MODE_LAB: need = 3; break;
+      case COLOR_MODE_CMYK:                     need = 4; break;
+      default:                                  need = 1; break;
+      }
+      for (int id = 0; id < need; id++) {
+        bool have = false;
+        for (int cid : channelIds) if (cid == id) have = true;
+        if (have) continue;
+        decodedChannels.push_back(new uint8_t[imageChannelBytes > 0 ? imageChannelBytes : 1]());
+        channelIds.push_back(id);
+      }
     }
 
     if (mode == IMAGE_MODE_MASK && maskChannelIndex < 0) {
@@ -1470,7 +1562,7 @@ namespace psd {
   bool PSDFile::decodeMergedPlanes(std::vector<std::vector<uint8_t>> &planes)
   {
     planes.clear();
-    if (!imageData) return false;
+    if (!canDecodeMergedImage()) return false;
     const int imageWidth  = header.width;
     const int imageHeight = header.height;
     const int imagePixels = imageWidth * imageHeight;

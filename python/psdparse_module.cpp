@@ -34,6 +34,9 @@ py::object u16ToStr(const psd::u16str &s) {
 py::bytes mergedImage(psd::PSDFile &self) {
   if (!self.isLoaded) throw std::runtime_error("PSD not loaded");
   if (!self.imageData) throw std::runtime_error("no merged image stored in this PSD");
+  // 寸法がデータ量に見合わない (壊れた) ときは確保する前に断る
+  if (!self.canDecodeMergedImage())
+    throw std::runtime_error("merged image size does not match its data (damaged file?)");
   size_t n = (size_t)self.header.width * (size_t)self.header.height * 4;
   std::string buf(n, '\0');
   self.getMergedImage(buf.data(), psd::BGRA_LE, 0);
@@ -244,6 +247,13 @@ py::object layerVectorMask(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+// ファイル由来のバイト列 (ID や 4 文字コード) を str へ。UTF-8 として読めない
+// バイト (壊れたファイル) は置換文字にして、例外にはしない。
+py::object lossyStr(const std::string &b) {
+  return py::reinterpret_steal<py::object>(
+      PyUnicode_DecodeUTF8(b.data(), (Py_ssize_t)b.size(), "replace"));
+}
+
 py::dict descToPy(psd::Descriptor *d);
 
 // AdjustmentInfo (名前付きの値の入れ物) を dict へ: {"type", "key", <named values>}。
@@ -280,7 +290,7 @@ py::dict namedValuesToPy(const psd::AdjustmentInfo &a) {
     }
     d[kv.first.c_str()] = rows;
   }
-  for (const auto &kv : a.text) d[kv.first.c_str()] = py::str(kv.second);   // 4 文字コード
+  for (const auto &kv : a.text) d[kv.first.c_str()] = lossyStr(kv.second);   // 4 文字コード
   for (const auto &kv : a.unicode) d[kv.first.c_str()] = u16ToStr(kv.second);
   if (a.descriptor) d["descriptor"] = descToPy(a.descriptor.get());
   if (!a.valid) d["incomplete"] = true;
@@ -315,8 +325,8 @@ py::object layerSmartObject(const psd::LayerInfo &l) {
   char k[5] = { (char)((so.key >> 24) & 0xff), (char)((so.key >> 16) & 0xff),
                 (char)((so.key >> 8) & 0xff), (char)(so.key & 0xff), 0 };
   d["key"]         = std::string(k);
-  d["uuid"]        = so.uuid;
-  d["placed_id"]   = so.placedId.empty() ? py::object(py::none()) : py::object(py::str(so.placedId));
+  d["uuid"]        = lossyStr(so.uuid);
+  d["placed_id"]   = so.placedId.empty() ? py::object(py::none()) : lossyStr(so.placedId);
   d["page"]        = so.page;
   d["total_pages"] = so.totalPages;
   d["anti_alias"]  = so.antiAlias;
@@ -406,7 +416,7 @@ py::list psdPatterns(psd::PSDFile &self) {
   py::list out;
   for (const auto &pt : self.patterns) {
     py::dict d;
-    d["id"]     = pt.id;
+    d["id"]     = lossyStr(pt.id);
     d["name"]   = u16ToStr(pt.name);
     d["mode"]   = pt.mode;
     d["width"]  = pt.width;
@@ -442,7 +452,7 @@ py::list psdLinkedFiles(psd::PSDFile &self) {
     py::dict d;
     d["kind"] = f.kind == "liFD" ? "data" : f.kind == "liFE" ? "external"
               : f.kind == "liFA" ? "alias" : "unknown";
-    d["uuid"]      = f.uuid;
+    d["uuid"]      = lossyStr(f.uuid);
     d["name"]      = u16ToStr(f.fileName);
     d["file_type"] = py::bytes(f.fileType);
     d["creator"]   = py::bytes(f.creator);
@@ -1127,10 +1137,16 @@ py::bytes layerImage(psd::PSDFile &self, int index, const std::string &mode) {
   else if (mode == "masked") m = psd::IMAGE_MODE_MASKEDIMAGE;
   else throw std::invalid_argument("mode must be 'image', 'mask' or 'masked'");
   psd::LayerInfo &lay = self.layerList[(size_t)index];
-  if (lay.width <= 0 || lay.height <= 0) return py::bytes();
-  size_t n = (size_t)lay.width * (size_t)lay.height * 4;
+  // mask モードはマスク矩形の大きさで返る (レイヤ矩形と違うことがある)
+  int w = lay.width, h = lay.height;
+  if (m == psd::IMAGE_MODE_MASK) {
+    w = lay.extraData.layerMask.width;
+    h = lay.extraData.layerMask.height;
+  }
+  if (w <= 0 || h <= 0 || !self.canDecodeLayerImage(lay, m)) return py::bytes();
+  size_t n = (size_t)w * (size_t)h * 4;
   std::string buf(n, '\0');
-  self.getLayerImage(lay, buf.data(), psd::BGRA_LE, lay.width * 4, m);
+  if (!self.getLayerImage(lay, buf.data(), psd::BGRA_LE, w * 4, m)) return py::bytes();
   return py::bytes(buf);
 }
 
@@ -1278,9 +1294,23 @@ PYBIND11_MODULE(psdparse, m) {
     .def_readonly("layer_type",    &psd::LayerInfo::layerType)
     .def_readonly("layer_id",      &psd::LayerInfo::layerId)
     .def_readonly("channels",      &psd::LayerInfo::channels)
-    .def_property_readonly("name", [](const psd::LayerInfo &l) {
-        return l.extraData.layerName;  // std::string (raw bytes, original encoding)
-    })
+    .def_property_readonly("name", [](const psd::LayerInfo &l) -> py::object {
+        // Pascal 名の生バイトはシステムの文字コード (Shift-JIS や MacRoman) の
+        // ことがある。UTF-8 として読めなければ Unicode 名 (luni) を、それも
+        // 無ければ置換文字で読む (例外にはしない)。生バイトは name_raw。
+        const std::string &raw = l.extraData.layerName;
+        PyObject *s = PyUnicode_DecodeUTF8(raw.data(), (Py_ssize_t)raw.size(), nullptr);
+        if (s) return py::reinterpret_steal<py::object>(s);
+        PyErr_Clear();
+        if (!l.layerNameUnicode.empty()) return u16ToStr(l.layerNameUnicode);
+        return py::reinterpret_steal<py::object>(
+            PyUnicode_DecodeUTF8(raw.data(), (Py_ssize_t)raw.size(), "replace"));
+    }, "Layer name from the Pascal name. Decoded as UTF-8; if the bytes are in "
+       "another encoding, falls back to name_unicode (or replacement characters). "
+       "See name_raw for the bytes.")
+    .def_property_readonly("name_raw", [](const psd::LayerInfo &l) {
+        return py::bytes(l.extraData.layerName);
+    }, "The Pascal layer name as stored (raw bytes in the system encoding).")
     .def_property("name_unicode",
         [](const psd::LayerInfo &l) { return u16ToStr(l.layerNameUnicode); },
         [](psd::LayerInfo &l, const std::string &s) {

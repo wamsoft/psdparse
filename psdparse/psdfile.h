@@ -262,6 +262,12 @@ namespace psd {
     //  再合成するまで白。)
     bool createBlank(int width, int height, int mode = COLOR_MODE_RGB);
 
+    // 宣言されている寸法が、実際のデータ量から見て展開できる大きさか。壊れた
+    // ファイルが巨大な幅・高さ・チャンネル長を宣言していても、出力バッファを
+    // 確保する前にこれで弾ける (getMergedImage / getLayerImage も中で確かめる)。
+    bool canDecodeMergedImage();
+    bool canDecodeLayerImage(const LayerInfo &layer, ImageMode mode);
+
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);
     bool getLayerImage(const LayerInfo &layer, void *buf, const ColorFormat &format,

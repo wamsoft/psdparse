@@ -15,7 +15,9 @@ namespace psd {
       data.slice.boundingBottom = res.data->getInt32();
       res.data->getUnicodeString(data.slice.groupName);
       int sliceNum = res.data->getInt32();
-      for (int i = 0; i < sliceNum; i++) {
+      // 件数は壊れていることがある。データが尽きたら止める (尽きた後も件数ぶん
+      // 空の項目を足し続けると、巨大な件数でメモリを使い切る)。
+      for (int i = 0; i < sliceNum && res.data->rest() > 0; i++) {
         data.slice.slices.push_back(SliceItem());
         SliceItem &item = data.slice.slices.back();
 
@@ -140,7 +142,7 @@ namespace psd {
     data.gridGuide.horizontalGrid = res.data->getInt32();
     data.gridGuide.verticalGrid   = res.data->getInt32();
     int guideNum = res.data->getInt32();
-    for (int i = 0; i < guideNum; i++) {
+    for (int i = 0; i < guideNum && res.data->rest() >= 5; i++) {   // 1 件 5 バイト
       data.gridGuide.guides.push_back(GuideItem());
       GuideItem &item = data.gridGuide.guides.back();
 

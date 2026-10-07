@@ -52,7 +52,7 @@ namespace psd {
   bool loadLayerMetadata(LayerInfo &layer, AdditionalLayerInfo &additional)
   {
     int count = additional.data->getInt32();
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count && additional.data->rest() >= 16; i++) {   // 1 件の見出しは 16 バイト
       int signature = additional.data->getInt32();
       int key = additional.data->getInt32();
       bool copyOnSheetDup = (additional.data->getCh() != 0);

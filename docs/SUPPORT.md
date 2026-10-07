@@ -31,6 +31,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | ヘッダ (幅/高さ/チャンネル/深度/モード/版) | ✅ | `PSDFile.header` |
 | 解像度 (dpi, image resource 1005) | ✅ | `header.hres` / `header.vres` |
 | PSB (large document, version 2) | ✅ | `header.is_psb`。8 byte 長のセクション / チャンネル / 追加情報キー、4 byte の RLE 行長に対応。読み取り・編集・保存とも可 (未リリース)。ただし内部のオフセットは 32bit なので 2GB を超えるファイルは不可 |
+| 壊れたファイルへの耐性 | ✅ | 途中で切れた / バイトが壊れたファイルでも落ちない (例外か False)。宣言された寸法がデータ量に見合わなければ、出力バッファを確保する前に断る (未リリース) |
 | ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時)。psd-tools のテスト素材 315 件 (Photoshop 製の PSD/PSB と他社製を含む) で確認。`PSDPARSE_CORPUS=<フォルダ>` で手元の素材にも同じテストを回せる |
 
 ## 編集して保存 (edit & save, v0.7.0–v0.10.0)

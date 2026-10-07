@@ -561,7 +561,7 @@ void parseLayerRecord(IteratorBase &r, Data &data) {
   lay.width  = lay.right  - lay.left;
   lay.height = lay.bottom - lay.top;
   uint16_t channelCount = (uint16_t)r.getInt16(true);
-  for (uint16_t i = 0; i < channelCount; i++) {
+  for (uint16_t i = 0; i < channelCount && r.rest() >= 6; i++) {
     int16_t  id  = r.getInt16(true);
     // PSB ではチャンネル長が 8 バイト。
     int64_t  len = psb ? r.getInt64(true) : (int64_t)(uint32_t)r.getInt32(true);
@@ -592,7 +592,8 @@ void parseLayerInfo(IteratorBase &r, Data &data) {
   int16_t count = r.getInt16(true);
   data.mergedAlpha = count < 0;
   int n = count < 0 ? -count : count;
-  for (int i = 0; i < n; i++) parseLayerRecord(r, data);
+  // レイヤ数は壊れていることがある。データが尽きたら止める (1 件は最低 34 バイト)
+  for (int i = 0; i < n && r.rest() >= 34; i++) parseLayerRecord(r, data);
   // remaining bytes are the channel image data block (raw, used lazily by image decode)
   data.channelImageData = r.cloneOffset(0);
   r.advance(r.rest());
