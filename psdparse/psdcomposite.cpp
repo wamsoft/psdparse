@@ -1341,6 +1341,24 @@ private:
       renderArtboard(idx, canvas);
       return;
     }
+    // 効果の付いたグループ: 中身を独立した面に描き、レイヤと同じく効果込みで重ねる
+    // (通過グループも独立して描く)
+    {
+      psdfx_layer_effects fx;
+      FxStore store;
+      if (opt_.effects && layerEffects(g, fx, store)) {
+        Canvas buf(canvas.width, canvas.height);
+        renderGroupContent(idx, buf);
+        if (flagBlock(g, 'knko', 0)) {
+          std::vector<uint8_t> shape(buf.px.size() / 4);
+          for (size_t i = 0; i < shape.size(); i++) shape[i] = buf.px[i * 4 + 3];
+          knockOut(canvas, shape, opacity, flagBlock(g, 'knko', 0));
+        }
+        drawLayer(g, buf, 0, 0, canvas, 0, 0, opacity, g.fill_opacity / 255.f,
+                  key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key, nullptr);
+        return;
+      }
+    }
     // 通過グループでも塗りの不透明度が 100% 未満なら、独立した面に描いて通常で
     // 重ねる (中の調整レイヤは下の画像に届かない。照合で確認)
     if (key == 'pass' && g.fill_opacity >= 255) {
