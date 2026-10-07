@@ -114,6 +114,8 @@ extern "C" void psdfx_draw_gradient(psdfx_surface *dst, int dst_left, int dst_to
     }
   }
   const double dx = std::cos(th), dy = -std::sin(th);
+  // 円形 / 菱形の長さも線形と同じ弦 (矩形の中心を通り角度の向きに横切る長さ。Photoshop で確認)
+  const double Lc = chordOf(angle * kPi / 180.0) * sc;
   // 線形 / 反射は画素の左上の角で値を取る (中心ではない)
   const double corner = 0.5 * (std::cos(th) - std::sin(th));
   // 色は 1024 段の表を作って引く
@@ -122,16 +124,17 @@ extern "C" void psdfx_draw_gradient(psdfx_surface *dst, int dst_left, int dst_to
   for (int i = 0; i < N; i++) psdfx_gradient_color(g, (double)i / (N - 1), &lut[(size_t)i * 4]);
   for (int y = 0; y < dst->height; y++) {
     uint8_t *row = dst->pixels + (size_t)y * dst->stride;
-    const double py = dst_top + y + 0.5 - cy;
+    // 円形 / 菱形 / 角度は画素の左上の角で値を取る (中心の画素がちょうど 0。Photoshop で確認)
+    const double py = dst_top + y - cy;
     for (int x = 0; x < dst->width; x++) {
-      const double px = dst_left + x + 0.5 - cx;
+      const double px = dst_left + x - cx;
       const double along = px * dx + py * dy;       // 方向成分
       const double across = -px * dy + py * dx;     // 直交成分
       // 線形 / 反射は端点をそろえた基準点からの方向成分
       const double alongL = (dst_left + x + 0.5 - ox) * dx + (dst_top + y + 0.5 - oy) * dy - corner;
       double t;
       switch (style) {
-      case PSDFX_GRADIENT_RADIAL:    t = std::hypot(px, py) / (L * 0.5); break;
+      case PSDFX_GRADIENT_RADIAL:    t = std::hypot(px, py) / (Lc * 0.5); break;
       case PSDFX_GRADIENT_ANGLE: {
         double a = std::atan2(-py, px) - th;        // 反時計回り
         a = std::fmod(a, 2 * kPi);
@@ -140,7 +143,7 @@ extern "C" void psdfx_draw_gradient(psdfx_surface *dst, int dst_left, int dst_to
         break;
       }
       case PSDFX_GRADIENT_REFLECTED: t = std::fabs(alongL) / (L * 0.5); break;
-      case PSDFX_GRADIENT_DIAMOND:   t = (std::fabs(along) + std::fabs(across)) / (L * 0.5); break;
+      case PSDFX_GRADIENT_DIAMOND:   t = (std::fabs(along) + std::fabs(across)) / (Lc * 0.5); break;
       default:                       t = alongL / L + 0.5; break;
       }
       t = clamp01(t);
