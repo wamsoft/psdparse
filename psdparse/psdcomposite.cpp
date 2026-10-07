@@ -510,6 +510,7 @@ private:
       fillSource(e, nullptr, g.fill, store, sc);
       g.size = num(e, "blur", 5) * sc; g.spread = fraction(e, "Ckmt", num(e, "blur", 5));
       g.precise = enumOf(e, "GlwT") == "PrBL";
+      g.range = num(e, "Inpr", 50) / 100.0;
       g.source_center = inner && enumOf(e, "glwS") == "SrcC";
     };
     glow("OrGl", fx.outer_glow, false);

@@ -9,7 +9,7 @@
 // (縁の半透明を二重に数えないため)。
 //
 // 影や光彩のぼかしの幅と Photoshop の「サイズ」の対応は、Photoshop の保存した
-// 合成画像と照合して決めた近似 (kBlurSigma)。
+// 合成画像と照合して決めた近似 (kSigma*)。
 #include "psdfx.h"
 
 #include <algorithm>
@@ -20,8 +20,14 @@
 namespace {
 
 const double kPi = 3.14159265358979323846;
-// 効果の「サイズ」をガウスの sigma へ換算する係数 (照合で調整する)
-double kBlurSigma = 0.5;
+// 効果の「サイズ」をガウスの sigma へ換算する係数。Photoshop の合成画像と照合して
+// 効果ごとに最も合う値を選んだ (影 0.4、内側の影・サテン・外側の光彩 0.3、内側の光彩 0.5)。
+const double kSigmaDropShadow = 0.4;
+const double kSigmaInnerShadow = 0.3;
+const double kSigmaOuterGlow = 0.3;
+const double kSigmaInnerGlow = 0.5;
+const double kSigmaSatin = 0.3;
+const double kSigmaBevel = 0.5;
 
 inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 inline uint8_t to8(float v) { return (uint8_t)(clamp01(v) * 255.f + 0.5f); }
@@ -141,10 +147,10 @@ Plane shifted(const Plane &a, double dx, double dy, float outside = 0.f) {
 }
 
 // 影 / 光彩の形: 広げ (spread) てからぼかす。spread 0..1、size は全体の幅
-Plane spreadBlur(const Plane &a, double spread, double size, float outside = 0.f) {
+Plane spreadBlur(const Plane &a, double spread, double size, double sigmaK, float outside = 0.f) {
   spread = std::min(1.0, std::max(0.0, spread));
   Plane p = dilate(a, size * spread);
-  blur(p, size * (1.0 - spread) * kBlurSigma, outside);
+  blur(p, size * (1.0 - spread) * sigmaK, outside);
   return p;
 }
 
@@ -184,6 +190,13 @@ std::vector<uint8_t> solid(int W, int H, const uint8_t rgb[3]) {
     px[i] = rgb[2]; px[i + 1] = rgb[1]; px[i + 2] = rgb[0]; px[i + 3] = 255;
   }
   return px;
+}
+
+// 光彩の範囲: 被覆率 / 範囲 で立ち上げる (範囲 50% なら被覆率 0.5 で最大)。
+// 候補の式を Photoshop の合成画像と照合して選んだ。
+void applyRange(Plane &p, double range) {
+  if (!(range > 0.0) || range >= 1.0) return;
+  for (auto &v : p.v) v = clamp01((float)(v / range));
 }
 
 // 光彩の色: グラデーションなら被覆率 (形からの距離) を位置として引く
@@ -259,7 +272,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   if (ds.enabled && ds.opacity > 0) {
     const double th = ds.angle * kPi / 180.0;
     Plane sh = spreadBlur(shifted(A, -std::cos(th) * ds.distance, std::sin(th) * ds.distance),
-                          ds.spread, ds.size);
+                          ds.spread, ds.size, kSigmaDropShadow);
     if (ds.knocks_out)
       for (size_t i = 0; i < sh.v.size(); i++) sh.v[i] *= 1.f - A.v[i];
     std::vector<uint8_t> px = solid(W, H, ds.color);
@@ -267,7 +280,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   }
   const psdfx_glow &og = fx->outer_glow;
   if (og.enabled && og.opacity > 0) {
-    Plane gl = spreadBlur(A, og.spread, og.size);
+    Plane gl = spreadBlur(A, og.spread, og.size, kSigmaOuterGlow);
+    applyRange(gl, og.range);
     std::vector<uint8_t> px = glowColor(og, gl, false);
     compositeCoverage(dst, px, gl, ox, oy, og.blend, og.opacity * opacity);
   }
@@ -290,7 +304,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     const double th = sa.angle * kPi / 180.0;
     const double dx = std::cos(th) * sa.distance * 0.5, dy = -std::sin(th) * sa.distance * 0.5;
     Plane a1 = shifted(A, dx, dy), a2 = shifted(A, -dx, -dy);
-    blur(a1, sa.size * kBlurSigma); blur(a2, sa.size * kBlurSigma);
+    blur(a1, sa.size * kSigmaSatin); blur(a2, sa.size * kSigmaSatin);
     Plane cov(W, H);
     for (size_t i = 0; i < cov.v.size(); i++) {
       float v = std::fabs(a1.v[i] - a2.v[i]);
@@ -305,7 +319,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     Plane inv(W, H);
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
     // 文書の外 (作業面の外) も「形の外」として扱うため、縁は 1 のまま広げる
-    Plane gl = spreadBlur(inv, ig.spread, ig.size, 1.f);
+    Plane gl = spreadBlur(inv, ig.spread, ig.size, kSigmaInnerGlow, 1.f);
+    applyRange(gl, ig.range);
     if (ig.source_center) for (auto &v : gl.v) v = 1.f - v;
     std::vector<uint8_t> px = glowColor(ig, gl, true);
     compositeCoverage(&Ss, px, gl, 0, 0, ig.blend, ig.opacity);
@@ -317,7 +332,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
     const double th = is.angle * kPi / 180.0;
     Plane sh = spreadBlur(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance, 1.f),
-                          is.spread, is.size, 1.f);
+                          is.spread, is.size, kSigmaInnerShadow, 1.f);
     std::vector<uint8_t> px = solid(W, H, is.color);
     compositeCoverage(&Ss, px, sh, 0, 0, is.blend, is.opacity);
   }
@@ -326,7 +341,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   Plane bevelOuterHi, bevelOuterSh;
   if (bv.enabled && bv.size > 0) {
     Plane hgt = A;
-    blur(hgt, bv.size * kBlurSigma);
+    blur(hgt, bv.size * kSigmaBevel);
     const double az = bv.angle * kPi / 180.0, al = bv.altitude * kPi / 180.0;
     const double lx = std::cos(al) * std::cos(az), ly = -std::cos(al) * std::sin(az), lz = std::sin(al);
     const double k = (bv.up ? 1.0 : -1.0) * bv.depth * bv.size;
@@ -341,7 +356,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
         if (d > 0) hi.at(x, y) = (float)std::min(1.0, d / (1.0 - lz + 1e-6));
         else sh.at(x, y) = (float)std::min(1.0, -d / (lz + 1e-6));
       }
-    if (bv.soften > 0) { blur(hi, bv.soften * kBlurSigma); blur(sh, bv.soften * kBlurSigma); }
+    if (bv.soften > 0) { blur(hi, bv.soften * kSigmaBevel); blur(sh, bv.soften * kSigmaBevel); }
     if (bv.style != PSDFX_BEVEL_OUTER) {
       std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
       Plane hiIn = hi, shIn = sh;

@@ -193,6 +193,7 @@ typedef struct psdfx_glow {       /* 光彩 (外側 / 内側) */
   double spread;                  /* 0..1 (内側ではチョーク) */
   double size;
   int precise;                    /* 0: さらにソフト / 1: 精細 */
+  double range;                   /* 範囲 0..1 (既定 0.5)。光彩の濃さの立ち上がり */
   int source_center;              /* 内側: 1 = 中央から / 0 = エッジから */
 } psdfx_glow;
 
