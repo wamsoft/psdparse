@@ -341,6 +341,38 @@ py::object layerSmartObject(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+py::list psdAnnotations(psd::PSDFile &self) {
+  py::list out;
+  for (const auto &a : self.annotations) {
+    py::dict d;
+    d["kind"]       = a.kind == "txtA" ? "text" : a.kind == "sndA" ? "sound" : a.kind;
+    d["open"]       = a.open;
+    d["icon_rect"]  = py::make_tuple(a.iconRect[0], a.iconRect[1], a.iconRect[2], a.iconRect[3]);
+    d["popup_rect"] = py::make_tuple(a.popupRect[0], a.popupRect[1], a.popupRect[2], a.popupRect[3]);
+    d["color_space"] = a.colorSpace;
+    d["color"]      = py::make_tuple(a.color[0], a.color[1], a.color[2], a.color[3]);
+    d["author"]     = py::bytes(a.author);
+    d["name"]       = py::bytes(a.name);
+    d["mod_date"]   = py::bytes(a.modDate);
+    d["text"]       = a.kind == "txtA" ? u16ToStr(a.text) : py::object(py::none());
+    d["data_size"]  = a.dataSize;
+    out.append(d);
+  }
+  return out;
+}
+
+py::object layerArtboard(const psd::LayerInfo &l) {
+  const psd::ArtboardInfo &a = l.artboard;
+  if (!a.present) return py::none();
+  py::dict d;
+  d["rect"]            = py::make_tuple(a.left, a.top, a.right, a.bottom);
+  d["preset_name"]     = u16ToStr(a.presetName);
+  d["background_type"] = a.backgroundType;
+  d["color"] = a.hasColor ? py::object(py::make_tuple(a.color[0], a.color[1], a.color[2]))
+                          : py::object(py::none());
+  return std::move(d);
+}
+
 py::list psdAlphaChannels(psd::PSDFile &self) {
   static const char *kKinds[] = { "selected", "masked", "spot" };
   py::list out;
@@ -503,6 +535,7 @@ py::object psdSlices(psd::PSDFile &self) {
   const psd::SliceResource &s = self.slice;
   if (!s.isEnabled) return py::none();
   py::dict d;
+  d["version"]    = s.version;
   d["group_name"] = py::cast(s.groupName);
   py::dict bb;
   bb["left"]   = s.boundingLeft;
@@ -1310,6 +1343,10 @@ PYBIND11_MODULE(psdparse, m) {
         "channel_mixer, photo_filter, exposure, gradient_map, vibrance, "
         "black_white, color_lookup. Binary blocks are decoded into named values; "
         "descriptor-based ones come as 'descriptor'. See docs/PYTHON_API.md.")
+    .def_property_readonly("artboard", &layerArtboard,
+        "Artboard ('artb', older 'artd' / 'abdd') as {'rect' (left, top, right, "
+        "bottom), 'preset_name', 'background_type' (1 white / 2 black / 3 "
+        "transparent / 4 other), 'color' (r, g, b) or None}, or None.")
     .def_property_readonly("smart_object", &layerSmartObject,
         "Smart object placement ('SoLd' / 'SoLE', or the older 'PlLd') as "
         "{'key', 'uuid', 'placed_id', 'page', 'total_pages', 'anti_alias', "
@@ -1904,6 +1941,11 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("index"), py::arg("mode") = "masked",
          "Extract pixels for layer `index` as BGRA bytes. "
          "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).")
+    .def_property_readonly("annotations", &psdAnnotations,
+         "Notes ('Anno') as dicts {'kind' ('text' / 'sound'), 'open', 'icon_rect', "
+         "'popup_rect' (top, left, bottom, right), 'color_space', 'color', 'author', "
+         "'name', 'mod_date' (raw Pascal bytes), 'text' (str, CR line breaks), "
+         "'data_size'}.")
     .def_property_readonly("alpha_channels", &psdAlphaChannels,
          "The merged image's extra channels after the color channels (alpha "
          "channels, spot colors, the merged transparency) as dicts {'plane', "

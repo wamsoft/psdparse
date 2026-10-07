@@ -263,6 +263,30 @@ namespace psd {
 		PathData path;
 	};
 
+	// --- 注釈 ('Anno') ----------------------------------------------------------
+	struct AnnotationInfo {
+		std::string kind;          // "txtA" テキスト / "sndA" 音声
+		bool open = false;
+		int flags = 0;
+		int iconRect[4] = {0, 0, 0, 0};    // 上, 左, 下, 右
+		int popupRect[4] = {0, 0, 0, 0};
+		int colorSpace = 0;
+		int color[4] = {0, 0, 0, 0};
+		std::string author, name, modDate; // Pascal 文字列の生バイト
+		u16str text;               // テキスト注釈の本文 (改行は CR)
+		uint32_t dataSize = 0;     // 音声注釈のデータの大きさ
+	};
+
+	// --- アートボード ('artb' / 'artd' / 'abdd') ---------------------------------
+	struct ArtboardInfo {
+		bool present = false;
+		double left = 0, top = 0, right = 0, bottom = 0;
+		u16str presetName;
+		int backgroundType = 0;    // 1 白 / 2 黒 / 3 透明 / 4 その他 (color)
+		bool hasColor = false;
+		double color[3] = {0, 0, 0};   // RGB 0..255
+	};
+
 	// --- アルファ / スポットチャンネル ---------------------------------------
 	// 合成画像の色チャンネルの後ろに続く余分なチャンネル 1 本 (1006 / 1045 / 1077)
 	struct AlphaChannelInfo {
@@ -418,6 +442,7 @@ namespace psd {
     SliceResource() : isEnabled(false) {}
 
     bool isEnabled;
+    int version = 0;       // 6 (バイナリ) / 7・8 (descriptor。同じ項目へ写してある)
     int boundingLeft;
     int boundingTop;
     int boundingRight;
@@ -759,6 +784,8 @@ namespace psd {
     VectorMask vectorMask;
     // スマートオブジェクト ('SoLd' / 'SoLE' / 'PlLd')。processParsed で設定。
     SmartObjectInfo smartObject;
+    // アートボード ('artb' / 'artd' / 'abdd')。processParsed で設定。
+    ArtboardInfo artboard;
 	};
 	
 	/**
@@ -912,6 +939,7 @@ namespace psd {
     std::vector<LinkedFileInfo> linkedFiles; // スマートオブジェクトの埋め込み / リンクファイル
     std::vector<PatternInfo> patterns;       // 文書のパターン ('Patt' / 'Pat2' / 'Pat3')
     std::vector<AlphaChannelInfo> alphaChannels; // 色チャンネルの後ろの余分なチャンネル
+    std::vector<AnnotationInfo> annotations;     // 注釈 ('Anno')
     int lastAppliedCompId;             // 最終適用カンプ
 
   protected:

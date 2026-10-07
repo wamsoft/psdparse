@@ -47,24 +47,84 @@ namespace psd {
         item.colorB = res.data->getCh();
       }
       data.slice.isEnabled = true;
+      data.slice.version = version;
 
       // additional descriptor resource
       Descriptor dsc;
       if (!res.data->eoi() &&
           16 == res.data->getInt32() &&
           dsc.load(res.data)) {
-        dsc.dump();
-        // TODO 上で読み取ったものと同じものがそのままDescriptorで入っている？
+        // 層ベースのスライスの外側の余白などが入っている (未使用)
       }
     } else if (version == 7 || version == 8) {
       // v7/v8 はディスクリプタ形式で格納されている
+      // baseName / bounds / slices[] を v6 と同じ SliceResource へ写す。
       int ver = res.data->getInt32();
       if (ver == 16) {
         Descriptor dsc;
-        if (dsc.load(res.data)) {
-          dsc.dump();
-          // TODO data.sliceへの変換格納
+        dsc.load(res.data);   // 途中まででも読めた項目は使う
+        auto str = [](Descriptor *d, const char *k) -> u16str {
+          auto *s = d ? dynamic_cast<DescriptorString*>(d->item(k).find()) : 0;
+          if (!s) return u16str();
+          u16str v = s->val;
+          while (!v.empty() && v.back() == 0) v.pop_back();
+          return v;
+        };
+        auto num = [](Descriptor *d, const char *k, int def) -> int {
+          DescriptorItem *it = d ? d->item(k).find() : 0;
+          if (auto *n = dynamic_cast<DescriptorInteger*>(it)) return n->val;
+          if (auto *f = dynamic_cast<DescriptorDouble*>(it)) return (int)f->val;
+          if (auto *u = dynamic_cast<DescriptorUnitFloat*>(it)) return (int)u->val;
+          return def;
+        };
+        auto en = [](Descriptor *d, const char *k) -> std::string {
+          auto *e = d ? dynamic_cast<DescriptorEnumerated*>(d->item(k).find()) : 0;
+          return e ? e->enumId : std::string();
+        };
+        auto rect = [&](Descriptor *b, int &l, int &t, int &r, int &bt) {
+          l = num(b, "Left", 0); t = num(b, "Top ", 0); r = num(b, "Rght", 0); bt = num(b, "Btom", 0);
+        };
+        SliceResource &s = data.slice;
+        s.version = version;
+        s.groupName = str(&dsc, "baseName");
+        rect(dynamic_cast<Descriptor*>(dsc.item("bounds").find()),
+             s.boundingLeft, s.boundingTop, s.boundingRight, s.boundingBottom);
+        if (auto *list = dynamic_cast<DescriptorList*>(dsc.item("slices").find())) {
+          for (auto *it : list->items) {
+            auto *d = dynamic_cast<Descriptor*>(it);
+            if (!d) continue;
+            SliceItem item = SliceItem();
+            item.id      = num(d, "sliceID", 0);
+            item.groupId = num(d, "groupID", 0);
+            const std::string origin = en(d, "origin");
+            item.origin = origin == "layerGenerated" ? 1 : origin == "userGenerated" ? 2 : 0;
+            item.associatedLayerId = num(d, "layerID", -1);
+            item.name = str(d, "Nm  ");
+            const std::string type = en(d, "Type");
+            item.type = type == "noImage" ? 0 : type == "Tbl " ? 2 : 1;
+            rect(dynamic_cast<Descriptor*>(d->item("bounds").find()),
+                 item.left, item.top, item.right, item.bottom);
+            item.url      = str(d, "url");
+            item.target   = str(d, "null");
+            item.message  = str(d, "Msge");
+            item.altTag   = str(d, "altTag");
+            auto *html = dynamic_cast<DescriptorBoolean*>(d->item("cellTextIsHTML").find());
+            item.isCellTextHtml = html ? html->val : true;
+            item.cellText = str(d, "cellText");
+            const std::string ha = en(d, "horzAlign"), va = en(d, "vertAlign");
+            item.horizontalAlign = ha == "Left" ? 1 : ha == "Cntr" ? 2 : ha == "Rght" ? 3 : 0;
+            item.verticalAlign   = va == "Top " ? 1 : va == "Cntr" ? 2 : va == "Bsln" ? 3 : va == "Btom" ? 4 : 0;
+            item.colorA = item.colorR = item.colorG = item.colorB = 0;
+            if (auto *c = dynamic_cast<Descriptor*>(d->item("bgColor").find())) {
+              item.colorA = (uint8_t)num(c, "alpha", 0);
+              item.colorR = (uint8_t)num(c, "Rd  ", 0);
+              item.colorG = (uint8_t)num(c, "Grn ", 0);
+              item.colorB = (uint8_t)num(c, "Bl  ", 0);
+            }
+            s.slices.push_back(item);
+          }
         }
+        s.isEnabled = true;
       }
     }
 

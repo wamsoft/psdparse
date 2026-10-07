@@ -14,4 +14,5 @@ namespace psd {
   void loadLinkedFiles(Data &data);                            // lnk2 / lnk3 / lnkD / lnkE
   void loadPatterns(Data &data);                               // Patt / Pat2 / Pat3
   void loadAlphaChannels(Data &data);                          // 1006 / 1045 / 1077
+  void loadAnnotations(Data &data);                            // 'Anno'
 } // namespace psd

@@ -148,6 +148,8 @@ Data::processParsed()
   loadPatterns(*this);
   // アルファ / スポットチャンネルの名前と表示設定
   loadAlphaChannels(*this);
+  // 注釈 (文書末尾の Anno)
+  loadAnnotations(*this);
 
   // カラーテーブル
   if (header.mode == COLOR_MODE_INDEXED &&
@@ -244,6 +246,12 @@ Data::processParsed()
         break;
       case 'TySh': // Type tool object setting (Photoshop 6.0) — テキストレイヤ
         success = loadLayerTypeTool(layer, additional);
+        break;
+      case 'artb': // Artboard data (CC)
+      case 'artd':
+      case 'abdd':
+        if (!layer.artboard.present || additional.key == 'artb')
+          success = loadLayerArtboard(layer, additional);
         break;
       case 'SoLd': // Placed Layer Data (Photoshop CS3)
       case 'SoLE':

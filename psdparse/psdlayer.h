@@ -14,5 +14,6 @@ namespace psd {
   void normalizeTextUnits(TextLayerData &td, double dpi);
   bool loadLayerVectorMask(LayerInfo &layer, AdditionalLayerInfo &additional);
   bool loadLayerSmartObject(LayerInfo &layer, AdditionalLayerInfo &additional);
+  bool loadLayerArtboard(LayerInfo &layer, AdditionalLayerInfo &additional);
 }
 #endif //  __psdlayer_h__
