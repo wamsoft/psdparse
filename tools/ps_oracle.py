@@ -56,7 +56,7 @@ def run_jsx(code, timeout=600):
         f.write(_PRELUDE + "\n(function(){\n" + code + "\n})();")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, jsx],
-                           capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     finally:
         for p in (ps1, jsx):
             os.remove(p)
@@ -189,6 +189,52 @@ adj.putInteger(cTID("Brgh"), {b}); adj.putInteger(cTID("Cntr"), {c});
 adj.putBoolean(sTID("useLegacy"), {"true" if legacy else "false"});""", 'cTID("BrgC")')
 
 
+def color_balance(shadows, midtones, highlights, preserve):
+    def lst(name, v):
+        return (f'var l_{name} = new ActionList(); l_{name}.putInteger({v[0]}); l_{name}.putInteger({v[1]}); '
+                f'l_{name}.putInteger({v[2]}); adj.putList(cTID("{name}"), l_{name});')
+    body = "\n".join(["var adj = new ActionDescriptor();", lst("ShdL", shadows), lst("MdtL", midtones),
+                      lst("HghL", highlights),
+                      'adj.putBoolean(cTID("PrsL"), %s);' % ("true" if preserve else "false")])
+    return adjustment_layer(body, 'cTID("ClrB")')
+
+
+def photo_filter(rgb, density, preserve):
+    r, g, b = rgb
+    return adjustment_layer(f"""var adj = new ActionDescriptor();
+var c = new ActionDescriptor(); c.putDouble(cTID("Rd  "), {r}); c.putDouble(cTID("Grn "), {g}); c.putDouble(cTID("Bl  "), {b});
+adj.putObject(cTID("Clr "), cTID("RGBC"), c);
+adj.putInteger(cTID("Dnst"), {density});
+adj.putBoolean(cTID("PrsL"), {"true" if preserve else "false"});""", 'sTID("photoFilter")')
+
+
+def masked_black(feather):
+    """白の上の黒いレイヤに、横 64..128 を見せるマスク (ぼかし feather) を付ける"""
+    return f"""
+var bl = d.artLayers.add(); bl.name = "black";
+app.foregroundColor.rgb.red = 0; app.foregroundColor.rgb.green = 0; app.foregroundColor.rgb.blue = 0;
+d.selection.selectAll(); d.selection.fill(app.foregroundColor); d.selection.deselect();
+d.selection.select([[64,0],[128,0],[128,64],[64,64]]);
+var m = new ActionDescriptor(); m.putClass(cTID("Nw  "), cTID("Chnl"));
+var rr = new ActionReference(); rr.putEnumerated(cTID("Chnl"), cTID("Chnl"), cTID("Msk ")); m.putReference(cTID("At  "), rr);
+m.putEnumerated(cTID("Usng"), cTID("UsrM"), cTID("RvlS"));
+executeAction(cTID("Mk  "), m, DialogModes.NO);
+d.selection.deselect();
+var s = new ActionDescriptor(); var r = new ActionReference();
+r.putEnumerated(cTID("Lyr "), cTID("Ordn"), cTID("Trgt")); s.putReference(cTID("null"), r);
+var l = new ActionDescriptor(); l.putUnitDouble(sTID("userMaskFeather"), cTID("#Pxl"), {feather});
+s.putObject(cTID("T   "), cTID("Lyr "), l);
+executeAction(cTID("setd"), s, DialogModes.NO);
+"""
+
+
+def white_png(folder):
+    path = os.path.join(folder, "_white.png")
+    if not os.path.exists(path):
+        Image.fromarray(np.full((64, 192, 3), 255, np.uint8), "RGB").save(path)
+    return path
+
+
 # ケース名 -> (元画像, JSX, 許す最大誤差 (0..255)、平均誤差の上限)
 def cases():
     return {
@@ -207,6 +253,12 @@ def cases():
         "bc_legacy_down": ("ramp", brightness_contrast(-40, -30, True), 2, 0.5),
         "bc_modern": ("ramp", brightness_contrast(40, 30), 2, 0.5),
         "bc_modern_strong": ("ramp", brightness_contrast(100, 80), 2, 0.5),
+        "cb_mixed": ("cube", color_balance((30, -20, 40), (-40, 25, 10), (20, 50, -60), False), 3, 0.5),
+        "cb_mixed_preserve": ("cube", color_balance((30, -20, 40), (-40, 25, 10), (20, 50, -60), True), 4, 0.5),
+        "pf_warm": ("cube", photo_filter((236, 138, 0), 25, False), 2, 0.5),
+        "pf_blue_preserve": ("cube", photo_filter((0, 90, 255), 60, True), 8, 0.5),
+        "mask_feather_2": ("white", masked_black(2), 4, 0.5),
+        "mask_feather_15": ("white", masked_black(15), 3, 0.5),
     }
 
 
@@ -216,7 +268,7 @@ def main(argv):
         return 1
     out = argv[0]
     os.makedirs(out, exist_ok=True)
-    bases = {"cube": cube_png(out), "ramp": ramp_png(out)}
+    bases = {"cube": cube_png(out), "ramp": ramp_png(out), "white": white_png(out)}
     limits = {}
     for name, (base, js, mx, mean) in cases().items():
         limits[name] = {"max": mx, "mean": mean}

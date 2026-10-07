@@ -288,19 +288,29 @@ extern "C" void psdfx_vibrance(psdfx_surface *s, double vibrance, double saturat
 
 extern "C" void psdfx_color_balance(psdfx_surface *s, const double shadows[3], const double midtones[3],
                                     const double highlights[3], int preserve_luminosity) {
-  // チャンネルごとのレベル補正 1 回にまとまる (Photoshop で測った曲線と 2/255 以内):
-  //   入力の黒 = max(0, -シャドウ)、入力の白 = 255 - max(0, ハイライト)、
-  //   ガンマ (中間調) = 2^((シャドウ + 2 x 中間調 + ハイライト) / 200)
+  // チャンネルごとのレベル補正 1 回にまとまる (Photoshop で測った曲線と 2/255 以内)。
+  //   通常:           入力の黒 = max(0, -シャドウ)、入力の白 = 255 - max(0, ハイライト)、
+  //                   ガンマ = 2^((シャドウ + 2 x 中間調 + ハイライト) / 200)
+  //   輝度を保持:     入力の黒 = max(シャドウ) - シャドウ、入力の白 = 255 - (ハイライト - min(ハイライト))、
+  //                   ガンマ = 2^((中間調 - (max(中間調) + min(中間調)) / 2) / 100)
+  // (max / min は 3 チャンネルの中で)
+  auto mx = [](const double *v) { return std::max(v[0], std::max(v[1], v[2])); };
+  auto mn = [](const double *v) { return std::min(v[0], std::min(v[1], v[2])); };
   uint8_t lut[3][256];
-  for (int c = 0; c < 3; c++)
-    psdfx_levels_lut(std::max(0.0, -shadows[c]), 255.0 - std::max(0.0, highlights[c]), 0, 255,
-                     std::pow(2.0, (shadows[c] + 2 * midtones[c] + highlights[c]) / 200.0), lut[c]);
-  mapRGB(s, [&](float c[3], int, int) {
-    float o[3];
-    for (int i = 0; i < 3; i++) o[i] = lut[i][(int)(clamp01(c[i]) * 255.f + 0.5f)] / 255.f;
-    if (preserve_luminosity) setLum(o, 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]);
-    c[0] = clamp01(o[0]); c[1] = clamp01(o[1]); c[2] = clamp01(o[2]);
-  });
+  for (int c = 0; c < 3; c++) {
+    double ib, iw, g;
+    if (preserve_luminosity) {
+      ib = mx(shadows) - shadows[c];
+      iw = 255.0 - (highlights[c] - mn(highlights));
+      g = std::pow(2.0, (midtones[c] - (mx(midtones) + mn(midtones)) / 2.0) / 100.0);
+    } else {
+      ib = std::max(0.0, -shadows[c]);
+      iw = 255.0 - std::max(0.0, highlights[c]);
+      g = std::pow(2.0, (shadows[c] + 2 * midtones[c] + highlights[c]) / 200.0);
+    }
+    psdfx_levels_lut(ib, iw, 0, 255, g, lut[c]);
+  }
+  psdfx_apply_lut(s, lut[0], lut[1], lut[2]);
 }
 
 extern "C" void psdfx_selective_color(psdfx_surface *s, const double adjustments[9][4], int relative) {
@@ -338,11 +348,42 @@ extern "C" void psdfx_channel_mixer(psdfx_surface *s, const double matrix[3][4],
 
 extern "C" void psdfx_photo_filter(psdfx_surface *s, const uint8_t color[3], double density,
                                    int preserve_luminosity) {
-  const float k[3] = { color[0] / 255.f, color[1] / 255.f, color[2] / 255.f };
-  const float d = (float)std::min(1.0, std::max(0.0, density));
+  // XYZ (D50) の各成分にフィルター色の割合を掛ける (色温度変換のように効く)。
+  // 「輝度を保持」は W3C の SetLum で元の輝度にそろえる。Photoshop で測った値と 1/255 以内
+  static const double M[3][3] = { { 0.4360747, 0.3850649, 0.1430804 },
+                                  { 0.2225045, 0.7168786, 0.0606169 },
+                                  { 0.0139322, 0.0971045, 0.7141733 } };
+  double Mi[3][3];
+  {
+    const double a = M[0][0], b = M[0][1], c = M[0][2], d = M[1][0], e = M[1][1], f = M[1][2],
+                 g = M[2][0], h = M[2][1], i = M[2][2];
+    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    Mi[0][0] = (e * i - f * h) / det; Mi[0][1] = (c * h - b * i) / det; Mi[0][2] = (b * f - c * e) / det;
+    Mi[1][0] = (f * g - d * i) / det; Mi[1][1] = (a * i - c * g) / det; Mi[1][2] = (c * d - a * f) / det;
+    Mi[2][0] = (d * h - e * g) / det; Mi[2][1] = (b * g - a * h) / det; Mi[2][2] = (a * e - b * d) / det;
+  }
+  auto toLin = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+  auto toSrgb = [](double v) {
+    v = std::min(1.0, std::max(0.0, v));
+    return v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055;
+  };
+  const double dd = std::min(1.0, std::max(0.0, density));
+  const double fl[3] = { toLin(color[0] / 255.0), toLin(color[1] / 255.0), toLin(color[2] / 255.0) };
+  double k[3];
+  for (int r = 0; r < 3; r++) {
+    const double fx = M[r][0] * fl[0] + M[r][1] * fl[1] + M[r][2] * fl[2];
+    const double wx = M[r][0] + M[r][1] + M[r][2];
+    k[r] = (1 - dd) + dd * fx / wx;
+  }
+  float lut[256];
+  for (int i = 0; i < 256; i++) lut[i] = (float)toLin(i / 255.0);
   mapRGB(s, [&](float c[3], int, int) {
+    const double l[3] = { lut[(int)(clamp01(c[0]) * 255.f + 0.5f)], lut[(int)(clamp01(c[1]) * 255.f + 0.5f)],
+                          lut[(int)(clamp01(c[2]) * 255.f + 0.5f)] };
+    double X[3];
+    for (int r = 0; r < 3; r++) X[r] = (M[r][0] * l[0] + M[r][1] * l[1] + M[r][2] * l[2]) * k[r];
     float o[3];
-    for (int i = 0; i < 3; i++) o[i] = c[i] * (1 - d) + c[i] * k[i] * d;
+    for (int r = 0; r < 3; r++) o[r] = (float)toSrgb(Mi[r][0] * X[0] + Mi[r][1] * X[1] + Mi[r][2] * X[2]);
     if (preserve_luminosity) setLum(o, 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]);
     c[0] = clamp01(o[0]); c[1] = clamp01(o[1]); c[2] = clamp01(o[2]);
   });
