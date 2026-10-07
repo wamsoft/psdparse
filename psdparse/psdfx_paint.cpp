@@ -73,13 +73,40 @@ extern "C" void psdfx_draw_gradient(psdfx_surface *dst, int dst_left, int dst_to
                                     const psdfx_gradient *g, int style, double angle, double scale,
                                     int reverse, const double box[4], double offset_x, double offset_y) {
   if (!dst || !dst->pixels || !g) return;
-  const double bw = box[2] - box[0], bh = box[3] - box[1];
-  const double th = angle * kPi / 180.0;
+  // 長さ (Photoshop の合成画像と照合して決めた):
+  //   線形 / 反射: 基準の矩形の中心を通り、角度の向きに矩形を横切る弦の長さ
+  //   円形 / 菱形 / 角度: 矩形の幅・高さを角度で混ぜた楕円ノルム
+  // 線形 / 反射の端点は整数の画素位置へ切り捨てる (小さな矩形では角度が変わる。
+  // 4x4 で 30 度の反射は (4, 0) で終わり、45 度として描かれる)。
+  const double bw = std::max(1.0, box[2] - box[0]), bh = std::max(1.0, box[3] - box[1]);
+  const double sc = scale > 0 ? scale : 1.0;
+  double th = angle * kPi / 180.0;
+  const double cx = box[0] + bw * 0.5 + bw * offset_x / 100.0;
+  const double cy = box[1] + bh * 0.5 + bh * offset_y / 100.0;
+  auto chordOf = [&](double a) {
+    return std::max(1.0, std::min(bw / std::max(std::fabs(std::cos(a)), 1e-6),
+                                  bh / std::max(std::fabs(std::sin(a)), 1e-6)));
+  };
+  double L = std::max(1.0, std::hypot(std::cos(th) * bw, std::sin(th) * bh)) * sc;
+  double ox = cx, oy = cy;   // 線形 / 反射の t = 0.5 / 0 の位置
+  if (style == PSDFX_GRADIENT_LINEAR || style == PSDFX_GRADIENT_REFLECTED) {
+    const double half = chordOf(th) * sc * 0.5;
+    const double hx = std::cos(th) * half, hy = -std::sin(th) * half;
+    const double ex = std::floor(cx + hx + 1e-4), ey = std::floor(cy + hy + 1e-4);
+    double sx = cx, sy = cy;
+    if (style == PSDFX_GRADIENT_LINEAR) { sx = std::floor(cx - hx + 1e-4); sy = std::floor(cy - hy + 1e-4); }
+    const double vx = ex - sx, vy = ey - sy, len = std::hypot(vx, vy);
+    if (len >= 0.5) {
+      th = std::atan2(-vy, vx);
+      L = style == PSDFX_GRADIENT_REFLECTED ? 2.0 * len : len;
+      if (style == PSDFX_GRADIENT_LINEAR) { ox = (sx + ex) * 0.5; oy = (sy + ey) * 0.5; }
+    } else {
+      L = chordOf(th) * sc;
+    }
+  }
   const double dx = std::cos(th), dy = -std::sin(th);
-  double L = (std::fabs(bw * dx) + std::fabs(bh * dy)) * (scale > 0 ? scale : 1.0);
-  if (L < 1e-6) L = 1e-6;
-  const double cx = (box[0] + box[2]) * 0.5 + bw * offset_x / 100.0;
-  const double cy = (box[1] + box[3]) * 0.5 + bh * offset_y / 100.0;
+  // 線形 / 反射は画素の左上の角で値を取る (中心ではない)
+  const double corner = 0.5 * (std::cos(th) - std::sin(th));
   // 色は 1024 段の表を作って引く
   const int N = 1024;
   std::vector<uint8_t> lut((size_t)N * 4);
@@ -91,6 +118,8 @@ extern "C" void psdfx_draw_gradient(psdfx_surface *dst, int dst_left, int dst_to
       const double px = dst_left + x + 0.5 - cx;
       const double along = px * dx + py * dy;       // 方向成分
       const double across = -px * dy + py * dx;     // 直交成分
+      // 線形 / 反射は端点をそろえた基準点からの方向成分
+      const double alongL = (dst_left + x + 0.5 - ox) * dx + (dst_top + y + 0.5 - oy) * dy - corner;
       double t;
       switch (style) {
       case PSDFX_GRADIENT_RADIAL:    t = std::hypot(px, py) / (L * 0.5); break;
@@ -101,9 +130,9 @@ extern "C" void psdfx_draw_gradient(psdfx_surface *dst, int dst_left, int dst_to
         t = 1.0 - a / (2 * kPi);
         break;
       }
-      case PSDFX_GRADIENT_REFLECTED: t = std::fabs(along) / (L * 0.5); break;
+      case PSDFX_GRADIENT_REFLECTED: t = std::fabs(alongL) / (L * 0.5); break;
       case PSDFX_GRADIENT_DIAMOND:   t = (std::fabs(along) + std::fabs(across)) / (L * 0.5); break;
-      default:                       t = along / L + 0.5; break;
+      default:                       t = alongL / L + 0.5; break;
       }
       t = clamp01(t);
       if (reverse) t = 1.0 - t;
