@@ -13,6 +13,7 @@
 #include "psdfx.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -23,6 +24,8 @@ namespace {
 struct Canvas {
   int width = 0, height = 0;
   std::vector<uint8_t> px;
+  // 効果の形 (塗りつぶしレイヤ / シェイプのマスク)。空なら画素のアルファを使う
+  std::vector<uint8_t> shape;
   Canvas() = default;
   Canvas(int w, int h) : width(w), height(h), px((size_t)w * h * 4, 0) {}
   psdfx_surface surface() { return psdfx_surface{ px.data(), width, height, width * 4 }; }
@@ -250,9 +253,12 @@ private:
         std::vector<uint8_t> tile; int tw = 0, th = 0;
         if (!psd_.getPatternImage((int)i, tile, tw, th)) return false;
         psdfx_surface ts{ tile.data(), tw, th, tw * 4 };
+        // 原点はシェイプの左上 + 位相 (Photoshop の合成画像と照合して決めた)
         auto *ph = dynamic_cast<Descriptor*>(d.item("phase").find());
+        double box[4];
+        shapeBox(l, box);
         psdfx_draw_pattern(&s, left, top, &ts, num(&d, "Scl ", 100) / 100.0,
-                           num(ph, "Hrzn"), num(ph, "Vrtc"));
+                           std::floor(box[0]) + num(ph, "Hrzn"), std::floor(box[1]) + num(ph, "Vrtc"));
         return true;
       }
       return false;
@@ -364,14 +370,11 @@ private:
     return e ? e->enumId : std::string();
   }
 
-  // 割合: 単位が % なら /100、ピクセルなら size で割る
+  // 割合 (スプレッド / チョーク)。単位がピクセルと書かれていても値は % なので
+  // (Photoshop の合成画像と照合して確認)、常に /100 する。
   static double fraction(Descriptor *d, const char *k, double size) {
-    DescriptorItem *it = d ? d->item(k).find() : nullptr;
-    if (auto *u = dynamic_cast<DescriptorUnitFloat*>(it)) {
-      if (u->unit == UNIT_PERCENT) return u->val / 100.0;
-      return size > 0 ? u->val / size : 0.0;
-    }
-    return num(d, k) / 100.0;
+    (void)size;
+    return std::min(1.0, std::max(0.0, num(d, k) / 100.0));
   }
 
   // 効果の描画に使うグラデーションの分岐点とパターンのタイルの置き場
@@ -476,7 +479,8 @@ private:
     Descriptor d;
     if (!readDescriptor(l, 'lfx2', 8, d)) return false;
     if (!flag(&d, "masterFXSwitch", true)) return false;
-    const double sc = num(&d, "Scl ", 100) / 100.0;
+    // 効果全体の拡大率 'Scl ' は保存されている値に反映済みなので掛けない
+    const double sc = 1.0;
     const int gAngle = globalAngle(), gAlt = globalAltitude();
     bool any = false;
     auto angleOf = [&](Descriptor *e) { return flag(e, "uglg", true) ? (double)gAngle : num(e, "lagl", 120); };
@@ -556,9 +560,38 @@ private:
     return any;
   }
 
-  // 1 枚のレイヤを (効果込みで) dst へ重ねる。clipAtop なら dst の不透明な所にだけ
+  // チャンネル制限 ('brst'): 合成から外す色チャンネルの番号 (0 = R, 1 = G, 2 = B) の並び
+  static std::vector<int> excludedChannels(const LayerInfo &l) {
+    std::vector<int> out;
+    for (const auto &a : l.extraData.additionalLayers) {
+      if (a.key != 'brst' || !a.data) continue;
+      IteratorBase *r = a.data->clone(); r->init();
+      while (r->rest() >= 4) out.push_back(r->getInt32());
+      delete r;
+    }
+    return out;
+  }
+
+  // 1 枚のレイヤを (効果込みで) dst へ重ねる。clipAtop なら dst の不透明な所にだけ。
+  // チャンネル制限があれば、外したチャンネルを重ねる前の値に戻す。
   void drawLayer(LayerInfo &l, Canvas &surface, int sx, int sy, Canvas &dst, int dx, int dy,
                  float opacity, float fill, uint32_t blend, bool clipAtop) {
+    const std::vector<int> excluded = excludedChannels(l);
+    if (excluded.empty()) {
+      drawLayerImpl(l, surface, sx, sy, dst, dx, dy, opacity, fill, blend, clipAtop);
+      return;
+    }
+    const std::vector<uint8_t> before = dst.px;
+    drawLayerImpl(l, surface, sx, sy, dst, dx, dy, opacity, fill, blend, clipAtop);
+    for (int ch : excluded) {
+      if (ch < 0 || ch > 2) continue;
+      const int off = 2 - ch;   // BGRA の並びでの位置
+      for (size_t i = (size_t)off; i < dst.px.size(); i += 4) dst.px[i] = before[i];
+    }
+  }
+
+  void drawLayerImpl(LayerInfo &l, Canvas &surface, int sx, int sy, Canvas &dst, int dx, int dy,
+                     float opacity, float fill, uint32_t blend, bool clipAtop) {
     psdfx_layer_effects fx;
     FxStore store;
     const bool withFx = opt_.effects && layerEffects(l, fx, store);
@@ -573,13 +606,15 @@ private:
                                (double)(psd_.header.width - dx), (double)(psd_.header.height - dy) };
     if (!clipAtop) {
       psdfx_surface d = dst.surface();
-      psdfx_composite_with_effects(&d, &src, sx - dx, sy - dy, blend, opacity, fill, &fx, docBox);
+      psdfx_composite_with_effects(&d, &src, sx - dx, sy - dy, blend, opacity, fill, &fx, docBox,
+                                   surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
       return;
     }
     // クリップされたレイヤの効果: 透明な面へ描いてから source-atop で
     Canvas tmp(dst.width, dst.height);
     psdfx_surface t = tmp.surface();
-    psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox);
+    psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox,
+                                 surface.shape.empty() ? nullptr : surface.shape.data(), surface.width);
     psdfx_surface d = dst.surface();
     psdfx_composite_atop(&d, &t, 0, 0, blend, opacity);
   }
@@ -618,6 +653,13 @@ private:
         out.width = fill.width; out.height = fill.height; out.px.swap(fill.px);
         if (maskOn) applyUserMask(maskLayer, out, left, top);
         applyVectorMask(l, out, left, top);
+        // 効果は塗りの透明度ではなくマスク (シェイプ) の形から作る
+        Canvas m(w, h);
+        for (size_t i = 3; i < m.px.size(); i += 4) m.px[i] = 255;
+        if (maskOn) applyUserMask(maskLayer, m, left, top);
+        applyVectorMask(l, m, left, top);
+        out.shape.resize((size_t)w * h);
+        for (size_t i = 0; i < out.shape.size(); i++) out.shape[i] = m.px[i * 4 + 3];
         return true;
       }
     }

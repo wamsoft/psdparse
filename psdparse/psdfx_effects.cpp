@@ -39,23 +39,23 @@ struct Plane {
 };
 
 // --- ぼかし (箱ぼかし 3 回) ----------------------------------------------------
-void boxPass(float *v, int n, int step, int r, std::vector<float> &tmp) {
+// 端の外は outside の値とみなす (形のアルファなら 0、形の反転なら 1)
+void boxPass(float *v, int n, int step, int r, std::vector<float> &tmp, float outside) {
   if (r <= 0 || n <= 1) return;
   tmp.resize((size_t)n);
   const float inv = 1.f / (2 * r + 1);
-  // 端の外は 0 (影やマスクが端で途切れないよう、外は透明とみなす)
-  float acc = 0.f;
-  for (int i = 0; i <= r && i < n; i++) acc += v[(size_t)i * step];
+  float acc = outside * r;
+  for (int i = 0; i <= r; i++) acc += i < n ? v[(size_t)i * step] : outside;
   for (int i = 0; i < n; i++) {
     tmp[(size_t)i] = acc * inv;
     const int add = i + r + 1, sub = i - r;
-    if (add < n) acc += v[(size_t)add * step];
-    if (sub >= 0) acc -= v[(size_t)sub * step];
+    acc += add < n ? v[(size_t)add * step] : outside;
+    acc -= sub >= 0 ? v[(size_t)sub * step] : outside;
   }
   for (int i = 0; i < n; i++) v[(size_t)i * step] = tmp[(size_t)i];
 }
 
-void blur(Plane &p, double sigma) {
+void blur(Plane &p, double sigma, float outside = 0.f) {
   if (!(sigma > 0.25)) return;
   const int n = 3;
   double wIdeal = std::sqrt(12.0 * sigma * sigma / n + 1.0);
@@ -67,8 +67,8 @@ void blur(Plane &p, double sigma) {
   std::vector<float> tmp;
   for (int pass = 0; pass < n; pass++) {
     const int r = ((pass < m ? wl : wu) - 1) / 2;
-    for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp);
-    for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp);
+    for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
+    for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
   }
 }
 
@@ -129,19 +129,22 @@ Plane dilate(const Plane &a, double r) {
   return o;
 }
 
-Plane shifted(const Plane &a, double dx, double dy) {
+Plane shifted(const Plane &a, double dx, double dy, float outside = 0.f) {
   Plane o(a.w, a.h);
   const int ix = (int)std::lround(dx), iy = (int)std::lround(dy);
   for (int y = 0; y < a.h; y++)
-    for (int x = 0; x < a.w; x++) o.at(x, y) = a.get(x - ix, y - iy);
+    for (int x = 0; x < a.w; x++) {
+      const int sx = x - ix, sy = y - iy;
+      o.at(x, y) = (sx < 0 || sy < 0 || sx >= a.w || sy >= a.h) ? outside : a.get(sx, sy);
+    }
   return o;
 }
 
 // 影 / 光彩の形: 広げ (spread) てからぼかす。spread 0..1、size は全体の幅
-Plane spreadBlur(const Plane &a, double spread, double size) {
+Plane spreadBlur(const Plane &a, double spread, double size, float outside = 0.f) {
   spread = std::min(1.0, std::max(0.0, spread));
   Plane p = dilate(a, size * spread);
-  blur(p, size * (1.0 - spread) * kBlurSigma);
+  blur(p, size * (1.0 - spread) * kBlurSigma, outside);
   return p;
 }
 
@@ -214,7 +217,8 @@ extern "C" int psdfx_effects_margin(const psdfx_layer_effects *fx) {
 extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_surface *layer,
                                              int left, int top, uint32_t blend, float opacity,
                                              float fill_opacity, const psdfx_layer_effects *fx,
-                                             const double doc_box[4]) {
+                                             const double doc_box[4],
+                                             const uint8_t *shape, int shape_stride) {
   if (!dst || !layer || !layer->pixels) return;
   if (!fx) { psdfx_composite(dst, layer, left, top, blend, opacity * fill_opacity, nullptr, 0); return; }
   const int m = psdfx_effects_margin(fx);
@@ -225,15 +229,18 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     return;
   }
 
-  // レイヤのアルファと色
-  Plane A(W, H);
+  // 効果の形 A (shape があればそれ、無ければレイヤのアルファ) と、レイヤの色。
+  // C はレイヤ自身のアルファ (形の中での透明度に使う)
+  Plane A(W, H), C(W, H);
   std::vector<uint8_t> S((size_t)W * H * 4, 0);   // 内側の合成面 (形の中での被覆率で持つ)
   double lb[4] = { 1e30, 1e30, -1e30, -1e30 };      // 不透明な所の範囲 (dst 座標)
   for (int y = 0; y < layer->height; y++) {
     const uint8_t *row = layer->pixels + (size_t)y * layer->stride;
     for (int x = 0; x < layer->width; x++) {
-      const float a = row[x * 4 + 3] / 255.f;
+      const float c = row[x * 4 + 3] / 255.f;
+      const float a = shape ? shape[(size_t)y * shape_stride + x] / 255.f : c;
       A.at(x + m, y + m) = a;
+      C.at(x + m, y + m) = c;
       uint8_t *s = &S[((size_t)(y + m) * W + x + m) * 4];
       s[0] = row[x * 4]; s[1] = row[x * 4 + 1]; s[2] = row[x * 4 + 2];
       if (a > 0.f) {
@@ -243,9 +250,9 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     }
   }
   if (lb[0] > lb[2]) { lb[0] = left; lb[1] = top; lb[2] = left + layer->width; lb[3] = top + layer->height; }
-  // 形の中: レイヤの色を塗りの不透明度で。形の外は空
-  const uint8_t fillA = to8(clamp01(fill_opacity));
-  for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = A.v[i] > 0.f ? fillA : 0;
+  // 形の中: レイヤの色を (形の中での透明度 x 塗りの不透明度) で。形の外は空
+  for (size_t i = 0; i < A.v.size(); i++)
+    S[i * 4 + 3] = A.v[i] > 0.f ? to8(clamp01(C.v[i] / A.v[i]) * clamp01(fill_opacity)) : 0;
 
   // --- 外側の効果 (下地へ) ---
   const psdfx_shadow &ds = fx->drop_shadow;
@@ -298,7 +305,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     Plane inv(W, H);
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
     // 文書の外 (作業面の外) も「形の外」として扱うため、縁は 1 のまま広げる
-    Plane gl = spreadBlur(inv, ig.spread, ig.size);
+    Plane gl = spreadBlur(inv, ig.spread, ig.size, 1.f);
     if (ig.source_center) for (auto &v : gl.v) v = 1.f - v;
     std::vector<uint8_t> px = glowColor(ig, gl, true);
     compositeCoverage(&Ss, px, gl, 0, 0, ig.blend, ig.opacity);
@@ -309,8 +316,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     Plane inv(W, H);
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
     const double th = is.angle * kPi / 180.0;
-    Plane sh = spreadBlur(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance),
-                          is.spread, is.size);
+    Plane sh = spreadBlur(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance, 1.f),
+                          is.spread, is.size, 1.f);
     std::vector<uint8_t> px = solid(W, H, is.color);
     compositeCoverage(&Ss, px, sh, 0, 0, is.blend, is.opacity);
   }

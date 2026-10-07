@@ -259,11 +259,15 @@ int psdfx_effects_margin(const psdfx_layer_effects *fx);
  *   - fill_opacity (塗りの不透明度) はレイヤの画素だけに掛かり、効果には掛からない
  * doc_box は文書の矩形 (left, top, right, bottom、dst と同じ座標系)。
  * 「レイヤに整列」しないグラデーションやパターンの基準に使う。
+ * shape (layer と同じ大きさの 8bit 面、NULL 可) を渡すと、効果の形をレイヤの
+ * アルファではなくこちらから作る (塗りつぶしレイヤやシェイプはマスクの形で
+ * 効果が付く。塗りの透明な部分があっても境界線は形に沿う)。
  */
 void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_surface *layer,
                                   int left, int top, uint32_t blend, float opacity,
                                   float fill_opacity, const psdfx_layer_effects *fx,
-                                  const double doc_box[4]);
+                                  const double doc_box[4],
+                                  const uint8_t *shape, int shape_stride);
 
 #ifdef __cplusplus
 }
