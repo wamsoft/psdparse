@@ -31,6 +31,8 @@ psdfx の `.cpp` (`psdfx.cpp` / `psdfx_path.cpp` / `psdfx_paint.cpp` /
 | `psdfx_gradient_color` / `psdfx_draw_gradient` | グラデーション (線形 / 円形 / 角度 / 反射 / 菱形、中間点、滑らかさ) |
 | `psdfx_draw_pattern` | パターンの繰り返し |
 | `psdfx_fill_path` | ベジェのサブパス群をアンチエイリアス付きで塗る (パスの合成方法、初期塗りつぶし) |
+| `psdfx_stroke_path` | サブパス群の線 (線幅、内側 / 中央 / 外側、端、角、マイターの上限、破線) |
+| `psdfx_flatten_subpath` | サブパス 1 本を折れ線にする (曲線からのずれの上限を指定) |
 | `psdfx_effects_margin` | 効果がレイヤの外へはみ出す量 |
 | `psdfx_composite_with_effects` | レイヤを効果込みで重ねる |
 
@@ -68,3 +70,21 @@ psdfx_composite_with_effects(&dst, &layer, left, top, PSDFX_KEY('n','o','r','m')
 
 効果のはみ出しを含めて描くには、`psdfx_effects_margin(&fx)` だけ広げた面を
 用意してください。
+
+## 例: パスの線を描く
+
+```c
+psdfx_knot k[4] = {
+  { 10, 10, 10, 10, 10, 10 }, { 50, 10, 50, 10, 50, 10 },   /* in, anchor, out */
+  { 50, 50, 50, 50, 50, 50 }, { 10, 50, 10, 50, 10, 50 } };
+psdfx_subpath sp = { k, 4, 1 /* closed */, -1 };
+psdfx_stroke_style st = {0};
+st.width = 4;
+st.alignment = PSDFX_STROKE_OUTSIDE;
+st.join = PSDFX_JOIN_ROUND;
+uint8_t mask[64 * 64];
+psdfx_stroke_path(&sp, 1, 0, &st, mask, 64, 64, 64, 0, 0);   /* 被覆率 0..255 */
+```
+
+PSD のレイヤからは `PSDFile::shapeMask` (C++) がベクタマスクとシェイプの線
+(`decodeShape` で読んだ `vstk`) からこれを呼んで被覆率を返します。

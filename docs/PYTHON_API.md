@@ -172,6 +172,7 @@ Read-only view of one layer.
 | `artboard` | `dict` \| `None` | artboard (`artb`): `{"rect": (left, top, right, bottom), "preset_name", "background_type", "color"}` |
 | `smart_object` | `dict` \| `None` | smart object placement (`SoLd` / `SoLE` / `PlLd`): `{"key", "uuid", "placed_id", "page", "total_pages", "anti_alias", "placed_type", "transform", "size", "filters", "linked_file"}` — `transform` is the 4 corners `(x, y)` (top-left, top-right, bottom-right, bottom-left), `linked_file` an index into `PSDFile.linked_files` |
 | `vector_mask` | `dict` \| `None` | vector mask (`vmsk`, or `vsms` on shape layers): `{"key", "inverted", "not_linked", "disabled", "path"}` — see [Paths](#paths) |
+| `shape` | `dict` \| `None` | shape fill / stroke / live-shape origins (`vscg` / `vstk` / `vogk`) — see [Shapes and path rasterization](#shapes-and-path-rasterization-unreleased) |
 | `comp_states` | `dict` | per layer-comp state `{comp_id: {"enabled", "offset_x", "offset_y"}}` (empty if the layer is in no comps). `enabled` says if the layer shows in that comp — see [Layer comps](#layer-comps) |
 | `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
 | `visible` | `bool` | flag bit 1 inverted |
@@ -893,6 +894,62 @@ the ones before it: `-1`/`1` combine, `2` subtract, `3` intersect, `0` exclude.
 "unicode_name": str|None, "path"}` — `name` is the raw Pascal resource name (system
 encoding, e.g. Shift-JIS), `unicode_name` comes from the document's `pths` block.
 Read-only for now; saving keeps the original bytes.
+
+### Shapes and path rasterization (unreleased)
+
+`layer.shape` gathers what a shape layer keeps besides its path (`None` when the
+layer has none of `vscg` / `vstk` / `vogk`):
+
+```python
+{"fill_enabled": True, "stroke_enabled": True,
+ "fill": {"kind": "solid" | "gradient" | "pattern", "descriptor": {...}},   # 'vscg', or None
+ "stroke": {"width": 4.0,              # px ('pt' widths converted with the document dpi)
+            "alignment": "inside" | "center" | "outside",
+            "cap": "butt" | "round" | "square", "join": "miter" | "round" | "bevel",
+            "miter_limit": 100.0,      # ratio of the line width
+            "dashes": [8.0, 4.0], "dash_offset": 0.0,   # px (stored as multiples of the width)
+            "opacity": 1.0, "blend_mode": "normal",
+            "content_kind": "solid", "content": {...}},  # 'vstk', or None
+ "origins": [{"type": "rectangle" | "rounded_rectangle" | "line" | "ellipse" | None,
+              "type_id": 1, "index": 0,          # index = the subpath's 'index'
+              "box": (l, t, r, b), "radii": (tl, tr, br, bl) | None,
+              "line": (x0, y0, x1, y1) | None, "line_weight": float | None,
+              "invalidated": False}],            # 'vogk' live-shape origins
+ "path": {...}}                        # the vector mask path (same shape as above)
+```
+
+```python
+p.shape_mask(i, part="both") -> (bytes, left, top, width, height) | None
+```
+
+Rasterizes the layer's path to 8-bit anti-aliased coverage: `part="fill"` (the
+path area, inverted masks included), `"stroke"` (the `vstk` stroke with its
+width, alignment, caps, joins and dashes) or `"both"`. The rectangle holds the
+path and its stroke in document pixels and may extend past the canvas. Mask
+density / feather are not applied.
+
+Paths from anywhere — `layer.vector_mask["path"]`, `PSDFile.paths[i]["path"]`,
+or your own list of subpaths (knots may be plain `(x, y)` tuples for straight
+segments; `closed` defaults to True, `operation` to -1) — can be flattened or
+rasterized with module functions:
+
+```python
+psdparse.flatten_path(path, tolerance=0.1)
+# -> [{"closed", "operation", "points": [(x, y), ...]}, ...]
+psdparse.rasterize_path(path, width, height, left=0, top=0) -> bytes
+psdparse.stroke_path(path, width, height, left=0, top=0, line_width=1.0,
+                     alignment="center", cap="butt", join="miter",
+                     miter_limit=4.0, dashes=(), dash_offset=0.0) -> bytes
+```
+
+The raster is `width x height` bytes whose top-left sits at `(left, top)` in
+path coordinates. Subpaths combine like Photoshop's shape operations
+(`-1` joins the previous subpath, `0` exclude, `1` combine, `2` subtract,
+`3` intersect) and `initial_fill: 1` starts from a filled raster. `inside` /
+`outside` alignment puts the whole width on one side of closed subpaths. The
+same routines are in the C API (`psdfx_flatten_subpath`, `psdfx_fill_path`,
+`psdfx_stroke_path`), and `composite()` / `render_layer()` use them to draw
+shape strokes.
 
 - **`guides`** — grid spacing (in 1/32 px) and each guide's `location` (1/32 px
   from origin) and `direction` (`"vertical"` / `"horizontal"`).
