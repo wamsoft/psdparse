@@ -330,6 +330,27 @@ def bevel(style="InrB", tech="SfBL", depth=100, up=True, size=10, soften=0, angl
         'e.putBoolean(sTID("useShape"), false); e.putBoolean(sTID("useTexture"), false);'])
 
 
+def stroke_fx(size, pos="OutF", rgb=(255, 0, 0), opacity=100):
+    return effect("FrFX", [
+        f'e.putEnumerated(cTID("Styl"), cTID("FStl"), cTID("{pos}"));',
+        'e.putEnumerated(cTID("PntT"), cTID("FrFl"), cTID("SClr"));',
+        'e.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Nrml"));',
+        f'e.putUnitDouble(cTID("Opct"), cTID("#Prc"), {opacity});',
+        f'e.putUnitDouble(cTID("Sz  "), cTID("#Pxl"), {size});',
+        _color("c", rgb), 'e.putObject(cTID("Clr "), cTID("RGBC"), c);'])
+
+
+def soft_square(x0, y0, x1, y1, feather, rgb=(255, 255, 255)):
+    r, g, b = rgb
+    return f"""
+var sq = d.artLayers.add(); sq.name = "shape";
+app.foregroundColor.rgb.red = {r}; app.foregroundColor.rgb.green = {g}; app.foregroundColor.rgb.blue = {b};
+d.selection.select([[{x0},{y0}],[{x1},{y0}],[{x1},{y1}],[{x0},{y1}]]);
+d.selection.feather({feather});
+d.selection.fill(app.foregroundColor); d.selection.deselect();
+"""
+
+
 def solid_layer(rgb, mode, opacity=100, fill=100):
     """全面を単色で塗ったレイヤ (描画モード / 不透明度 / 塗り)"""
     r, g, b = rgb
@@ -388,6 +409,9 @@ def cases():
         "fx_bevel_inner": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(), 18, 0.5),
         "fx_bevel_emboss": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel("Embs"), 25, 0.6),
         "fx_bevel_chisel": ("black", square_layer(50, 50, 110, 110, (128, 128, 128)) + bevel(tech="PrBL"), 36, 0.5),
+        "fx_stroke_ellipse_outside": ("black", ellipse_layer(40, 40, 120, 120, (0, 0, 255)) + stroke_fx(3, "OutF"), 20, 0.5),
+        "fx_stroke_ellipse_inside": ("black", ellipse_layer(40, 40, 120, 120, (0, 0, 255)) + stroke_fx(3, "InsF"), 20, 0.5),
+        "fx_stroke_soft_center": ("black", soft_square(50, 50, 110, 110, 6, (0, 0, 255)) + stroke_fx(10, "CtrF"), 32, 0.5),
         "fx_bevel_linear_burn": ("black", ellipse_layer(17, 20, 140, 143, (249, 237, 52)) +
                                  bevel(size=60, hi=(251, 250, 137), sh=(244, 210, 21), hmode="Scrn",
                                        smode="linearBurn", hop=0, sop=70).replace('cTID("linearBurn")', 'sTID("linearBurn")'),
