@@ -342,13 +342,23 @@ inline void writeLayerInfo(WriterBase &w, const Data &data) {
     }
     return;
   }
+  // 元から空 (長さ 0) で、レイヤも無いまま: 空のまま書く (レイヤ数 0 の本体を
+  // 作ると元のファイルと一致しなくなる)。
+  if (data.layerInfoOrigSize == 0 && data.layerList.empty() && !data.layersDirty) {
+    w.putLengthBE(0, psb);
+    return;
+  }
   int64_t sizePos = w.tell();
   w.putLengthBE(0, psb); // placeholder
   int64_t bodyStart = w.tell();
   writeLayerInfoBody(w, data);
   int64_t bodyEnd = w.tell();
-  // PSD 仕様: layer info の長さは 2 の倍数 padding が必要。
-  if ((bodyEnd - bodyStart) & 1) { w.putZero(1); bodyEnd++; }
+  // PSD 仕様: layer info の長さは 2 の倍数 padding が必要。ただし元と同じ長さに
+  // なったとき (未編集ならチャンネルデータを末尾の詰め物ごと転送している) は
+  // 元のまま。奇数長のまま書く書き手もある。
+  if (((bodyEnd - bodyStart) & 1) && (bodyEnd - bodyStart) != data.layerInfoOrigSize) {
+    w.putZero(1); bodyEnd++;
+  }
   w.seek(sizePos);
   w.putLengthBE((uint64_t)(bodyEnd - bodyStart), psb);
   w.seek(bodyEnd);
@@ -407,13 +417,20 @@ inline void writeGlobalLayerMaskInfo(WriterBase &w, const Data &data) {
     w.seek(sizePos);
     w.putUint32BE((uint32_t)(end - start));
     w.seek(end);
-  } else {
+  } else if (data.hasGlobalMaskField) {
     w.putUint32BE(0); // 空ブロック
   }
+  // 元のファイルに長さフィールドごと無いなら書かない (layer info の後ろに
+  // 2 バイトの詰め物だけが続くファイルがある。それは trailing として転送される)
 }
 
 inline void writeLayerAndMask(WriterBase &w, const Data &data) {
   const bool psb = data.header.isPSB();
+  // 元からセクションごと空で、レイヤも追加情報も無いまま: 空のまま書く。
+  if (data.layerMaskOrigSize == 0 && data.layerList.empty() && !data.layersDirty) {
+    w.putLengthBE(0, psb);
+    return;
+  }
   int64_t sizePos = w.tell();
   w.putLengthBE(0, psb);
   int64_t bodyStart = w.tell();

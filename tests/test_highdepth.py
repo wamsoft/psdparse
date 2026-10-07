@@ -148,3 +148,23 @@ def test_copy_layer_between_psd_and_psb_is_refused():
     with pytest.raises(ValueError):
         lr16.copy_layer_from(lr16b, 0)          # PSD ← PSB
     assert lr16.copy_layer_from(lr16, 1) >= 0   # 同じ形式なら可
+
+
+def test_32bit_float_is_linear_light(tmp_path):
+    """32bit の値は線形光。8bit へは sRGB の伝達特性で符号化し、範囲外は
+    頭打ちにする (Photoshop が保存するサムネイルと一致する)。以前は
+    値 x 255 の切り捨てで、1.0 超えは隣の成分へ桁があふれていた。"""
+    import struct
+    vals = [0.0, 0.5, 1.0, 4.0, -1.0, 0.0031308 / 2]
+    w = len(vals)
+    data = (b"8BPS" + struct.pack(">H6xHIIHH", 1, 1, 1, w, 32, psdparse.COLOR_MODE_GRAYSCALE)
+            + struct.pack(">I", 0) + struct.pack(">I", 0) + struct.pack(">I", 0)
+            + b"\x00\x00" + b"".join(struct.pack(">f", v) for v in vals))
+    src = tmp_path / "f32.psd"
+    src.write_bytes(data)
+    p = psdparse.PSDFile()
+    assert p.load(str(src))
+    px = p.merged_image()
+    gray = [px[i * 4] for i in range(w)]
+    assert gray == [0, 188, 255, 255, 0, 5]   # 末尾は sRGB の線形区間 (12.92 倍)
+    assert all(px[i * 4 + 3] == 255 for i in range(w))

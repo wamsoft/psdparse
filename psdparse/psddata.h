@@ -594,6 +594,9 @@ namespace psd {
 			globalBlocks.clear(); globalBlocksEnd = 0;
 			globalBlockPatches.clear();
 			layerSourceKey = 0;
+			layerInfoOrigSize = -1;
+			layerMaskOrigSize = -1;
+			hasGlobalMaskField = true;
 			delete layerInfoRaw; layerInfoRaw = 0;
 			delete imageData; imageData = 0;
 		}
@@ -655,6 +658,16 @@ namespace psd {
 		// 一致のラウンドトリップを保つ。true になると save() 時にチャンネルを
 		// レイヤ毎に個別再構築する (連結ブロブは編集後のレイヤ順と合わないため)。
 		bool layersDirty = false;
+
+		// 読み込み時の layer info の長さ (長さフィールドの値)。-1 なら新規作成。
+		// 保存時に、元と同じ形 (空のまま / 詰め物の有無) を保つために使う。
+		int layerInfoOrigSize = -1;
+		// 読み込み時の layer & mask 情報ぜんたいの長さ。0 (セクションごと空) の
+		// ファイルは、レイヤを足さない限り空のまま書き戻す。
+		int layerMaskOrigSize = -1;
+		// layer & mask 情報に global layer mask info の長さフィールドがあったか。
+		// 古い / 他社製のファイルはフィールドごと省くことがある。
+		bool hasGlobalMaskField = true;
 
 		// チャンネル画像データ
 		IteratorBase *channelImageData;

@@ -31,7 +31,7 @@ Python API の使い方は [PYTHON_API.md](PYTHON_API.md) を参照。
 | ヘッダ (幅/高さ/チャンネル/深度/モード/版) | ✅ | `PSDFile.header` |
 | 解像度 (dpi, image resource 1005) | ✅ | `header.hres` / `header.vres` |
 | PSB (large document, version 2) | ✅ | `header.is_psb`。8 byte 長のセクション / チャンネル / 追加情報キー、4 byte の RLE 行長に対応。読み取り・編集・保存とも可 (未リリース)。ただし内部のオフセットは 32bit なので 2GB を超えるファイルは不可 |
-| ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時) |
+| ラウンドトリップ保存 (byte-identical) | ✅ | `load(a) -> save(b)` が完全一致 (未編集時)。psd-tools のテスト素材 315 件 (Photoshop 製の PSD/PSB と他社製を含む) で確認。`PSDPARSE_CORPUS=<フォルダ>` で手元の素材にも同じテストを回せる |
 
 ## 編集して保存 (edit & save, v0.7.0–v0.10.0)
 
@@ -86,8 +86,8 @@ Python バインディングが 0.10.0)。
 | モード | 状況 | 備考 |
 |---|:---:|---|
 | Bitmap (1bit) | ✅ | |
-| Grayscale (8/16/32) | ✅ | |
-| RGB (8/16/32) | ✅ | |
+| Grayscale (8/16/32) | ✅ | 32bit は線形光として sRGB へ符号化 (下の RGB と同じ) |
+| RGB (8/16/32) | ✅ | 32bit (float) は線形光なので sRGB の伝達特性で 8bit へ符号化し、範囲外は頭打ち。Photoshop が保存するサムネイルと一致 (未リリース版で修正。以前は値 x 255 の切り捨てで暗く、1.0 超えは桁あふれしていた) |
 | Indexed (8bit) | ✅ | パレットは `PSDFile.color_table` |
 | CMYK (8/16/32) | ✅ | RGB へ変換して出力 |
 | Multichannel | ❌ | RGB への正準的変換が無く未対応 |

@@ -60,6 +60,23 @@ namespace psd {
     return rgbaCompoToRgba32<T>(fmt, r, g, b, (T)(-1));
   }
 
+  // 32bit (float) の色成分を 8bit の表示値へ。Photoshop の 32bit 文書は線形光
+  // (ガンマ 1.0) なので、sRGB の伝達特性で符号化してから量子化する。範囲外
+  // (HDR の 1.0 超え / 負値) は頭打ち。Photoshop が保存するサムネイルと一致する。
+  inline uint32_t f32ColorTo8(float v) {
+    double c = v;
+    if (!(c > 0.0)) return 0;              // 負値と NaN
+    if (c >= 1.0) return 255;
+    c = (c <= 0.0031308) ? (12.92 * c) : (1.055 * std::pow(c, 1.0 / 2.4) - 0.055);
+    return (uint32_t)(c * 255.0 + 0.5);
+  }
+  // アルファ (不透明度) は線形のまま量子化
+  inline uint32_t f32AlphaTo8(float v) {
+    if (!(v > 0.0f)) return 0;
+    if (v >= 1.0f) return 255;
+    return (uint32_t)(v * 255.0f + 0.5f);
+  }
+
   // コンポーネントカラーを32bitRGBAにパックする
   //   32bit コンポーネントは浮動小数点なので特殊化で対応
   template<>
@@ -79,10 +96,10 @@ namespace psd {
     b.i = _b;
     a.i = _a;
 #endif
-    return (uint32_t)(((uint32_t)(a.f*255) << fmt.aShift) |
-                      ((uint32_t)(r.f*255) << fmt.rShift) |
-                      ((uint32_t)(g.f*255) << fmt.gShift) |
-                      ((uint32_t)(b.f*255) << fmt.bShift));
+    return (uint32_t)((f32AlphaTo8(a.f) << fmt.aShift) |
+                      (f32ColorTo8(r.f) << fmt.rShift) |
+                      (f32ColorTo8(g.f) << fmt.gShift) |
+                      (f32ColorTo8(b.f) << fmt.bShift));
   }
 
   // コンポーネントカラーを32bitRGBAにパックする(Aチャネル不透明)
@@ -134,8 +151,8 @@ namespace psd {
     g.i = _g;
     a.i = _a;
 #endif
-    uint32_t gInt = (uint32_t)(g.f*255);
-    return (uint32_t)(((uint32_t)(a.f*255) << fmt.aShift) |
+    uint32_t gInt = f32ColorTo8(g.f);
+    return (uint32_t)((f32AlphaTo8(a.f) << fmt.aShift) |
                       (gInt << fmt.rShift) |
                       (gInt << fmt.gShift) |
                       (gInt << fmt.bShift));

@@ -382,7 +382,9 @@ void parseColorModeData(IteratorBase &r, Data &data) {
   uint32_t size = (uint32_t)r.getInt32(true);
   data.colorModeSize = (int)size;
   if (size > 0) {
-    data.colorModeIterator = r.cloneOffset(0);
+    // 範囲をちょうど size に切る (cloneOffset だとファイル末尾まで伸び、保存時に
+    // 残り全部を書き出してしまう。32bit の HDR toning や Indexed のパレットで発生)。
+    data.colorModeIterator = r.cloneRange(0, (int)size);
     r.advance((int)size);
   }
 }
@@ -656,19 +658,22 @@ void scanGlobalBlocks(Data &data) {
 void parseLayerAndMask(IteratorBase &outer, Data &data) {
   const bool psb = data.header.isPSB();
   uint32_t total = readLength(outer, psb);
+  data.layerMaskOrigSize = (int)total;
   if (total == 0) return;
   SubBlock blk(outer, (int)total);
   IteratorBase &r = blk.reader();
   // layer info
   {
     uint32_t s = readLength(r, psb);
+    data.layerInfoOrigSize = (int)s;
     // 16/32bit 文書ではレイヤが Lr16 / Lr32 側にあるので、こちらの本体を
     // 保存時にそのまま書き戻せるよう保持しておく (要らなければ後で捨てる)。
     if (s > 0) data.layerInfoRaw = r.cloneRange(0, (int)s);
     SubBlock layerBlk(r, (int)s);
     if (s > 0) parseLayerInfo(layerBlk.reader(), data);
   }
-  // global layer mask info
+  // global layer mask info (長さフィールドごと無いファイルもある)
+  data.hasGlobalMaskField = r.rest() >= 4;
   if (r.rest() >= 4) {
     uint32_t s = (uint32_t)r.getInt32(true);
     // ラウンドトリップ save 用に raw bytes を保持。
