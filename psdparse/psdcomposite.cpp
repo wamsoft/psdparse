@@ -253,8 +253,9 @@ private:
 
   // 補間方法 ('gradientsInterpolationMethod' は塗り / 効果の descriptor 側にある)
   static int gradientInterpolation(Descriptor *d) {
-    return enumOf(d, "gradientsInterpolationMethod") == "Lnr " ? PSDFX_GRADIENT_LINEAR_LIGHT
-                                                               : PSDFX_GRADIENT_CLASSIC;
+    const std::string m = enumOf(d, "gradientsInterpolationMethod");
+    return m == "Lnr " ? PSDFX_GRADIENT_LINEAR_LIGHT : m == "Perc" ? PSDFX_GRADIENT_PERCEPTUAL
+         : m == "Smoo" ? PSDFX_GRADIENT_SMOOTH : PSDFX_GRADIENT_CLASSIC;
   }
 
   static int gradientStyle(Descriptor *d) {
@@ -329,7 +330,7 @@ private:
       else { box[0] = 0; box[1] = 0; box[2] = psd_.header.width; box[3] = psd_.header.height; }
       auto *ofs = dynamic_cast<Descriptor*>(d.item("Ofst").find());
       auto *rv = dynamic_cast<DescriptorBoolean*>(d.item("Rvrs").find());
-      psdfx_draw_gradient(&s, left, top, &g, gradientStyle(&d), num(&d, "Angl", 90),
+      psdfx_draw_gradient(&s, left, top, &g, gradientStyle(&d), num(&d, "Angl", 0),
                           num(&d, "Scl ", 100) / 100.0, rv && rv->val, box,
                           num(ofs, "Hrzn"), num(ofs, "Vrtc"));
       return true;

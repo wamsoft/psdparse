@@ -351,7 +351,8 @@ d.selection.fill(app.foregroundColor); d.selection.deselect();
 """
 
 
-def grad_layer(style, angle=30, smooth=4096, scale=100, reverse=False, stops=((0, (255, 0, 0)), (4096, (0, 0, 255))), mids=50):
+def grad_layer(style, angle=30, smooth=4096, scale=100, reverse=False, stops=((0, (255, 0, 0)), (4096, (0, 0, 255))), mids=50,
+               method=None):
     lines = ['var d0 = new ActionDescriptor(); var r0 = new ActionReference(); r0.putClass(sTID("contentLayer")); d0.putReference(cTID("null"), r0);',
              'var ld = new ActionDescriptor(); var gl = new ActionDescriptor();',
              f'gl.putEnumerated(cTID("Type"), cTID("GrdT"), cTID("{style}")); gl.putUnitDouble(cTID("Angl"), cTID("#Ang"), {angle});',
@@ -367,6 +368,8 @@ def grad_layer(style, angle=30, smooth=4096, scale=100, reverse=False, stops=((0
               'var t = new ActionDescriptor(); t.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100); t.putInteger(cTID("Lctn"), 0); t.putInteger(cTID("Mdpn"), 50); tl.putObject(cTID("TrnS"), t);',
               'var t2 = new ActionDescriptor(); t2.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100); t2.putInteger(cTID("Lctn"), 4096); t2.putInteger(cTID("Mdpn"), 50); tl.putObject(cTID("TrnS"), t2);',
               'g.putList(cTID("Trns"), tl); gl.putObject(cTID("Grad"), cTID("Grdn"), g);',
+              (f'gl.putEnumerated(sTID("gradientsInterpolationMethod"), sTID("gradientInterpolationMethodType"), cTID("{method}"));'
+               if method else ''),
               'ld.putObject(cTID("Type"), sTID("gradientLayer"), gl); d0.putObject(cTID("Usng"), sTID("contentLayer"), ld);',
               'executeAction(cTID("Mk  "), d0, DialogModes.NO);']
     return "\n".join(lines)
@@ -426,6 +429,13 @@ def cases():
         "grad_diamond": ("white", grad_layer("Dmnd"), 6, 0.8),
         "grad_angle": ("white", grad_layer("Angl"), 255, 0.5),
         "grad_linear_smooth": ("white", grad_layer("Lnr ", angle=-60, stops=((0, (255, 0, 0)), (2048, (0, 255, 0)), (4096, (0, 0, 255))), mids=30), 3, 0.5),
+        # 補間方法: 知覚的 (Oklab) / 滑らか、角度 0 (保存時に角度が省かれる)
+        "grad_perceptual_gray": ("white", grad_layer("Lnr ", angle=0, stops=((0, (0, 0, 0)), (4096, (255, 255, 255))),
+                                                     method="Perc"), 2, 0.5),
+        "grad_perceptual_rgb": ("white", grad_layer("Lnr ", angle=0, stops=((0, (255, 0, 0)), (1400, (0, 255, 0)),
+                                                                            (4096, (0, 0, 255))), method="Perc"), 16, 3.0),
+        "grad_smooth_gray": ("white", grad_layer("Lnr ", angle=0, stops=((0, (0, 0, 0)), (2048, (128, 128, 128)),
+                                                                         (4096, (255, 255, 255))), method="Smoo"), 2, 0.5),
         "fx_outer_glow_soft": ("black", square_layer(60, 60, 100, 100) + outer_glow(20), 12, 0.5),
         "fx_outer_glow_precise": ("black", square_layer(60, 60, 100, 100) + outer_glow(20, 25, precise=True), 15, 0.5),
         "fx_inner_glow": ("black", square_layer(60, 60, 100, 100, (0, 0, 255)) + inner_glow(10), 20, 0.5),

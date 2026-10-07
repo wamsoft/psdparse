@@ -55,13 +55,98 @@ double sampleStops(const Stop *s, int n, double t, double smooth, Get get) {
 
 inline uint8_t to8(double v) { return (uint8_t)(clamp01(v) * 255.0 + 0.5); }
 
+inline double srgbToLinear(double x) { return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4); }
+inline double linearToSrgb(double v) { v = clamp01(v); return v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055; }
+
+// sRGB (0..255) → Oklab
+void toOklab(uint8_t r8, uint8_t g8, uint8_t b8, double o[3]) {
+  const double r = srgbToLinear(r8 / 255.0), g = srgbToLinear(g8 / 255.0), b = srgbToLinear(b8 / 255.0);
+  const double l = std::cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const double m = std::cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const double s = std::cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  o[0] = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+  o[1] = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+  o[2] = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+}
+
+// Oklab → sRGB (0..1、範囲外は切る)
+void fromOklab(const double o[3], double &r, double &g, double &b) {
+  const double l = o[0] + 0.3963377774 * o[1] + 0.2158037573 * o[2];
+  const double m = o[0] - 0.1055613458 * o[1] - 0.0638541728 * o[2];
+  const double s = o[0] - 0.0894841775 * o[1] - 1.2914855480 * o[2];
+  const double l3 = l * l * l, m3 = m * m * m, s3 = s * s * s;
+  r = linearToSrgb(4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3);
+  g = linearToSrgb(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3);
+  b = linearToSrgb(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3);
+}
+
+// 知覚的 / 滑らか用の分岐点 (Oklab の値とアルファ)
+struct Knot { double location, midpoint; double v[3]; };
+
+// 滑らか (Smoo): 中間点も「隣の 2 点の平均を通る点」として加え、点を 3 次の
+// エルミート曲線でつなぐ。点での傾きは両隣の区間の傾き (値 / 位置) の平均、両端は
+// 区間の傾きの 0.7 倍 (滑らかさの値は使わない。Photoshop で測定)
+double sampleSmooth(const std::vector<Knot> &k, double t, int ch) {
+  const int n = (int)k.size();
+  if (n == 0) return 0;
+  if (t <= k[0].location || n == 1) return k[0].v[ch];
+  if (t >= k[n - 1].location) return k[n - 1].v[ch];
+  int i = 0;
+  while (i + 1 < n && k[i + 1].location < t) i++;
+  auto chord = [&](int j) {
+    const double d = k[j + 1].location - k[j].location;
+    return d > 1e-9 ? (k[j + 1].v[ch] - k[j].v[ch]) / d : 0.0;
+  };
+  auto slope = [&](int j) {
+    if (j == 0) return chord(0) * 0.7;
+    if (j == n - 1) return chord(n - 2) * 0.7;
+    return (chord(j - 1) + chord(j)) * 0.5;
+  };
+  const double span = k[i + 1].location - k[i].location;
+  if (span <= 1e-9) return k[i + 1].v[ch];
+  const double u = (t - k[i].location) / span, u2 = u * u, u3 = u2 * u;
+  return (2 * u3 - 3 * u2 + 1) * k[i].v[ch] + (u3 - 2 * u2 + u) * slope(i) * span +
+         (-2 * u3 + 3 * u2) * k[i + 1].v[ch] + (u3 - u2) * slope(i + 1) * span;
+}
+
+std::vector<Knot> withMidKnots(const std::vector<Knot> &k) {
+  std::vector<Knot> out;
+  for (size_t i = 0; i < k.size(); i++) {
+    if (i > 0) {
+      Knot m;
+      m.location = k[i - 1].location + (k[i].location - k[i - 1].location) * k[i].midpoint;
+      m.midpoint = 0.5;
+      for (int c = 0; c < 3; c++) m.v[c] = (k[i - 1].v[c] + k[i].v[c]) * 0.5;
+      out.push_back(m);
+    }
+    Knot a = k[i];
+    a.midpoint = 0.5;
+    out.push_back(a);
+  }
+  return out;
+}
+
 }  // anonymous namespace
 
 extern "C" void psdfx_gradient_color(const psdfx_gradient *g, double t, uint8_t rgba[4]) {
   t = clamp01(t);
   const double s = clamp01(g->smoothness);
   double r, gg, b;
-  if (g->interpolation == PSDFX_GRADIENT_LINEAR_LIGHT) {
+  const bool smoo = g->interpolation == PSDFX_GRADIENT_SMOOTH;
+  if ((g->interpolation == PSDFX_GRADIENT_PERCEPTUAL || smoo) && g->color_count > 0) {
+    std::vector<Knot> k((size_t)g->color_count);
+    for (int i = 0; i < g->color_count; i++) {
+      const psdfx_color_stop &c = g->colors[i];
+      k[i].location = c.location; k[i].midpoint = c.midpoint;
+      toOklab(c.r, c.g, c.b, k[i].v);
+    }
+    if (smoo) k = withMidKnots(k);
+    double o[3];
+    for (int ch = 0; ch < 3; ch++)
+      o[ch] = smoo ? sampleSmooth(k, t, ch)
+                   : sampleStops(k.data(), (int)k.size(), t, s, [ch](const Knot &q) { return q.v[ch]; });
+    fromOklab(o, r, gg, b);
+  } else if (g->interpolation == PSDFX_GRADIENT_LINEAR_LIGHT) {
     auto lin = [](uint8_t v) { const double x = v / 255.0; return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4); };
     auto enc = [](double v) { v = clamp01(v); return v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055; };
     r = enc(sampleStops(g->colors, g->color_count, t, s, [&](const psdfx_color_stop &c) { return lin(c.r); }));
@@ -72,9 +157,18 @@ extern "C" void psdfx_gradient_color(const psdfx_gradient *g, double t, uint8_t 
     gg = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.g / 255.0; });
     b = sampleStops(g->colors, g->color_count, t, s, [](const psdfx_color_stop &c) { return c.b / 255.0; });
   }
-  const double a = g->alpha_count > 0
-      ? sampleStops(g->alphas, g->alpha_count, t, s, [](const psdfx_alpha_stop &c) { return c.opacity; })
-      : 1.0;
+  double a = 1.0;
+  if (g->alpha_count > 0 && smoo) {
+    std::vector<Knot> k((size_t)g->alpha_count);
+    for (int i = 0; i < g->alpha_count; i++) {
+      k[i].location = g->alphas[i].location; k[i].midpoint = g->alphas[i].midpoint;
+      k[i].v[0] = g->alphas[i].opacity; k[i].v[1] = k[i].v[2] = 0;
+    }
+    k = withMidKnots(k);
+    a = sampleSmooth(k, t, 0);
+  } else if (g->alpha_count > 0) {
+    a = sampleStops(g->alphas, g->alpha_count, t, s, [](const psdfx_alpha_stop &c) { return c.opacity; });
+  }
   rgba[0] = to8(r); rgba[1] = to8(gg); rgba[2] = to8(b); rgba[3] = to8(a);
 }
 

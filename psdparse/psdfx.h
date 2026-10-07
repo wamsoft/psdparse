@@ -107,12 +107,16 @@ typedef struct psdfx_gradient {
   const psdfx_color_stop *colors; int color_count;
   const psdfx_alpha_stop *alphas; int alpha_count;
   double smoothness;      /* 0..1 (Photoshop の滑らかさ。既定 1.0) */
-  int interpolation;      /* PSDFX_GRADIENT_CLASSIC (既定) / PSDFX_GRADIENT_LINEAR_LIGHT */
+  int interpolation;      /* PSDFX_GRADIENT_CLASSIC (既定) / LINEAR_LIGHT / PERCEPTUAL / SMOOTH */
 } psdfx_gradient;
 
 /* グラデーションの補間方法 ('gradientsInterpolationMethod')。
- * 線形 (Lnr ) は線形光 (sRGB を外した値) で色を混ぜる */
-enum { PSDFX_GRADIENT_CLASSIC = 0, PSDFX_GRADIENT_LINEAR_LIGHT = 1 };
+ *   線形 (Lnr ) は線形光 (sRGB を外した値) で色を混ぜる
+ *   知覚的 (Perc) は Oklab で混ぜる (滑らかさはクラシックと同じ)
+ *   滑らか (Smoo) は Oklab で、中間点も通る点として滑らかにつなぐ (滑らかさは使わない)
+ * Photoshop で測定。知覚的 / 滑らかは色相が大きく変わる区間で少し差が出る */
+enum { PSDFX_GRADIENT_CLASSIC = 0, PSDFX_GRADIENT_LINEAR_LIGHT = 1,
+       PSDFX_GRADIENT_PERCEPTUAL = 2, PSDFX_GRADIENT_SMOOTH = 3 };
 
 enum {
   PSDFX_GRADIENT_LINEAR = 0,

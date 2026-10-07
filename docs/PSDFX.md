@@ -30,7 +30,7 @@ psdfx の `.cpp` (`psdfx.cpp` / `psdfx_path.cpp` / `psdfx_paint.cpp` /
 | `psdfx_composite_layer_atop` | `psdfx_composite_layer` の source-atop 版 (クリッピング用。下地が半透明でもアルファを変えない) |
 | `psdfx_lerp` | 2 枚の面の線形補間 (通過グループの不透明度 / マスク) |
 | `psdfx_blur_plane` | 1 チャンネルのガウスぼかし (箱ぼかし 3 回) |
-| `psdfx_gradient_color` / `psdfx_draw_gradient` | グラデーション (線形 / 円形 / 角度 / 反射 / 菱形、中間点、滑らかさ) |
+| `psdfx_gradient_color` / `psdfx_draw_gradient` | グラデーション (線形 / 円形 / 角度 / 反射 / 菱形、中間点、滑らかさ、補間方法: クラシック / 線形光 / 知覚的 (Oklab) / 滑らか) |
 | `psdfx_draw_pattern` | パターンの繰り返し |
 | `psdfx_fill_path` | ベジェのサブパス群をアンチエイリアス付きで塗る (パスの合成方法、初期塗りつぶし) |
 | `psdfx_stroke_path` | サブパス群の線 (線幅、内側 / 中央 / 外側、端、角、マイターの上限、破線) |
