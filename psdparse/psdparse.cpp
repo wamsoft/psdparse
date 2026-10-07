@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iostream>
 #include <stack>
+#include <vector>
 
 namespace psd {
 
@@ -450,35 +451,52 @@ void parseLayerMask(IteratorBase &r, LayerMask &m, int size) {
   // Field order matches psd-tools' MaskData._read_body (the Adobe spec is
   // wrong here): rect, defaultColor, flags, [real section if size>=36],
   // [parameters if flags bit4]. There is NO filler byte after flags.
-  m.top    = r.getInt32(true);
-  m.left   = r.getInt32(true);
-  m.bottom = r.getInt32(true);
-  m.right  = r.getInt32(true);
-  m.defaultColor = r.getCh();
-  m.flags        = r.getCh();
-  if (size >= 36) {
-    m.hasReal                = true;
-    m.realFlags              = r.getCh();
-    m.realUserMaskBackground = r.getCh();
-    m.enclosingTop           = r.getInt32(true);
-    m.enclosingLeft          = r.getInt32(true);
-    m.enclosingBottom        = r.getInt32(true);
-    m.enclosingRight         = r.getInt32(true);
-  }
-  if (m.flags & 0x10) {  // parameters_applied
+  // ただし実ファイルには「本物のマスク」の部分が無く、flags の直後にパラメータ
+  // だけが続いて 36 バイト以上になるものもある (パラメータの大きさで判定する)。
+  std::vector<uint8_t> b((size_t)size, 0);
+  const int got = r.getData(b.data(), size);
+  if (got < 18) { m = LayerMask(); return; }
+  size_t pos = 0;
+  auto u8 = [&]() -> int { return pos < (size_t)got ? b[pos++] : (pos++, 0); };
+  auto i32 = [&]() -> int32_t {
+    uint32_t v = 0;
+    for (int k = 0; k < 4; k++) v = (v << 8) | (uint32_t)u8();
+    return (int32_t)v;
+  };
+  auto f64 = [&]() -> double {
+    pun64 v; v.i = 0;
+    for (int k = 0; k < 8; k++) v.i = (v.i << 8) | (uint64_t)u8();
+    return v.f;
+  };
+  auto paramSize = [](int pf) {
+    return 1 + ((pf & 1) ? 1 : 0) + ((pf & 2) ? 8 : 0) + ((pf & 4) ? 1 : 0) + ((pf & 8) ? 8 : 0);
+  };
+  m.top    = i32();
+  m.left   = i32();
+  m.bottom = i32();
+  m.right  = i32();
+  m.defaultColor = u8();
+  m.flags        = u8();
+  const bool params = (m.flags & 0x10) != 0;
+  const bool paramsOnly = params && got > 18 && 18 + paramSize(b[18]) == size;
+  auto readParams = [&]() {
     m.hasParameters = true;
-    m.paramFlags    = r.getCh();
-    if (m.paramFlags & 0x01) m.userMaskDensity = r.getCh();
-    if (m.paramFlags & 0x02) {
-      pun64 v; v.i = (uint64_t)r.getInt64(true);
-      m.userMaskFeather = v.f; m.hasUserFeather = true;
-    }
-    if (m.paramFlags & 0x04) m.vectorMaskDensity = r.getCh();
-    if (m.paramFlags & 0x08) {
-      pun64 v; v.i = (uint64_t)r.getInt64(true);
-      m.vectorMaskFeather = v.f; m.hasVectorFeather = true;
-    }
+    m.paramFlags    = u8();
+    if (m.paramFlags & 0x01) m.userMaskDensity = u8();
+    if (m.paramFlags & 0x02) { m.userMaskFeather = f64(); m.hasUserFeather = true; }
+    if (m.paramFlags & 0x04) m.vectorMaskDensity = u8();
+    if (m.paramFlags & 0x08) { m.vectorMaskFeather = f64(); m.hasVectorFeather = true; }
+  };
+  if (size >= 36 && !paramsOnly) {
+    m.hasReal                = true;
+    m.realFlags              = u8();
+    m.realUserMaskBackground = u8();
+    m.enclosingTop           = i32();
+    m.enclosingLeft          = i32();
+    m.enclosingBottom        = i32();
+    m.enclosingRight         = i32();
   }
+  if (params) readParams();
   m.width  = m.right  - m.left;
   m.height = m.bottom - m.top;
   m.present = true;
