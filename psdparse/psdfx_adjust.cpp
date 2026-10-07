@@ -250,7 +250,9 @@ extern "C" void psdfx_hue_saturation(psdfx_surface *s, double hue, double satura
     float h, sa, l;
     rgbToHsl(c, h, sa, l);
     if (anyRange) {
-      const float x = h * 360.f;
+      // 範囲の重みを引く色相は 0..359 の目盛り (色相 x 359。境界の傾きの位置が
+      // Photoshop と合う)
+      const float x = h * 359.f;
       const int i0 = std::min(359, (int)x);
       const float f = x - i0;
       dh = th[(size_t)i0] * (1 - f) + th[(size_t)i0 + 1] * f;
