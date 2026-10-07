@@ -374,7 +374,7 @@ private:
     if (vm.inverted()) for (auto &v : m) v = (uint8_t)(255 - v);
     const LayerMask &lm = l.extraData.layerMask;
     if (lm.hasVectorFeather && lm.vectorMaskFeather > 0)
-      psdfx_blur_plane(m.data(), c.width, c.height, c.width, lm.vectorMaskFeather / 2.0);
+      psdfx_blur_plane(m.data(), c.width, c.height, c.width, lm.vectorMaskFeather);   // σ = ぼかしの値 (Photoshop で測定)
     if (lm.vectorMaskDensity >= 0 && lm.vectorMaskDensity < 255) applyDensity(m, lm.vectorMaskDensity);
     for (size_t i = 0; i < m.size(); i++)
       c.px[i * 4 + 3] = (uint8_t)((c.px[i * 4 + 3] * m[i] + 127) / 255);
@@ -1182,7 +1182,7 @@ private:
       }
     }
     if (m.hasUserFeather && m.userMaskFeather > 0)
-      psdfx_blur_plane(mk.data(), c.width, c.height, c.width, m.userMaskFeather / 2.0);
+      psdfx_blur_plane(mk.data(), c.width, c.height, c.width, m.userMaskFeather);   // σ = ぼかしの値 (Photoshop で測定)
     if (m.userMaskDensity >= 0 && m.userMaskDensity < 255) applyDensity(mk, m.userMaskDensity);
     for (size_t i = 0; i < mk.size(); i++)
       c.px[i * 4 + 3] = (uint8_t)((c.px[i * 4 + 3] * mk[i] + 127) / 255);

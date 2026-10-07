@@ -288,12 +288,16 @@ extern "C" void psdfx_vibrance(psdfx_surface *s, double vibrance, double saturat
 
 extern "C" void psdfx_color_balance(psdfx_surface *s, const double shadows[3], const double midtones[3],
                                     const double highlights[3], int preserve_luminosity) {
+  // チャンネルごとのレベル補正 1 回にまとまる (Photoshop で測った曲線と 2/255 以内):
+  //   入力の黒 = max(0, -シャドウ)、入力の白 = 255 - max(0, ハイライト)、
+  //   ガンマ (中間調) = 2^((シャドウ + 2 x 中間調 + ハイライト) / 200)
+  uint8_t lut[3][256];
+  for (int c = 0; c < 3; c++)
+    psdfx_levels_lut(std::max(0.0, -shadows[c]), 255.0 - std::max(0.0, highlights[c]), 0, 255,
+                     std::pow(2.0, (shadows[c] + 2 * midtones[c] + highlights[c]) / 200.0), lut[c]);
   mapRGB(s, [&](float c[3], int, int) {
-    const float l = luma(c[0], c[1], c[2]);
-    const float ws = clamp01(1 - l * 2), wh = clamp01(l * 2 - 1), wm = 1 - ws - wh;
     float o[3];
-    for (int i = 0; i < 3; i++)
-      o[i] = clamp01(c[i] + (float)(shadows[i] * ws + midtones[i] * wm + highlights[i] * wh) / 100.f * 0.5f);
+    for (int i = 0; i < 3; i++) o[i] = lut[i][(int)(clamp01(c[i]) * 255.f + 0.5f)] / 255.f;
     if (preserve_luminosity) setLum(o, 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]);
     c[0] = clamp01(o[0]); c[1] = clamp01(o[1]); c[2] = clamp01(o[2]);
   });
