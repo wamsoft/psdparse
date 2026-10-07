@@ -211,6 +211,12 @@ extern "C" void psdfx_hue_saturation(psdfx_surface *s, double hue, double satura
                                      int colorize, const psdfx_hue_range *ranges, int range_count) {
   // 範囲ごとの調整は色相の表 (360 段) にまとめる。範囲の重みは 4 つの境界で
   // 作る台形 (始まりから測るので赤系の 0 度またぎも扱える)。
+  // 彩度の倍率: 上げる側は 1 / (1 - 量) (+100 は 128 倍)、下げる側は 1 + 量。
+  // 範囲では倍率を重みで 1 との間に混ぜ (1 + (倍率 - 1) x 重み)、全体と範囲の倍率は
+  // 掛け合わせる (Photoshop で色相のランプを測って確認)
+  auto satFactor = [](double amount) {
+    return amount > 0 ? std::min(128.0, 1.0 / std::max(1e-9, 1.0 - amount)) : std::max(0.0, 1.0 + amount);
+  };
   std::vector<float> th(361, 0.f), ts(361, 0.f), tl(361, 0.f);
   bool anyRange = false;
   for (int r = 0; r < range_count && ranges && !colorize; r++) {
@@ -227,7 +233,7 @@ extern "C" void psdfx_hue_saturation(psdfx_surface *s, double hue, double satura
       else if (h <= d) w = d <= c ? 1.0 : (d - h) / (d - c);
       else w = 0.0;
       th[(size_t)k] += (float)(w * g.hue);
-      ts[(size_t)k] += (float)(w * g.saturation / 100.0);
+      ts[(size_t)k] += (float)((satFactor(g.saturation / 100.0) - 1.0) * std::min(1.0, w));   // 倍率 - 1 を重みで足す
       tl[(size_t)k] += (float)(w * g.lightness / 100.0);
     }
   }
@@ -256,14 +262,7 @@ extern "C" void psdfx_hue_saturation(psdfx_surface *s, double hue, double satura
       hslToRgb(hh / 360.f, clamp01((float)(saturation / 100.0)), L, c);
       return;
     }
-    const float hu = (float)hue + dh;
-    const float sv = std::min(1.f, std::max(-1.f, (float)(saturation / 100.0) + ds));
-    if (hu != 0 || sv != 0) {
-      h = std::fmod(h + hu / 360.f, 1.f); if (h < 0) h += 1.f;
-      if (sv > 0) sa = sv >= 1.f ? (sa > 0 ? 1.f : 0.f) : clamp01(sa / (1.f - sv));
-      else sa = clamp01(sa * (1.f + sv));
-      hslToRgb(h, sa, l, c);
-    }
+    // 明度 (範囲 → 全体) を先に、彩度と色相はそのあと (Photoshop で確認)
     if (dl != 0) {
       const float d = std::min(1.f, std::max(-1.f, dl));
       const float mx = std::max(c[0], std::max(c[1], c[2])), mn = std::min(c[0], std::min(c[1], c[2]));
@@ -272,6 +271,15 @@ extern "C" void psdfx_hue_saturation(psdfx_surface *s, double hue, double satura
     for (int i = 0; i < 3; i++) {
       if (lv > 0) c[i] = c[i] + (1 - c[i]) * lv;
       else if (lv < 0) c[i] = c[i] * (1 + lv);
+    }
+    const float hu = (float)hue + dh;
+    // 彩度の倍率 = 全体の倍率 x (1 + 範囲ごとの (倍率 - 1) x 重み の和)
+    const double F = satFactor(saturation / 100.0) * std::max(0.0, 1.0 + (double)ds);
+    if (hu != 0 || F != 1.0) {
+      rgbToHsl(c, h, sa, l);
+      h = std::fmod(h + hu / 360.f, 1.f); if (h < 0) h += 1.f;
+      sa = (float)std::min(1.0, std::max(0.0, sa * F));
+      hslToRgb(h, sa, l, c);
     }
   });
 }
