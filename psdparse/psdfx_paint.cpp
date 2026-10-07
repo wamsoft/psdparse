@@ -160,6 +160,32 @@ extern "C" void psdfx_draw_pattern(psdfx_surface *dst, int dst_left, int dst_top
   if (!dst || !dst->pixels || !tile || !tile->pixels || tile->width <= 0 || tile->height <= 0) return;
   if (!(scale > 0)) scale = 1.0;
   const double tw = tile->width * scale, th = tile->height * scale;
+  if (std::fabs(scale - 1.0) > 1e-9) {
+    // 拡大縮小したパターンは画素の左上の角の位置で、タイルの画素の間を直線補間する
+    // (繰り返しの継ぎ目も含めて。Photoshop の合成画像と照合して確認)
+    const int TW = tile->width, TH = tile->height;
+    auto wrap = [](int v, int n) { v %= n; return v < 0 ? v + n : v; };
+    for (int y = 0; y < dst->height; y++) {
+      uint8_t *row = dst->pixels + (size_t)y * dst->stride;
+      const double v = (dst_top + y - origin_y) / scale;
+      const double vf = std::floor(v);
+      const float ty = (float)(v - vf);
+      const int y0 = wrap((int)vf, TH), y1 = wrap((int)vf + 1, TH);
+      const uint8_t *r0 = tile->pixels + (size_t)y0 * tile->stride, *r1 = tile->pixels + (size_t)y1 * tile->stride;
+      for (int x = 0; x < dst->width; x++) {
+        const double u = (dst_left + x - origin_x) / scale;
+        const double uf = std::floor(u);
+        const float tx = (float)(u - uf);
+        const int x0 = wrap((int)uf, TW), x1 = wrap((int)uf + 1, TW);
+        for (int c = 0; c < 4; c++) {
+          const float a = r0[x0 * 4 + c] * (1 - tx) + r0[x1 * 4 + c] * tx;
+          const float b = r1[x0 * 4 + c] * (1 - tx) + r1[x1 * 4 + c] * tx;
+          row[x * 4 + c] = (uint8_t)std::min(255.f, a * (1 - ty) + b * ty + 0.5f);
+        }
+      }
+    }
+    return;
+  }
   for (int y = 0; y < dst->height; y++) {
     uint8_t *row = dst->pixels + (size_t)y * dst->stride;
     double fy = std::fmod((dst_top + y + 0.5 - origin_y), th);
