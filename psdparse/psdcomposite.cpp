@@ -337,12 +337,13 @@ private:
         std::vector<uint8_t> tile; int tw = 0, th = 0;
         if (!psd_.getPatternImage((int)i, tile, tw, th)) return false;
         psdfx_surface ts{ tile.data(), tw, th, tw * 4 };
-        // 原点はシェイプの左上 + 位相 (Photoshop の合成画像と照合して決めた)
+        // 原点はシェイプの左上 + 位相。ベクタマスクの形が基準のときは横だけ 1 画素右に
+        // ずれる (Photoshop の合成画像と照合して決めた。5 種類のタイルで同じ)
         auto *ph = dynamic_cast<Descriptor*>(d.item("phase").find());
         double box[4];
         shapeBox(l, box);
         psdfx_draw_pattern(&s, left, top, &ts, num(&d, "Scl ", 100) / 100.0,
-                           std::floor(box[0]) + num(ph, "Hrzn"), std::floor(box[1]) + num(ph, "Vrtc"));
+                           std::floor(box[0]) + (l.vectorMask.present ? 1 : 0) + num(ph, "Hrzn"), std::floor(box[1]) + num(ph, "Vrtc"));
         return true;
       }
       return false;
