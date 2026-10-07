@@ -202,7 +202,10 @@ extern "C" void psdfx_posterize_lut(int levels, uint8_t lut[256]) {
 
 extern "C" void psdfx_threshold(psdfx_surface *s, int level) {
   mapRGB(s, [&](float c[3], int, int) {
-    const float v = std::floor(luma(c[0], c[1], c[2]) * 255.f + 0.5f) >= level ? 1.f : 0.f;
+    // 輝度 0.2996 R + 0.5906 G + 0.1098 B が (段階 - 0.5) 以上なら白 (Photoshop の 3 段階で
+    // 4096 色すべて一致)
+    const float y = (0.2996f * c[0] + 0.5906f * c[1] + 0.1098f * c[2]) * 255.f;
+    const float v = y >= level - 0.5f ? 1.f : 0.f;
     c[0] = c[1] = c[2] = v;
   });
 }

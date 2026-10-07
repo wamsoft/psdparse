@@ -229,6 +229,24 @@ def vibrance(vib, sat):
                             f'adj.putInteger(cTID("Strt"), {sat});', 'sTID("vibrance")')
 
 
+def threshold(level):
+    return adjustment_layer(f'var adj = new ActionDescriptor(); adj.putInteger(cTID("Lvl "), {level});', 'cTID("Thrs")')
+
+
+def channel_mixer(red, green, blue, mono=False):
+    """各 (R, G, B, 定数) を %"""
+    def ch(var, v):
+        return (f'var {var} = new ActionDescriptor(); {var}.putUnitDouble(cTID("Rd  "), cTID("#Prc"), {v[0]}); '
+                f'{var}.putUnitDouble(cTID("Grn "), cTID("#Prc"), {v[1]}); {var}.putUnitDouble(cTID("Bl  "), cTID("#Prc"), {v[2]}); '
+                f'{var}.putUnitDouble(cTID("Cnst"), cTID("#Prc"), {v[3]});')
+    return adjustment_layer("var adj = new ActionDescriptor(); "
+                            'adj.putEnumerated(sTID("presetKind"), sTID("presetKindType"), sTID("presetKindCustom")); '
+                            f'adj.putBoolean(cTID("Mnch"), {"true" if mono else "false"}); '
+                            f'{ch("r", red)} adj.putObject(cTID("Rd  "), cTID("ChMx"), r); '
+                            f'{ch("g", green)} adj.putObject(cTID("Grn "), cTID("ChMx"), g); '
+                            f'{ch("b", blue)} adj.putObject(cTID("Bl  "), cTID("ChMx"), b);', 'cTID("ChnM")')
+
+
 def masked_black(feather):
     """白の上の黒いレイヤに、横 64..128 を見せるマスク (ぼかし feather) を付ける"""
     return f"""
@@ -467,6 +485,9 @@ def cases():
                                                      ("Bls ", -50, 60, 0, -20)]), 2, 0.5),
         "sc_relative_mix": ("cube", selective_color([("Rds ", 40, -30, 20, 25), ("Ntrl", 30, -20, 10, 15),
                                                      ("Whts", 0, 0, 50, 30)], relative=True), 2, 0.3),
+        "threshold_60": ("cube", threshold(60), 0, 0.0),
+        "threshold_128": ("cube", threshold(128), 0, 0.0),
+        "mixer": ("cube", channel_mixer((80, 30, -10, 0), (10, 90, 10, 5), (-20, 20, 110, -5)), 1, 0.3),
         "vib_saturation_only": ("cube", vibrance(0, -60), 1, 0.2),
         "vib_small": ("cube", vibrance(-6, 2), 3, 0.5),
         "vib_up": ("cube", vibrance(50, 0), 8, 1.0),
