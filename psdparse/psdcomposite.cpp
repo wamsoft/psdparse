@@ -1042,7 +1042,15 @@ private:
         for (size_t i = 3; i < out.px.size() && !any; i += 4) any = out.px[i] != 0;
         if (any) {
           if (maskOn) applyUserMask(maskLayer, out, left, top);
-          applyVectorMask(l, out, left, top);
+          // シェイプ ('vscg' を持つ) の保存画素はパスの形で描かれ済み。もう一度
+          // マスクを掛けると縁のアンチエイリアスが 2 乗になるので、濃度・ぼかしが
+          // 無ければ掛けない (照合で確認)
+          const LayerMask &lm = l.extraData.layerMask;
+          const bool vecParams = (lm.hasVectorFeather && lm.vectorMaskFeather > 0) ||
+                                 (lm.vectorMaskDensity >= 0 && lm.vectorMaskDensity < 255);
+          bool shape = false;
+          for (const auto &a : l.extraData.additionalLayers) if (a.key == 'vscg') shape = true;
+          if (!shape || vecParams || l.vectorMask.inverted()) applyVectorMask(l, out, left, top);
           return true;
         }
       }
