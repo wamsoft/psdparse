@@ -246,10 +246,8 @@ py::object layerVectorMask(const psd::LayerInfo &l) {
 
 py::dict descToPy(psd::Descriptor *d);
 
-// Adjustment layer parameters as a flat dict: {"type", "key", <named values>}.
-py::object layerAdjustment(const psd::LayerInfo &l) {
-  psd::AdjustmentInfo a;
-  if (!psd::decodeAdjustment(l, a)) return py::none();
+// AdjustmentInfo (名前付きの値の入れ物) を dict へ: {"type", "key", <named values>}。
+py::dict namedValuesToPy(const psd::AdjustmentInfo &a) {
   py::dict d;
   d["type"] = a.type;
   char k[5] = { (char)((a.key >> 24) & 0xff), (char)((a.key >> 16) & 0xff),
@@ -282,10 +280,30 @@ py::object layerAdjustment(const psd::LayerInfo &l) {
     }
     d[kv.first.c_str()] = rows;
   }
-  for (const auto &kv : a.text) d[kv.first.c_str()] = py::bytes(kv.second);
+  for (const auto &kv : a.text) d[kv.first.c_str()] = py::str(kv.second);   // 4 文字コード
   for (const auto &kv : a.unicode) d[kv.first.c_str()] = u16ToStr(kv.second);
   if (a.descriptor) d["descriptor"] = descToPy(a.descriptor.get());
   if (!a.valid) d["incomplete"] = true;
+  return d;
+}
+
+// Adjustment layer parameters as a flat dict: {"type", "key", <named values>}.
+py::object layerAdjustment(const psd::LayerInfo &l) {
+  psd::AdjustmentInfo a;
+  if (!psd::decodeAdjustment(l, a)) return py::none();
+  return namedValuesToPy(a);
+}
+
+// Legacy layer effects ('lrFX'): {effect type: {named values}}.
+py::object layerLegacyEffects(const psd::LayerInfo &l) {
+  std::vector<psd::AdjustmentInfo> fx;
+  if (!psd::decodeLegacyEffects(l, fx)) return py::none();
+  py::dict d;
+  for (const auto &e : fx) {
+    py::dict v = namedValuesToPy(e);
+    v.attr("pop")("type");
+    d[e.type.c_str()] = v;
+  }
   return std::move(d);
 }
 
@@ -1216,6 +1234,12 @@ PYBIND11_MODULE(psdparse, m) {
         "Per-layer layer-comp state as {comp_id: {'enabled', 'offset_x', "
         "'offset_y'}} (empty when the layer is in no comps). `enabled` says "
         "whether this layer is shown in that document comp (PSDFile.layer_comps).")
+    .def_property_readonly("legacy_effects", &layerLegacyEffects,
+        "Old-style layer effects ('lrFX', Photoshop 5) as {type: values}, or None. "
+        "Types: common_state, drop_shadow, inner_shadow, outer_glow, inner_glow, "
+        "bevel, solid_fill. Colors are [color_space, c0, c1, c2, c3]; blur / "
+        "intensity / distance are the stored 32-bit values. Newer files keep the "
+        "same effects in 'lfx2' (layer.effects), which Photoshop prefers.")
     .def_property_readonly("adjustment", &layerAdjustment,
         "Adjustment layer parameters as a dict {'type', 'key', ...}, or None. "
         "type is one of levels, curves, hue_saturation, color_balance, "

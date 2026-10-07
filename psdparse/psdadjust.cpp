@@ -1,4 +1,4 @@
-// 調整レイヤのパラメータ。
+// 調整レイヤのパラメータと、旧形式のレイヤー効果 (lrFX)。
 //
 // 公開仕様 "Adjustment layer" のバイナリ形式 (levl / curv / hue2 / blnc / selc /
 // brit / thrs / post / nvrt / mixr / phfl / expA / grdm) と、descriptor 形式
@@ -264,7 +264,115 @@ bool decodeBinary(int key, Rd &r, AdjustmentInfo &o) {
   }
 }
 
+// --- 旧形式のレイヤー効果 'lrFX' (Photoshop 5.0) ---------------------------
+//
+// version(2) + 件数(2) + 件数 × ('8BIM' + 種別(4) + 長さ(4) + 中身)。
+// 色は 色空間(2) + 成分 4 × u16。ぼかし等の 4 バイト値は psd-tools と同じく
+// 格納値そのまま (上位 16bit が整数部、下位が小数部の固定小数のことが多い)。
+
+void color(Rd &r, AdjustmentInfo &o, const char *k) {
+  int space = r.u16();
+  std::vector<double> v = { (double)space };
+  for (int i = 0; i < 4; i++) v.push_back(space == 7 ? r.s16() : r.u16());   // 7 = Lab は符号付き
+  array(o, k, v);
+}
+
+void blendKey(Rd &r, AdjustmentInfo &o, const char *k) {
+  if (r.fourcc() != "8BIM") r.ok = false;
+  o.text.push_back({k, r.fourcc()});
+}
+
+bool decodeLegacyEffect(const std::string &key, Rd &r, AdjustmentInfo &o) {
+  const int version = (int)r.u32();
+  scalar(o, "version", version);
+  if (key == "cmnS") {
+    o.type = "common_state";
+    scalar(o, "visible", r.u8());
+  } else if (key == "dsdw" || key == "isdw") {
+    o.type = key == "dsdw" ? "drop_shadow" : "inner_shadow";
+    scalar(o, "blur", r.u32());
+    scalar(o, "intensity", r.u32());
+    scalar(o, "angle", (int32_t)r.u32());
+    scalar(o, "distance", r.u32());
+    color(r, o, "color");
+    blendKey(r, o, "blend_mode");
+    scalar(o, "enabled", r.u8());
+    scalar(o, "use_global_angle", r.u8());
+    scalar(o, "opacity", r.u8());
+    color(r, o, "native_color");
+  } else if (key == "oglw" || key == "iglw") {
+    o.type = key == "oglw" ? "outer_glow" : "inner_glow";
+    scalar(o, "blur", r.u32());
+    scalar(o, "intensity", r.u32());
+    color(r, o, "color");
+    blendKey(r, o, "blend_mode");
+    scalar(o, "enabled", r.u8());
+    scalar(o, "opacity", r.u8());
+    if (version >= 2) {
+      if (key == "iglw") scalar(o, "invert", r.u8());
+      color(r, o, "native_color");
+    }
+  } else if (key == "bevl") {
+    o.type = "bevel";
+    scalar(o, "angle", (int32_t)r.u32());
+    scalar(o, "depth", r.u32());
+    scalar(o, "blur", r.u32());
+    blendKey(r, o, "highlight_blend_mode");
+    blendKey(r, o, "shadow_blend_mode");
+    color(r, o, "highlight_color");
+    color(r, o, "shadow_color");
+    scalar(o, "bevel_style", r.u8());
+    scalar(o, "highlight_opacity", r.u8());
+    scalar(o, "shadow_opacity", r.u8());
+    scalar(o, "enabled", r.u8());
+    scalar(o, "use_global_angle", r.u8());
+    scalar(o, "direction", r.u8());
+    if (version == 2) {
+      color(r, o, "real_highlight_color");
+      color(r, o, "real_shadow_color");
+    }
+  } else if (key == "sofi") {
+    o.type = "solid_fill";
+    blendKey(r, o, "blend_mode");
+    color(r, o, "color");
+    scalar(o, "opacity", r.u8());
+    scalar(o, "enabled", r.u8());
+    color(r, o, "native_color");
+  } else {
+    o.type = "unknown";
+  }
+  return r.ok;
+}
+
 }  // anonymous namespace
+
+bool decodeLegacyEffects(const LayerInfo &layer, std::vector<AdjustmentInfo> &out) {
+  out.clear();
+  for (const auto &a : layer.extraData.additionalLayers) {
+    if (a.key != 'lrFX') continue;
+    std::vector<uint8_t> buf;
+    if (!readBlock(a, buf)) return false;
+    Rd r(buf);
+    r.u16();                       // version
+    const int count = r.u16();
+    for (int i = 0; i < count && r.ok; i++) {
+      if (r.fourcc() != "8BIM") break;
+      std::string key = r.fourcc();
+      uint32_t len = r.u32();
+      if (!r.need(len)) break;
+      std::vector<uint8_t> body(buf.begin() + (long)r.p, buf.begin() + (long)(r.p + len));
+      r.p += len;
+      AdjustmentInfo e;
+      e.key = (key.size() == 4) ? (int)(((uint32_t)(uint8_t)key[0] << 24) | ((uint32_t)(uint8_t)key[1] << 16) |
+                                        ((uint32_t)(uint8_t)key[2] << 8) | (uint8_t)key[3]) : 0;
+      Rd er(body);
+      e.valid = decodeLegacyEffect(key, er, e);
+      out.push_back(e);
+    }
+    return true;
+  }
+  return false;
+}
 
 bool decodeAdjustment(const LayerInfo &layer, AdjustmentInfo &out) {
   // descriptor 形式: (キー, 種別名, descriptor の手前の読み飛ばし量)

@@ -125,6 +125,7 @@ Read-only view of one layer.
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
 | `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
+| `legacy_effects` | `dict` \| `None` | old-style effects (`lrFX`) as `{type: values}`: `common_state`, `drop_shadow`, `inner_shadow`, `outer_glow`, `inner_glow`, `bevel`, `solid_fill`; colors are `[color_space, c0, c1, c2, c3]`, blend modes 4-char keys, blur / intensity / distance the stored 32-bit values |
 | `adjustment` | `dict` \| `None` | adjustment layer parameters `{"type", "key", ...}` — see [Adjustment layers](#adjustment-layers) |
 | `smart_object` | `dict` \| `None` | smart object placement (`SoLd` / `SoLE` / `PlLd`): `{"key", "uuid", "placed_id", "page", "total_pages", "anti_alias", "placed_type", "transform", "size", "filters", "linked_file"}` — `transform` is the 4 corners `(x, y)` (top-left, top-right, bottom-right, bottom-left), `linked_file` an index into `PSDFile.linked_files` |
 | `vector_mask` | `dict` \| `None` | vector mask (`vmsk`, or `vsms` on shape layers): `{"key", "inverted", "not_linked", "disabled", "path"}` — see [Paths](#paths) |

@@ -160,7 +160,7 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 | 機能 | 状況 | API |
 |---|:---:|---|
 | レイヤー効果 (`lfx2`, object-based) | ✅ | `layer.effects` (nested descriptor dict) |
-| 旧レイヤー効果 (`lrFX`, binary) | ❌ | descriptor でないため未対応 |
+| 旧レイヤー効果 (`lrFX`, binary) | ✅ | `layer.legacy_effects` = `{種類: 値}` (共通 / ドロップシャドウ / シャドウ (内側) / 光彩 (外側・内側) / ベベル / 塗り)。未リリース。読み取りのみ。新しいファイルは同じ効果を `lfx2` にも持ち、Photoshop はそちらを使う |
 | 塗りつぶしレイヤ (`SoCo`/`GdFl`/`PtFl`) | ✅ | `layer.fill` (`{type, data}`) |
 | 任意キーの descriptor 取得 | ✅ | `layer.descriptor(key, skip)` / `layer.info_keys` |
 

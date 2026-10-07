@@ -321,6 +321,9 @@ namespace psd {
 	struct LayerInfo;
 	// 調整レイヤのパラメータを読む。調整のブロックが無ければ false。
 	bool decodeAdjustment(const LayerInfo &layer, AdjustmentInfo &out);
+	// 旧形式のレイヤー効果 'lrFX' を効果ごとに読む (AdjustmentInfo を名前付きの値の
+	// 入れ物として使う。type は "drop_shadow" など)。'lrFX' が無ければ false。
+	bool decodeLegacyEffects(const LayerInfo &layer, std::vector<AdjustmentInfo> &out);
 
   // RGBAカラー
   struct ColorRgba {
