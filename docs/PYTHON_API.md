@@ -98,7 +98,7 @@ Returns the pixels of one layer as raw BGRA bytes.
 
 Length = `layer.width * layer.height * 4`. Returns `b""` for empty layers (`width == 0` or `height == 0`). Raises `IndexError` on bad index, `ValueError` on bad mode.
 
-### Compositing from layers (unreleased)
+### Compositing from layers (0.13.0)
 
 ```python
 p.composite(effects: bool = True, background: tuple | None = None) -> (bytes, dict)
@@ -115,7 +115,7 @@ fill opacity, channel restriction, artboards, and layer effects when
 and a dict counting what could not be reproduced:
 `skipped_adjustments` (e.g. color lookup), `unsupported_clip_base`,
 `unsupported_effects` (e.g. noise gradients). See
-[SUPPORT.md](SUPPORT.md#再合成-composite-未リリース) for how closely each
+[SUPPORT.md](SUPPORT.md#再合成-composite-0130) for how closely each
 part follows Photoshop.
 `background=(r, g, b)` composites onto an opaque colour instead of
 transparency.
@@ -178,7 +178,7 @@ Read-only view of one layer.
 | `artboard` | `dict` \| `None` | artboard (`artb`): `{"rect": (left, top, right, bottom), "preset_name", "background_type", "color"}` |
 | `smart_object` | `dict` \| `None` | smart object placement (`SoLd` / `SoLE` / `PlLd`): `{"key", "uuid", "placed_id", "page", "total_pages", "anti_alias", "placed_type", "transform", "size", "filters", "linked_file"}` — `transform` is the 4 corners `(x, y)` (top-left, top-right, bottom-right, bottom-left), `linked_file` an index into `PSDFile.linked_files` |
 | `vector_mask` | `dict` \| `None` | vector mask (`vmsk`, or `vsms` on shape layers): `{"key", "inverted", "not_linked", "disabled", "path"}` — see [Paths](#paths) |
-| `shape` | `dict` \| `None` | shape fill / stroke / live-shape origins (`vscg` / `vstk` / `vogk`) — see [Shapes and path rasterization](#shapes-and-path-rasterization-unreleased) |
+| `shape` | `dict` \| `None` | shape fill / stroke / live-shape origins (`vscg` / `vstk` / `vogk`) — see [Shapes and path rasterization](#shapes-and-path-rasterization-0130) |
 | `comp_states` | `dict` | per layer-comp state `{comp_id: {"enabled", "offset_x", "offset_y"}}` (empty if the layer is in no comps). `enabled` says if the layer shows in that comp — see [Layer comps](#layer-comps) |
 | `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
 | `visible` | `bool` | flag bit 1 inverted |
@@ -901,7 +901,7 @@ the ones before it: `-1`/`1` combine, `2` subtract, `3` intersect, `0` exclude.
 encoding, e.g. Shift-JIS), `unicode_name` comes from the document's `pths` block.
 Read-only for now; saving keeps the original bytes.
 
-### Shapes and path rasterization (unreleased)
+### Shapes and path rasterization (0.13.0)
 
 `layer.shape` gathers what a shape layer keeps besides its path (`None` when the
 layer has none of `vscg` / `vstk` / `vogk`):
