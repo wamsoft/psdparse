@@ -904,6 +904,21 @@ bool PSDFile::setDocumentAdditionalInfo(int key, const char *data, size_t size) 
   return true;
 }
 
+bool PSDFile::getLinkedFileData(int index, std::string &out) {
+  if (index < 0 || index >= (int)linkedFiles.size()) return false;
+  const LinkedFileInfo &f = linkedFiles[(size_t)index];
+  if (!f.hasData || !layerAndMaskTrailing) return false;
+  if (f.dataSize > (uint64_t)(layerAndMaskTrailing->size() - f.dataOffset)) return false;
+  const int n = (int)f.dataSize;
+  out.assign((size_t)n, 0);
+  if (n == 0) return true;
+  layerAndMaskTrailing->init();
+  IteratorBase *r = layerAndMaskTrailing->cloneRange(f.dataOffset, n);
+  int got = r ? r->getData(&out[0], n) : 0;
+  delete r;
+  return got == n;
+}
+
 bool PSDFile::removeDocumentAdditionalInfo(int key) {
   return setDocumentAdditionalInfo(key, 0, 0);
 }

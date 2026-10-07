@@ -288,6 +288,12 @@ namespace psd {
     // レイヤの TySh が持つ TextIndex (Txt2 内の本文の並び順) を読む。
     bool getLayerTextIndex(int index, int &out) const;
 
+    // --- スマートオブジェクトの埋め込みファイル ------------------------------
+    //
+    // linkedFiles[index] の中身 (埋め込みファイル、または外部ファイルの写し) を
+    // 読み出す。中身を持たない (外部リンクのみ / エイリアス) なら false。
+    bool getLinkedFileData(int index, std::string &out);
+
     // --- 文書末尾の追加情報 (Txt2 など) --------------------------------------
     //
     // レイヤ&マスク情報の末尾にある、文書ぜんたいに効く追加情報ブロック

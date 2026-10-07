@@ -142,6 +142,8 @@ Data::processParsed()
 
   // 保存パスの Unicode 名 (文書末尾の 'pths')
   loadUnicodePathNames(*this);
+  // スマートオブジェクトの埋め込み / リンクファイル (文書末尾の lnk2 など)
+  loadLinkedFiles(*this);
 
   // カラーテーブル
   if (header.mode == COLOR_MODE_INDEXED &&
@@ -239,6 +241,11 @@ Data::processParsed()
       case 'TySh': // Type tool object setting (Photoshop 6.0) — テキストレイヤ
         success = loadLayerTypeTool(layer, additional);
         break;
+      case 'SoLd': // Placed Layer Data (Photoshop CS3)
+      case 'SoLE':
+      case 'PlLd': // Placed Layer (旧形式。CS3 以降も SoLd と並べて書かれる)
+        success = loadLayerSmartObject(layer, additional);
+        break;
       case 'vmsk': // Vector mask setting (Photoshop 6.0)
       case 'vsms': // シェイプレイヤのベクタマスク (CS6 以降)
         if (!layer.vectorMask.present || additional.key == 'vmsk')
@@ -267,7 +274,6 @@ Data::processParsed()
       case 'tsly': // Transparency shapes layer (Photoshop 7.0)
       case 'lmgm': // Layer mask as global mask (Photoshop 7.0)
       case 'vmgm': // Vector mask as global mask (Photoshop 7.0)
-      case 'plLd': // Placed Layer (replaced by SoLd in Photoshop CS3)
       case 'lnkD': // Linked Layer
       case 'lnk2':
       case 'lnk3':
@@ -276,7 +282,6 @@ Data::processParsed()
       case 'pths': // Unicode Path Name (Photoshop CS6)
       case 'anFX': // Animation Effects (Photoshop CS6)
       case 'FMsk': // Filter Mask (Photoshop CS3)
-      case 'SoLd': // Placed Layer Data (Photoshop CS3)
       case 'vstk': // Vector Stroke Data (Photoshop CS6)
       case 'vscg': // Vector Stroke Content Data (Photoshop CS6)
       case 'sn2P': // Using Aligned Rendering (Photoshop CS6)
@@ -539,6 +544,8 @@ void parseLayerExtraData(IteratorBase &r, LayerExtraData &ex, bool psb) {
     int posAfter = r.size() - r.rest();
     if (posAfter <= posBefore) break;
   }
+  // ブロックとして読めなかった残り (最後のブロックの後ろの詰め物など)
+  if (r.rest() > 0) ex.tailRaw = r.cloneRange(0, r.rest());
 }
 
 void parseLayerRecord(IteratorBase &r, Data &data) {

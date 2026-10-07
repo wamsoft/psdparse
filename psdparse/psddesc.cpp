@@ -10,9 +10,12 @@ namespace psd {
   // --------------------------------------------------------------------------
 
   // 4バイトキー or stringタイプのID取得用ユーティリティ
-  static void readId(IteratorBase *data, std::string &id)
+  // 戻り値: 4 文字の ID が「長さ 4 を明示」で書かれていたか (書き戻しで再現する。
+  // DescriptorItem::idLongMask を参照)
+  static bool readId(IteratorBase *data, std::string &id)
   {
     int idSize = data->getInt32();
+    const bool explicitFour = (idSize == 4);
     if (idSize == 0) {
       idSize = 4;
     }
@@ -21,12 +24,13 @@ namespace psd {
     if (idSize < 0 || idSize > data->rest()) {
       data->advance(data->rest());
       id.clear();
-      return;
+      return false;
     }
     std::vector<char> buf(idSize+1);
     data->getData(&buf[0], idSize);
     buf[idSize] = '\0';
     id.assign(&buf[0]);
+    return explicitFour;
   }
 
   // タイプにしたがってアイテム取得をディスパッチ
@@ -49,6 +53,9 @@ namespace psd {
     case 'GlbC': item = new DescriptorClass(type);   break;
     case 'alis': item = new DescriptorAlias();       break;
     case 'tdta': item = new DescriptorRawData();     break;
+    case 'comp': item = new DescriptorLargeInteger(); break;
+    case 'UnFl': item = new DescriptorUnitFloats();  break;
+    case 'ObAr': item = new DescriptorObjectArray(); break;
     default:
       break;
     }
@@ -65,13 +72,14 @@ namespace psd {
   Descriptor::load(IteratorBase *data)
   {
     data->getUnicodeString(name);
-    readId(data, classId);
+    if (readId(data, classId)) idLongMask |= 1;
 
     int itemCount = data->getInt32();
     for (int i = 0; i < itemCount; i++) {
       std::string key;
-      readId(data, key);
+      const bool longKey = readId(data, key);
       DescriptorItem *item = readItem(data);
+      if (longKey) longKeys.insert(key);
       if (item && item->isValid) {
         if (itemMap.find(key) == itemMap.end()) keyOrder.push_back(key);
         itemMap[key] = item;
@@ -165,8 +173,8 @@ namespace psd {
   bool
   DescriptorEnumerated::load(IteratorBase *data)
   {
-    readId(data, typeId);
-    readId(data, enumId);
+    if (readId(data, typeId)) idLongMask |= 1;
+    if (readId(data, enumId)) idLongMask |= 2;
     return true;
   }
 
@@ -188,8 +196,38 @@ namespace psd {
   DescriptorClass::load(IteratorBase *data)
   {
     data->getUnicodeString(name);
-    readId(data, classId);
+    if (readId(data, classId)) idLongMask |= 1;
     return true;
+  }
+
+  bool
+  DescriptorLargeInteger::load(IteratorBase *data)
+  {
+    if (data->rest() < 8) { isValid = false; return false; }
+    val = data->getInt64();
+    return true;
+  }
+
+  bool
+  DescriptorUnitFloats::load(IteratorBase *data)
+  {
+    unit = (DescriptorUnit)data->getInt32();
+    int count = data->getInt32();
+    if (count < 0 || count > data->rest() / 8) { isValid = false; return false; }
+    values.resize((size_t)count);
+    for (int i = 0; i < count; i++) {
+      pun64 v;
+      v.i = (uint64_t)data->getInt64();
+      values[(size_t)i] = v.f;
+    }
+    return true;
+  }
+
+  bool
+  DescriptorObjectArray::load(IteratorBase *data)
+  {
+    itemsCount = (uint32_t)data->getInt32();
+    return Descriptor::load(data);
   }
 
   bool
@@ -230,8 +268,8 @@ namespace psd {
   ReferenceProperty::load(IteratorBase *data)
   {
     data->getUnicodeString(name);
-    readId(data, classId);
-    readId(data, keyId);
+    if (readId(data, classId)) idLongMask |= 1;
+    if (readId(data, keyId)) idLongMask |= 2;
     return true;
   }
 
@@ -239,7 +277,7 @@ namespace psd {
   ReferenceClass::load(IteratorBase *data)
   {
     data->getUnicodeString(name);
-    readId(data, classId);
+    if (readId(data, classId)) idLongMask |= 1;
     return true;
   }
 
@@ -247,9 +285,9 @@ namespace psd {
   ReferenceEnumRef::load(IteratorBase *data)
   {
     data->getUnicodeString(name);
-    readId(data, classId);
-    readId(data, typeId);
-    readId(data, enumId);
+    if (readId(data, classId)) idLongMask |= 1;
+    if (readId(data, typeId)) idLongMask |= 2;
+    if (readId(data, enumId)) idLongMask |= 4;
     return true;
   }
 
@@ -257,7 +295,7 @@ namespace psd {
   ReferenceOffset::load(IteratorBase *data)
   {
     data->getUnicodeString(name);
-    readId(data, classId);
+    if (readId(data, classId)) idLongMask |= 1;
     offset = data->getInt32();
     return true;
   }

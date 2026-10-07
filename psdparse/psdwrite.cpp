@@ -132,9 +132,10 @@ inline void putDoubleBE(WriterBase &w, double d) {
 }
 
 // descriptor の 4cc/文字列 ID を書く。readId は size==0 を 4 と解釈するので、
-// 4 文字 ID は size=0 (4cc 形式)、それ以外は size=len で書く。
-inline void writeDescId(WriterBase &w, const std::string &id) {
-  if (id.size() == 4) { w.putUint32BE(0); w.putData(id.data(), 4); }
+// 4 文字 ID は size=0 (4cc 形式)、それ以外は size=len で書く。ただし元が
+// 「長さ 4 を明示」した文字列 ID だった (explicitLen) ならそのとおりに書く。
+inline void writeDescId(WriterBase &w, const std::string &id, bool explicitLen = false) {
+  if (id.size() == 4 && !explicitLen) { w.putUint32BE(0); w.putData(id.data(), 4); }
   else { w.putUint32BE((uint32_t)id.size());
          if (!id.empty()) w.putData(id.data(), id.size()); }
 }
@@ -149,14 +150,16 @@ inline void writeDescUnicode(WriterBase &w, const u16str &s) {
 inline void writeReferenceItem(WriterBase &w, ReferenceItem *r) {
   w.putUint32BE((uint32_t)r->type);
   if (auto *x = dynamic_cast<ReferenceProperty*>(r)) {
-    writeDescUnicode(w, x->name); writeDescId(w, x->classId); writeDescId(w, x->keyId);
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId, r->idLongMask & 1);
+    writeDescId(w, x->keyId, r->idLongMask & 2);
   } else if (auto *x = dynamic_cast<ReferenceClass*>(r)) {
-    writeDescUnicode(w, x->name); writeDescId(w, x->classId);
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId, r->idLongMask & 1);
   } else if (auto *x = dynamic_cast<ReferenceEnumRef*>(r)) {
-    writeDescUnicode(w, x->name); writeDescId(w, x->classId);
-    writeDescId(w, x->typeId); writeDescId(w, x->enumId);
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId, r->idLongMask & 1);
+    writeDescId(w, x->typeId, r->idLongMask & 2); writeDescId(w, x->enumId, r->idLongMask & 4);
   } else if (auto *x = dynamic_cast<ReferenceOffset*>(r)) {
-    writeDescUnicode(w, x->name); writeDescId(w, x->classId); w.putInt32BE(x->offset);
+    writeDescUnicode(w, x->name); writeDescId(w, x->classId, r->idLongMask & 1);
+    w.putInt32BE(x->offset);
   } else if (auto *x = dynamic_cast<ReferenceIdentifier*>(r)) {
     w.putInt32BE(x->identifier);
   } else if (auto *x = dynamic_cast<ReferenceIndex*>(r)) {
@@ -239,10 +242,44 @@ inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay, bool 
   int total = 1 + (int)pn.size();
   int pad = (4 - (total & 3)) & 3;
   w.putZero((size_t)pad);
-  // additional layer info
+  // additional layer info。luni / iOpa は値が変わったときだけ書き直し、同じなら
+  // 元のブロックをそのまま転送する (Photoshop は luni に末尾 NUL や詰め物を含める
+  // ことがあり、作り直すとバイト列が変わる)。
+  auto sameName = [&](const AdditionalLayerInfo &a) {
+    if (!a.data) return false;
+    IteratorBase *r = a.data->clone();
+    r->init();
+    u16str s;
+    r->getUnicodeString(s);
+    delete r;
+    while (!s.empty() && s.back() == 0) s.pop_back();
+    u16str cur = lay.layerNameUnicode;
+    while (!cur.empty() && cur.back() == 0) cur.pop_back();
+    return s == cur;
+  };
+  auto sameFill = [&](const AdditionalLayerInfo &a) {
+    if (!a.data) return false;
+    IteratorBase *r = a.data->clone();
+    r->init();
+    int v = r->getCh();
+    delete r;
+    return v == (lay.fill_opacity & 0xff);
+  };
   bool wroteLuni = false, wroteIOpa = false;
   for (const auto &a : ex.additionalLayers) {
-    if (a.key == 'luni') {
+    if (a.key == 'luni' && sameName(a)) {
+      wroteLuni = true;
+      w.putData(a.sigType == 1 ? "8B64" : "8BIM", 4);
+      w.putUint32BE((uint32_t)a.key);
+      w.putUint32BE((uint32_t)a.size);
+      w.copyAllFrom(a.data);
+    } else if (a.key == 'iOpa' && sameFill(a)) {
+      wroteIOpa = true;
+      w.putData(a.sigType == 1 ? "8B64" : "8BIM", 4);
+      w.putUint32BE((uint32_t)a.key);
+      w.putUint32BE((uint32_t)a.size);
+      w.copyAllFrom(a.data);
+    } else if (a.key == 'luni') {
       writeLuniBlock(w, lay.layerNameUnicode);   // 新しい名前で置換
       wroteLuni = true;
     } else if (a.key == 'iOpa') {
@@ -268,6 +305,8 @@ inline void writeLayerExtraFromFields(WriterBase &w, const LayerInfo &lay, bool 
     w.putCh(lay.fill_opacity & 0xff);
     w.putZero(3);
   }
+  // ブロック列の後ろに残っていたバイト (詰め物など) を元どおり付ける
+  if (ex.tailRaw) w.copyAllFrom(ex.tailRaw);
 }
 
 inline void writeLayerRecord(WriterBase &w, const LayerInfo &lay, bool psb) {
@@ -453,20 +492,20 @@ inline void writeImageData(WriterBase &w, const Data &data) {
 
 void writeDescriptorBody(WriterBase &w, const Descriptor *d) {
   writeDescUnicode(w, d->name);
-  writeDescId(w, d->classId);
+  writeDescId(w, d->classId, d->idLongMask & 1);
   // keyOrder が揃っていれば元のディスク順で、無ければ map 順で書く。
   if (d->keyOrder.size() == d->itemMap.size()) {
     w.putUint32BE((uint32_t)d->keyOrder.size());
     for (const auto &key : d->keyOrder) {
       auto it = d->itemMap.find(key);
       if (it == d->itemMap.end()) continue;
-      writeDescId(w, key);
+      writeDescId(w, key, d->longKeys.count(key) != 0);
       writeDescriptorItem(w, it->second);
     }
   } else {
     w.putUint32BE((uint32_t)d->itemMap.size());
     for (const auto &kv : d->itemMap) {
-      writeDescId(w, kv.first);
+      writeDescId(w, kv.first, d->longKeys.count(kv.first) != 0);
       writeDescriptorItem(w, kv.second);
     }
   }
@@ -475,7 +514,11 @@ void writeDescriptorBody(WriterBase &w, const Descriptor *d) {
 void writeDescriptorItem(WriterBase &w, DescriptorItem *it) {
   // 型ごとに [type 4cc] + 値。DescriptorReference と DescriptorRawData は type
   // タグを共有するので dynamic_cast でディスパッチする (descItemToPy と同様)。
-  if (auto *x = dynamic_cast<Descriptor*>(it)) {            // Objc / GlbO
+  if (auto *x = dynamic_cast<DescriptorObjectArray*>(it)) { // ObAr (要素数 + 本体)
+    w.putUint32BE((uint32_t)'ObAr');
+    w.putUint32BE(x->itemsCount);
+    writeDescriptorBody(w, x);
+  } else if (auto *x = dynamic_cast<Descriptor*>(it)) {     // Objc / GlbO
     w.putUint32BE((uint32_t)x->type);
     writeDescriptorBody(w, x);
   } else if (auto *x = dynamic_cast<DescriptorList*>(it)) { // VlLs
@@ -489,13 +532,15 @@ void writeDescriptorItem(WriterBase &w, DescriptorItem *it) {
   } else if (auto *x = dynamic_cast<DescriptorString*>(it)) {
     w.putUint32BE((uint32_t)'TEXT'); writeDescUnicode(w, x->val);
   } else if (auto *x = dynamic_cast<DescriptorEnumerated*>(it)) {
-    w.putUint32BE((uint32_t)'enum'); writeDescId(w, x->typeId); writeDescId(w, x->enumId);
+    w.putUint32BE((uint32_t)'enum');
+    writeDescId(w, x->typeId, x->idLongMask & 1); writeDescId(w, x->enumId, x->idLongMask & 2);
   } else if (auto *x = dynamic_cast<DescriptorInteger*>(it)) {
     w.putUint32BE((uint32_t)'long'); w.putInt32BE(x->val);
   } else if (auto *x = dynamic_cast<DescriptorBoolean*>(it)) {
     w.putUint32BE((uint32_t)'bool'); w.putCh(x->val ? 1 : 0);
   } else if (auto *x = dynamic_cast<DescriptorClass*>(it)) { // type / GlbC
-    w.putUint32BE((uint32_t)x->type); writeDescUnicode(w, x->name); writeDescId(w, x->classId);
+    w.putUint32BE((uint32_t)x->type); writeDescUnicode(w, x->name);
+    writeDescId(w, x->classId, x->idLongMask & 1);
   } else if (auto *x = dynamic_cast<DescriptorAlias*>(it)) {
     w.putUint32BE((uint32_t)'alis');
     w.putUint32BE((uint32_t)x->alias.size());
@@ -504,6 +549,14 @@ void writeDescriptorItem(WriterBase &w, DescriptorItem *it) {
     w.putUint32BE((uint32_t)'obj ');
     w.putUint32BE((uint32_t)x->items.size());
     for (auto *r : x->items) writeReferenceItem(w, r);
+  } else if (auto *x = dynamic_cast<DescriptorLargeInteger*>(it)) { // 'comp'
+    w.putUint32BE((uint32_t)'comp');
+    w.putUint64BE((uint64_t)x->val);
+  } else if (auto *x = dynamic_cast<DescriptorUnitFloats*>(it)) {   // 'UnFl'
+    w.putUint32BE((uint32_t)'UnFl');
+    w.putUint32BE((uint32_t)x->unit);
+    w.putUint32BE((uint32_t)x->values.size());
+    for (double v : x->values) putDoubleBE(w, v);
   } else if (auto *x = dynamic_cast<DescriptorRawData*>(it)) {    // 'tdta'
     w.putUint32BE((uint32_t)'tdta');
     w.putUint32BE((uint32_t)x->bytes.size());

@@ -125,6 +125,7 @@ Read-only view of one layer.
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
 | `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
+| `smart_object` | `dict` \| `None` | smart object placement (`SoLd` / `SoLE` / `PlLd`): `{"key", "uuid", "placed_id", "page", "total_pages", "anti_alias", "placed_type", "transform", "size", "filters", "linked_file"}` — `transform` is the 4 corners `(x, y)` (top-left, top-right, bottom-right, bottom-left), `linked_file` an index into `PSDFile.linked_files` |
 | `vector_mask` | `dict` \| `None` | vector mask (`vmsk`, or `vsms` on shape layers): `{"key", "inverted", "not_linked", "disabled", "path"}` — see [Paths](#paths) |
 | `comp_states` | `dict` | per layer-comp state `{comp_id: {"enabled", "offset_x", "offset_y"}}` (empty if the layer is in no comps). `enabled` says if the layer shows in that comp — see [Layer comps](#layer-comps) |
 | `info_keys` | `list[str]` | 4cc keys of every additional-layer-info block on this layer |
@@ -695,6 +696,8 @@ Read-only accessors on `PSDFile` for whole-document metadata. Each returns
 ```python
 p.guides        # dict|None : {"horizontal_grid", "vertical_grid", "guides":[{"location","direction"}]}
 p.paths         # list[dict]: saved paths (2000-2997) and the work path (1025) — see Paths below
+p.linked_files  # list[dict]: smart-object source files (lnk2/lnk3/lnkD/lnkE): kind, uuid, name, file_type, size, has_data
+p.linked_file_data(i_or_uuid)  # bytes|None: the embedded file (or the cached copy of an external one)
 p.slices        # dict|None : {"group_name", "bounding":{...}, "slices":[{...}]}
 p.layer_comps   # list[dict]: [{"id","name","comment","record_visibility","record_position","record_appearance"}]
 p.color_table   # dict|None : {"colors":[(r,g,b,a)], "valid_count", "transparency_index"} for indexed-color PSDs
@@ -808,6 +811,9 @@ layer.descriptor(key, skip=-1)  # dict|None : parse an arbitrary key as a descri
 | Descriptor (nested) | `dict` (keys are raw 4cc, **may end in a space**, e.g. `"Scl "`) |
 | List | `list` |
 | RawData (`tdta`) | `bytes` |
+| LargeInteger (`comp`) | `int` |
+| UnitFloats (`UnFl`) | `{"values": list[float], "unit": str}` |
+| ObjectArray (`ObAr`) | `dict` (like a nested descriptor; its values are usually `UnFl`) |
 | Reference / unknown | `None` |
 
 ```python

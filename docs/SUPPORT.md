@@ -173,8 +173,8 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 |---|:---:|---|
 | 調整レイヤの種別判定 | ✅ | `layer_type == ADJUST` |
 | 調整レイヤのパラメータ (levels/curves 等, binary) | ❌ | 未デコード。descriptor 形式のもの (`CgEd` 等) は `descriptor()` で取得可 |
-| スマートオブジェクト変換 (`SoLd`/`SoLE`/`PlLd`) | 🟡 | `descriptor("SoLd")` / `descriptor("PlLd")` で取得可 (既定の読み飛ばし量を設定済。psd-tools 素材の実ファイルで確認) |
-| スマートオブジェクト埋め込みデータ抽出 (`lnkD`) | ❌ | 未対応 |
+| スマートオブジェクトの配置 (`SoLd`/`SoLE`/`PlLd`) | ✅ | `layer.smart_object` (uuid、四隅の変形、元の大きさ、ページ、スマートフィルタの有無、対応する埋め込みファイル)。未リリース。生の descriptor は `descriptor("SoLd")` |
+| スマートオブジェクト埋め込みデータ抽出 (`lnk2`/`lnk3`/`lnkD`/`lnkE`) | ✅ | `PSDFile.linked_files` (埋め込み / 外部 / エイリアス、名前、種別、大きさ) と `linked_file_data(添字 or uuid)` で中身のバイト列。中身は要求時に読む (巨大でも一覧は軽い)。未リリース |
 | ベクタストローク/シェイプ (`vstk`/`vscg`/`vogk`) | 🟡 | `descriptor()` 経由で取得可 (既定の読み飛ばし量を設定済、実ファイルで確認)。型付きのアクセサは無い |
 | ライブシェイプ情報 (origination) | 🟡 | `descriptor("vogk")` で生 descriptor として取得可 |
 
@@ -216,7 +216,7 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
   新規作成。未編集部分は byte-identical を維持。編集 API は C++ / Python の
   どちらからも同じことができます。
 - **未対応/限定的**: Multichannel ピクセル、調整レイヤの数値パラメータ、ベクタ
-  パスの編集、スマートオブジェクト実体 (`lnkD`)、効果込みの再合成 (composite 再描画)、
+  パスの編集、スマートオブジェクトの差し替え、効果込みの再合成 (composite 再描画)、
   テキストの warp / leading / 段落インデント。画素編集は 8bit RGB のみ。
 - Lab は標準 D65 CIELAB→sRGB 近似 (Photoshop の D50 とは彩度の高い色でわずかに差)。
 - image resource の**中身の解釈** (EXIF タグ, サムネイル描画等) は行わず生バイトを

@@ -218,6 +218,77 @@ py::object layerVectorMask(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+// Smart object placement ('SoLd' / 'SoLE', or the older 'PlLd').
+py::object layerSmartObject(const psd::LayerInfo &l) {
+  const psd::SmartObjectInfo &so = l.smartObject;
+  if (!so.present) return py::none();
+  py::dict d;
+  char k[5] = { (char)((so.key >> 24) & 0xff), (char)((so.key >> 16) & 0xff),
+                (char)((so.key >> 8) & 0xff), (char)(so.key & 0xff), 0 };
+  d["key"]         = std::string(k);
+  d["uuid"]        = so.uuid;
+  d["placed_id"]   = so.placedId.empty() ? py::object(py::none()) : py::object(py::str(so.placedId));
+  d["page"]        = so.page;
+  d["total_pages"] = so.totalPages;
+  d["anti_alias"]  = so.antiAlias;
+  d["placed_type"] = so.placedType;
+  if (so.hasTransform) {
+    py::list q;
+    for (int i = 0; i < 4; i++) q.append(py::make_tuple(so.transform[i * 2], so.transform[i * 2 + 1]));
+    d["transform"] = q;
+  } else {
+    d["transform"] = py::none();
+  }
+  d["size"] = so.hasSize ? py::object(py::make_tuple(so.width, so.height)) : py::object(py::none());
+  d["filters"] = so.hasFilters ? py::object(py::bool_(so.filtersEnabled)) : py::object(py::none());
+  // 中身のファイルが文書内にあれば、その linked_files の添字
+  int idx = -1;
+  if (l.owner && !so.uuid.empty()) {
+    const auto &files = l.owner->linkedFiles;
+    for (size_t i = 0; i < files.size(); i++)
+      if (files[i].uuid == so.uuid) { idx = (int)i; break; }
+  }
+  d["linked_file"] = idx >= 0 ? py::object(py::int_(idx)) : py::object(py::none());
+  return std::move(d);
+}
+
+py::list psdLinkedFiles(psd::PSDFile &self) {
+  py::list out;
+  for (const auto &f : self.linkedFiles) {
+    py::dict d;
+    d["kind"] = f.kind == "liFD" ? "data" : f.kind == "liFE" ? "external"
+              : f.kind == "liFA" ? "alias" : "unknown";
+    d["uuid"]      = f.uuid;
+    d["name"]      = u16ToStr(f.fileName);
+    d["file_type"] = py::bytes(f.fileType);
+    d["creator"]   = py::bytes(f.creator);
+    d["size"]      = f.dataSize;
+    d["has_data"]  = f.hasData;
+    d["version"]   = f.version;
+    char k[5] = { (char)((f.blockKey >> 24) & 0xff), (char)((f.blockKey >> 16) & 0xff),
+                  (char)((f.blockKey >> 8) & 0xff), (char)(f.blockKey & 0xff), 0 };
+    d["block"] = std::string(k);
+    out.append(d);
+  }
+  return out;
+}
+
+py::object psdLinkedFileData(psd::PSDFile &self, py::object which) {
+  int index = -1;
+  if (py::isinstance<py::int_>(which)) {
+    index = which.cast<int>();
+  } else {
+    std::string uuid = which.cast<std::string>();
+    for (size_t i = 0; i < self.linkedFiles.size(); i++)
+      if (self.linkedFiles[i].uuid == uuid) { index = (int)i; break; }
+  }
+  if (index < 0 || index >= (int)self.linkedFiles.size())
+    throw std::out_of_range("no such linked file");
+  std::string out;
+  if (!self.getLinkedFileData(index, out)) return py::none();
+  return py::bytes(out);
+}
+
 // Saved paths (image resources 2000-2997) and the work path (1025).
 py::list psdPaths(psd::PSDFile &self) {
   py::list out;
@@ -409,6 +480,11 @@ py::object descItemToPy(psd::DescriptorItem *it) {
   }
   if (auto *x = dynamic_cast<psd::Descriptor*>(it))        return descToPy(x);
   if (auto *x = dynamic_cast<psd::DescriptorRawData*>(it)) return py::bytes(x->bytes);
+  if (auto *x = dynamic_cast<psd::DescriptorLargeInteger*>(it)) return py::cast(x->val);
+  if (auto *x = dynamic_cast<psd::DescriptorUnitFloats*>(it)) {
+    py::dict u; u["values"] = x->values; u["unit"] = descUnitName(x->unit);
+    return std::move(u);
+  }
   if (auto *x = dynamic_cast<psd::DescriptorClass*>(it))   return py::cast(x->classId);
   if (auto *x = dynamic_cast<psd::DescriptorAlias*>(it))   return py::cast(x->alias);
   // DescriptorReference and anything unrecognized -> None.
@@ -585,13 +661,26 @@ void editLayerDescriptor(psd::PSDFile &self, int index, int key, int skip,
     if (skip > 0) rd->getData(prefix.data(), skip);   // objVer/descVer 等をそのまま保持
     psd::Descriptor desc;
     desc.load(rd);
+    const int bodyEnd = rd->size() - rd->rest();   // 元の descriptor の終わり
+    // descriptor の後ろに続いていたバイト列 (詰め物、またはブロック固有の続き)
+    std::vector<uint8_t> tail((size_t)(rd->rest() > 0 ? rd->rest() : 0));
+    if (!tail.empty()) rd->getData(tail.data(), (int)tail.size());
+    const int origTotal = rd->size();
     delete rd;
     mergeDictIntoDescriptor(&desc, changes);
     std::vector<uint8_t> buf;
     psd::MemoryWriter w(buf);
     if (!prefix.empty()) w.putData(prefix.data(), prefix.size());
     psd::writeDescriptorBody(w, &desc);
-    while (buf.size() & 3u) buf.push_back(0);   // descriptor data を 4 バイト境界へ
+    // 後ろの続きはそのまま残す。ただし詰め物 (全部 0) だけで、descriptor の長さが
+    // 変わったときは、元と同じ揃え方 (4 の倍数だったなら 4 の倍数) で詰め直す。
+    bool padOnly = true;
+    for (uint8_t c : tail) if (c != 0) padOnly = false;
+    if (!padOnly || (int)buf.size() == bodyEnd) {
+      buf.insert(buf.end(), tail.begin(), tail.end());
+    } else if ((origTotal & 3) == 0) {
+      while (buf.size() & 3u) buf.push_back(0);
+    }
     self.setAdditionalInfoBytes(index, key, buf.data(), (int)buf.size());
     return;
   }
@@ -1011,6 +1100,13 @@ PYBIND11_MODULE(psdparse, m) {
         "Per-layer layer-comp state as {comp_id: {'enabled', 'offset_x', "
         "'offset_y'}} (empty when the layer is in no comps). `enabled` says "
         "whether this layer is shown in that document comp (PSDFile.layer_comps).")
+    .def_property_readonly("smart_object", &layerSmartObject,
+        "Smart object placement ('SoLd' / 'SoLE', or the older 'PlLd') as "
+        "{'key', 'uuid', 'placed_id', 'page', 'total_pages', 'anti_alias', "
+        "'placed_type', 'transform' (4 corners (x, y): top-left, top-right, "
+        "bottom-right, bottom-left), 'size' ((w, h) of the source) or None, "
+        "'filters' (smart filters enabled, None when none), 'linked_file' "
+        "(index into PSDFile.linked_files, or None)}, or None.")
     .def_property_readonly("vector_mask", &layerVectorMask,
         "Vector mask ('vmsk', or 'vsms' on shape layers) as {'key', 'inverted', "
         "'not_linked', 'disabled', 'path'}, or None. 'path' holds 'subpaths' "
@@ -1561,6 +1657,15 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("index"), py::arg("mode") = "masked",
          "Extract pixels for layer `index` as BGRA bytes. "
          "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).")
+    .def_property_readonly("linked_files", &psdLinkedFiles,
+         "Smart-object source files from the document's lnk2 / lnk3 / lnkD / lnkE "
+         "blocks, as dicts {'kind' ('data' embedded / 'external' / 'alias'), "
+         "'uuid', 'name', 'file_type', 'creator', 'size', 'has_data', 'version', "
+         "'block'}. The bytes are read on demand with linked_file_data().")
+    .def("linked_file_data", &psdLinkedFileData, py::arg("which"),
+         "Bytes of a linked file (an index into linked_files, or its uuid): the "
+         "embedded file, or the copy Photoshop keeps of an external one. None when "
+         "the entry carries no data.")
     .def_property_readonly("paths", &psdPaths,
          "Saved paths (image resources 2000-2997, kind 'saved') and the work "
          "path (1025, kind 'work') in resource order, as dicts {'id', 'kind', "

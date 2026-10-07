@@ -11,4 +11,5 @@ namespace psd {
   bool loadResourceLayerComps(Data &data, ImageResourceInfo &res);
   bool loadResourcePath(Data &data, ImageResourceInfo &res);   // 1025 / 2000〜2997
   void loadUnicodePathNames(Data &data);                       // 'pths' (保存パスの Unicode 名)
+  void loadLinkedFiles(Data &data);                            // lnk2 / lnk3 / lnkD / lnkE
 } // namespace psd

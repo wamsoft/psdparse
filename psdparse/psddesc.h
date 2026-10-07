@@ -5,6 +5,7 @@
 
 #include <stdarg.h>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace psd {
@@ -28,6 +29,9 @@ namespace psd {
     TYPE_CLASS2         = 'GlbC',
     TYPE_ALIAS          = 'alis',
     TYPE_RAW_DATA       = 'tdta',
+    TYPE_LARGE_INTEGER  = 'comp',   // 64bit 整数
+    TYPE_UNIT_FLOATS    = 'UnFl',   // 単位付き実数の配列
+    TYPE_OBJECT_ARRAY   = 'ObAr',   // オブジェクト配列 (件数 + descriptor 本体)
   };
 
   enum DescriptorUnit {
@@ -96,6 +100,12 @@ namespace psd {
 
     bool        isValid;
     DescriptorType     type;
+    // ID (4 文字コード / 文字列 ID) の長さの書き方。4 文字の ID は普通「長さ 0 +
+    // 4 文字」だが、文字列 ID がたまたま 4 文字のときは「長さ 4 + 4 文字」で
+    // 書かれる (例 'warp')。読み手はどちらも同じに読むが、書き戻しで元の
+    // バイト列を再現するため、後者だった ID の位置をビットで覚える。
+    // 位置の割り当ては各アイテムの ID の並び順 (classId → keyId / typeId → enumId)。
+    unsigned    idLongMask = 0;
   };
 
   // リファレンスアイテム基底
@@ -106,6 +116,7 @@ namespace psd {
     virtual void dump(int indent) {};
 
     ReferenceType type;
+    unsigned idLongMask = 0;   // DescriptorItem::idLongMask と同じ (ID の並び順でビット)
   };
 
   // --------------------------------------------------------------------------
@@ -193,6 +204,17 @@ namespace psd {
     // itemMap は sorted map なのでディスク上のキー順を保てない。直列化で元の
     // バイト順を再現するため、load 時のキー出現順を別途保持する。
     std::vector<std::string> keyOrder;
+    // 「長さ 4 + 4 文字」で書かれていたキー (idLongMask の説明を参照)
+    std::set<std::string> longKeys;
+  };
+
+  // 'ObAr': 要素数 (4) + descriptor 本体。本体の各値はふつう 'UnFl' で、要素数
+  // ぶんの値を列ごとに並べた形 (ワープのメッシュ座標など)。
+  struct DescriptorObjectArray : Descriptor {
+    DescriptorObjectArray() : Descriptor(TYPE_OBJECT_ARRAY) {}
+    virtual bool load(IteratorBase *data);
+
+    uint32_t itemsCount = 0;
   };
 
   struct DescriptorReference : DescriptorItem {
@@ -299,6 +321,29 @@ namespace psd {
     float64_t      val;
   };
   
+  // 'comp': 64bit 整数
+  struct DescriptorLargeInteger : DescriptorItem {
+    DescriptorLargeInteger() : DescriptorItem(TYPE_LARGE_INTEGER) {}
+    virtual bool load(IteratorBase *data);
+    virtual void dump(int indent) {
+      dprint("%s (val:%lld)\n", typeName(), (long long)val);
+    }
+
+    int64_t val = 0;
+  };
+
+  // 'UnFl': 単位 (4 文字) + 件数 + double の並び。ObAr の中身などに出てくる
+  struct DescriptorUnitFloats : DescriptorItem {
+    DescriptorUnitFloats() : DescriptorItem(TYPE_UNIT_FLOATS) {}
+    virtual bool load(IteratorBase *data);
+    virtual void dump(int indent) {
+      dprint("%s (count:%zd)\n", typeName(), values.size());
+    }
+
+    DescriptorUnit unit = UNIT_NONE;
+    std::vector<float64_t> values;
+  };
+
   struct DescriptorString : DescriptorItem {
     DescriptorString() : DescriptorItem(TYPE_STRING) {}
     virtual bool load(IteratorBase *data);

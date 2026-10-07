@@ -89,3 +89,27 @@ def test_corpus_roundtrip(path, tmp_path):
     dst = tmp_path / ("out" + Path(path).suffix)
     assert p.save(str(dst))
     assert dst.read_bytes() == Path(path).read_bytes()
+
+
+DESC_SKIP = {"lfx2": 8, "SoLd": 12, "SoLE": 12, "vstk": 4, "vscg": 8, "vogk": 8,
+             "SoCo": 4, "GdFl": 4, "PtFl": 4}
+
+
+@pytest.mark.parametrize("path", _corpus_files() or [pytest.param(None, marks=pytest.mark.skip(
+    reason="set PSDPARSE_CORPUS to a folder of PSD/PSB files"))])
+def test_corpus_descriptor_rewrite(path, tmp_path):
+    """読める descriptor を全部「変更なし」で書き戻して保存しても、元と一致する
+    (descriptor の直列化と、レイヤの追加情報の組み立て直しが byte-exact)"""
+    p = psdparse.PSDFile()
+    assert p.load(path)
+    touched = False
+    for i, layer in enumerate(p.layers):
+        for key in layer.info_keys:
+            if key in DESC_SKIP and layer.descriptor(key) is not None:
+                p.set_layer_descriptor(i, key, {}, DESC_SKIP[key])
+                touched = True
+    if not touched:
+        pytest.skip("no descriptor blocks")
+    dst = tmp_path / ("out" + Path(path).suffix)
+    assert p.save(str(dst))
+    assert dst.read_bytes() == Path(path).read_bytes()

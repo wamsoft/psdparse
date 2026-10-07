@@ -262,6 +262,39 @@ namespace psd {
 		PathData path;
 	};
 
+	// --- スマートオブジェクト -------------------------------------------------
+
+	// 文書末尾の lnk2 / lnk3 / lnkD / lnkE にある 1 件 (埋め込み / 外部 / エイリアス)。
+	// 中身は位置だけ持ち、取り出しは PSDFile::getLinkedFileData で。
+	struct LinkedFileInfo {
+		int blockKey = 0;          // 'lnk2' など
+		std::string kind;          // "liFD" 埋め込み / "liFE" 外部 / "liFA" エイリアス
+		int version = 0;
+		std::string uuid;          // レイヤの SoLd の Idnt と対応する
+		u16str fileName;
+		std::string fileType;      // 4 文字 ("png " / "8BPS" など)
+		std::string creator;
+		uint64_t dataSize = 0;
+		bool hasData = false;      // 中身を持っているか (埋め込み、または外部の写し)
+		int dataOffset = 0;        // 中身の位置 (layerAndMaskTrailing 上)
+	};
+
+	// レイヤ側のスマートオブジェクト情報 (SoLd / SoLE、旧形式の PlLd)
+	struct SmartObjectInfo {
+		bool present = false;
+		int key = 0;               // 'SoLd' / 'SoLE' / 'PlLd'
+		std::string uuid;          // 中身のファイル (LinkedFileInfo::uuid)
+		std::string placedId;      // このインスタンスの ID (スマートフィルタのキャッシュの鍵)
+		int page = 0, totalPages = 0, antiAlias = 0;
+		int placedType = 0;        // 0 不明 / 1 ベクタ / 2 ラスタ / 3 画像スタック
+		bool hasTransform = false;
+		double transform[8] = {0}; // 四隅 (左上, 右上, 右下, 左下) の x, y
+		bool hasSize = false;
+		double width = 0, height = 0;   // 中身の元の大きさ (px)
+		bool hasFilters = false;   // スマートフィルタが掛かっている
+		bool filtersEnabled = false;
+	};
+
 	// パスレコード列 (26 バイト × n) を読む。読めたところまでを out に入れ、
 	// 途中で壊れていたら false。
 	bool parsePathRecords(const uint8_t *p, size_t n, PathData &out);
@@ -463,8 +496,8 @@ namespace psd {
 	};
 
 	struct LayerExtraData {
-		LayerExtraData() : rawBytes(0), maskRaw(0), blendRaw(0), useRawBytes(true) {}
-		~LayerExtraData() { delete rawBytes; delete maskRaw; delete blendRaw; }
+		LayerExtraData() : rawBytes(0), maskRaw(0), blendRaw(0), tailRaw(0), useRawBytes(true) {}
+		~LayerExtraData() { delete rawBytes; delete maskRaw; delete blendRaw; delete tailRaw; }
 		LayerExtraData(const LayerExtraData &self)
 		  : layerMask(self.layerMask),
 		    layerBlendingRange(self.layerBlendingRange),
@@ -473,6 +506,7 @@ namespace psd {
 		    rawBytes(self.rawBytes ? self.rawBytes->clone() : 0),
 		    maskRaw(self.maskRaw ? self.maskRaw->clone() : 0),
 		    blendRaw(self.blendRaw ? self.blendRaw->clone() : 0),
+		    tailRaw(self.tailRaw ? self.tailRaw->clone() : 0),
 		    useRawBytes(self.useRawBytes) {}
 		LayerExtraData &operator=(const LayerExtraData &self) {
 		    if (this == &self) return *this;
@@ -486,6 +520,8 @@ namespace psd {
 		    maskRaw = self.maskRaw ? self.maskRaw->clone() : 0;
 		    delete blendRaw;
 		    blendRaw = self.blendRaw ? self.blendRaw->clone() : 0;
+		    delete tailRaw;
+		    tailRaw = self.tailRaw ? self.tailRaw->clone() : 0;
 		    useRawBytes = self.useRawBytes;
 		    return *this;
 		}
@@ -502,6 +538,10 @@ namespace psd {
 		// これをそのまま転送してバイト一致を保つ。空ブロックのときは 0。
 		IteratorBase *maskRaw;
 		IteratorBase *blendRaw;
+		// 追加情報ブロックの並びの後ろに残ったバイト (書き手によっては最後の
+		// ブロックの後ろに詰め物を置く)。フィールドから再構築するときも末尾に
+		// そのまま付ける。無ければ 0。
+		IteratorBase *tailRaw;
 		// true: rawBytes をそのまま書き出す (未編集)。
 		// false: フィールド (名前 + maskRaw/blendRaw + additionalLayers) から再構築。
 		bool useRawBytes;
@@ -630,6 +670,8 @@ namespace psd {
 
     // ベクタマスク ('vmsk' / 'vsms')。processParsed で設定。
     VectorMask vectorMask;
+    // スマートオブジェクト ('SoLd' / 'SoLE' / 'PlLd')。processParsed で設定。
+    SmartObjectInfo smartObject;
 	};
 	
 	/**
@@ -780,6 +822,7 @@ namespace psd {
     ColorTable         colorTable;  // カラーテーブル(インデックスカラー用)
     std::vector<LayerComp> layerComps; // レイヤーカンプ
     std::vector<SavedPath> savedPaths; // 保存パス (2000〜2997) と作業パス (1025)。リソース順
+    std::vector<LinkedFileInfo> linkedFiles; // スマートオブジェクトの埋め込み / リンクファイル
     int lastAppliedCompId;             // 最終適用カンプ
 
   protected:
