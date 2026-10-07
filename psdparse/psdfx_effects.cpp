@@ -20,10 +20,7 @@
 namespace {
 
 const double kPi = 3.14159265358979323846;
-// 効果の「サイズ」をガウスの sigma へ換算する係数。Photoshop の合成画像と照合して
-// 効果ごとに最も合う値を選んだ (影 0.4、内側の影・サテン・外側の光彩 0.3、内側の光彩 0.5)。
-const double kSigmaDropShadow = 0.4;
-const double kSigmaInnerShadow = 0.4;   // ドロップシャドウと同じ (Photoshop で測定)
+// 効果の「サイズ」をガウスの sigma へ換算する係数 (Photoshop の合成画像と照合して決めた)
 const double kSigmaSatin = 0.42;   // Photoshop で測定
 const double kSigmaBevel = 0.4;     // 形のぼかし (Photoshop で測定)
 
@@ -155,24 +152,33 @@ Plane shifted(const Plane &a, double dx, double dy, float outside = 0.f) {
   return o;
 }
 
-// 影 / 光彩の形: 広げ (spread) てからぼかす。spread 0..1、size は全体の幅
-Plane spreadBlur(const Plane &a, double spread, double size, double sigmaK, float outside = 0.f) {
-  spread = std::min(1.0, std::max(0.0, spread));
-  Plane p = dilate(a, size * spread);
-  blur(p, size * (1.0 - spread) * sigmaK, outside);
-  return p;
+// 半径 r (小数可) の箱で 1 列をならす。端数 f = r - floor(r) は外側の 1 画素ずつに重み f で掛ける
+void boxPassFrac(float *v, int n, int step, double r, std::vector<float> &tmp, float outside) {
+  if (!(r > 0.0) || n <= 1) return;
+  const int k = (int)std::floor(r);
+  const float f = (float)(r - k);
+  tmp.resize((size_t)n);
+  auto at = [&](int i) { return (i >= 0 && i < n) ? v[(size_t)i * step] : outside; };
+  const float inv = 1.f / (2 * k + 1 + 2 * f);
+  float acc = 0.f;
+  for (int i = -k; i <= k; i++) acc += at(i);
+  for (int i = 0; i < n; i++) {
+    tmp[(size_t)i] = (acc + f * (at(i - k - 1) + at(i + k + 1))) * inv;
+    acc += at(i + k + 1) - at(i - k);
+  }
+  for (int i = 0; i < n; i++) v[(size_t)i * step] = tmp[(size_t)i];
 }
 
-// 箱ぼかし 3 回 (半径は整数)。光彩は半径 round(0.4 x 大きさ) でこれ (Photoshop で測定)
-const double kGlowBoxRadius = 0.4;
+// 影 / 光彩の形: 広げ (spread) てから箱ぼかし 3 回。spread 0..1、size は全体の幅。
+// 箱の半径は 0.423 x ぼかす幅 - 0.72 (小数の半径。大きさ 3〜30 で Photoshop と照合)
 Plane spreadBox(const Plane &a, double spread, double size, float outside = 0.f) {
   spread = std::min(1.0, std::max(0.0, spread));
   Plane p = dilate(a, size * spread);
-  const int r = (int)std::lround(size * (1.0 - spread) * kGlowBoxRadius);
+  const double r = std::max(0.0, size * (1.0 - spread) * 0.423 - 0.72);
   std::vector<float> tmp;
   for (int pass = 0; pass < 3; pass++) {
-    for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
-    for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
+    for (int y = 0; y < p.h; y++) boxPassFrac(&p.v[(size_t)y * p.w], p.w, 1, r, tmp, outside);
+    for (int x = 0; x < p.w; x++) boxPassFrac(&p.v[(size_t)x], p.h, p.w, r, tmp, outside);
   }
   return p;
 }
@@ -339,8 +345,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   eachBottomUp(fx->drop_shadow, fx->more_drop_shadows, fx->more_drop_shadow_count, [&](const psdfx_shadow &ds) {
   if (ds.enabled && ds.opacity > 0) {
     const double th = ds.angle * kPi / 180.0;
-    Plane sh = spreadBlur(shifted(A, -std::cos(th) * ds.distance, std::sin(th) * ds.distance),
-                          ds.spread, ds.size, kSigmaDropShadow);
+    Plane sh = spreadBox(shifted(A, -std::cos(th) * ds.distance, std::sin(th) * ds.distance),
+                         ds.spread, ds.size);
     applyContour(sh, ds.contour);
     if (ds.knocks_out)
       for (size_t i = 0; i < sh.v.size(); i++) sh.v[i] *= 1.f - A.v[i];
@@ -441,8 +447,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     Plane inv(W, H);
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
     const double th = is.angle * kPi / 180.0;
-    Plane sh = spreadBlur(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance, 1.f),
-                          is.spread, is.size, kSigmaInnerShadow, 1.f);
+    Plane sh = spreadBox(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance, 1.f),
+                         is.spread, is.size, 1.f);
     applyContour(sh, is.contour);
     std::vector<uint8_t> px = solid(W, H, is.color);
     compositeCoverage(&Ss, px, sh, 0, 0, is.blend, is.opacity);
