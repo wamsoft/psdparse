@@ -25,6 +25,7 @@ psdfx の `.cpp` (`psdfx.cpp` / `psdfx_path.cpp` / `psdfx_paint.cpp` /
 | 関数 | 内容 |
 |---|---|
 | `psdfx_composite` | 面を描画モード・不透明度・マスク付きで重ねる (source-over) |
+| `psdfx_composite_layer` | レイヤとして重ねる。不透明度と塗りの不透明度を分けて受け取る (リニアバーンなど 8 つのモードでは塗りが特別に効く) |
 | `psdfx_composite_atop` | dst のアルファを変えずに重ねる (source-atop) |
 | `psdfx_lerp` | 2 枚の面の線形補間 (通過グループの不透明度 / マスク) |
 | `psdfx_blur_plane` | 1 チャンネルのガウスぼかし (箱ぼかし 3 回) |

@@ -2274,11 +2274,12 @@ PYBIND11_MODULE(psdparse, m) {
          "alpha / spot channel). merged_image() is opaque otherwise.")
     .def("composite", &psdComposite, py::arg("effects") = true, py::arg("background") = py::none(),
          "Composite the document from its layers (not the stored merged image): "
-         "blend modes, groups (pass-through and isolated), clipping, masks, "
-         "opacity / fill opacity, and layer effects when effects=True. Returns "
-         "(bgra_bytes, stats); stats counts what could not be reproduced "
-         "(adjustment layers are skipped for now). background=(r, g, b) "
-         "composites onto an opaque color instead of transparency.")
+         "blend modes, groups (pass-through and isolated), clipping, knockout, "
+         "masks, fill / shape layers, adjustment layers, opacity / fill opacity, "
+         "and layer effects when effects=True. Returns (bgra_bytes, stats); stats "
+         "counts what could not be reproduced (color lookup adjustments, noise "
+         "gradients, ...). background=(r, g, b) composites onto an opaque color "
+         "instead of transparency.")
     .def("shape_mask", &psdShapeMask, py::arg("index"), py::arg("part") = "both",
          "Rasterize a layer's vector mask / shape path to 8-bit coverage "
          "(anti-aliased, 0..255): part='fill' (the path area), 'stroke' (the "

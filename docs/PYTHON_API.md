@@ -105,12 +105,18 @@ p.composite(effects: bool = True, background: tuple | None = None) -> (bytes, di
 ```
 
 Renders the document from its layers instead of returning the stored merged
-image: blend modes, pass-through / isolated groups, clipping, layer and vector
-masks (density / feather), fill layers (solid / gradient / pattern), shape
-fills, fill opacity, channel restriction, artboards, and layer effects when
+image: blend modes (including Photoshop's special handling of fill opacity for
+linear burn / color dodge / hard mix and the like), pass-through / isolated
+groups, clipping (layer, group or adjustment layer as the base), knockout,
+layer and vector masks (density / feather), fill layers (solid / gradient /
+pattern), shapes with their strokes, adjustment layers (all but color lookup),
+fill opacity, channel restriction, artboards, and layer effects when
 `effects=True`. Returns `(bgra, stats)` — canvas-sized BGRA (straight alpha)
 and a dict counting what could not be reproduced:
-`skipped_adjustments`, `unsupported_clip_base`, `unsupported_effects`.
+`skipped_adjustments` (e.g. color lookup), `unsupported_clip_base`,
+`unsupported_effects` (e.g. noise gradients). See
+[SUPPORT.md](SUPPORT.md#再合成-composite-未リリース) for how closely each
+part follows Photoshop.
 `background=(r, g, b)` composites onto an opaque colour instead of
 transparency.
 
