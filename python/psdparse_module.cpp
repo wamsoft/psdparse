@@ -341,6 +341,69 @@ py::object layerSmartObject(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+py::list psdAlphaChannels(psd::PSDFile &self) {
+  static const char *kKinds[] = { "selected", "masked", "spot" };
+  py::list out;
+  for (const auto &a : self.alphaChannels) {
+    py::dict d;
+    d["plane"] = a.plane;
+    d["name"]  = u16ToStr(a.name);
+    if (a.hasDisplay) {
+      d["color_space"] = a.colorSpace;
+      d["color"]       = py::make_tuple(a.color[0], a.color[1], a.color[2], a.color[3]);
+      d["opacity"]     = a.opacity;
+      d["kind"]        = (a.kind >= 0 && a.kind <= 2) ? kKinds[a.kind] : "unknown";
+    } else {
+      d["color_space"] = py::none(); d["color"] = py::none();
+      d["opacity"] = py::none();     d["kind"] = py::none();
+    }
+    out.append(d);
+  }
+  return out;
+}
+
+py::object psdMergedChannel(psd::PSDFile &self, int plane) {
+  if (plane < 0 || plane >= self.header.channels)
+    throw std::out_of_range("channel out of range");
+  std::vector<uint8_t> gray;
+  if (!self.getMergedChannel(plane, gray)) return py::none();
+  return py::bytes((const char *)gray.data(), gray.size());
+}
+
+py::list psdPatterns(psd::PSDFile &self) {
+  py::list out;
+  for (const auto &pt : self.patterns) {
+    py::dict d;
+    d["id"]     = pt.id;
+    d["name"]   = u16ToStr(pt.name);
+    d["mode"]   = pt.mode;
+    d["width"]  = pt.width;
+    d["height"] = pt.height;
+    char k[5] = { (char)((pt.blockKey >> 24) & 0xff), (char)((pt.blockKey >> 16) & 0xff),
+                  (char)((pt.blockKey >> 8) & 0xff), (char)(pt.blockKey & 0xff), 0 };
+    d["block"] = std::string(k);
+    out.append(d);
+  }
+  return out;
+}
+
+py::object psdPatternImage(psd::PSDFile &self, py::object which) {
+  int index = -1;
+  if (py::isinstance<py::int_>(which)) {
+    index = which.cast<int>();
+  } else {
+    std::string id = which.cast<std::string>();
+    for (size_t i = 0; i < self.patterns.size(); i++)
+      if (self.patterns[i].id == id) { index = (int)i; break; }
+  }
+  if (index < 0 || index >= (int)self.patterns.size())
+    throw std::out_of_range("no such pattern");
+  std::vector<uint8_t> bgra;
+  int w = 0, h = 0;
+  if (!self.getPatternImage(index, bgra, w, h)) return py::none();
+  return py::make_tuple(py::bytes((const char *)bgra.data(), bgra.size()), w, h);
+}
+
 py::list psdLinkedFiles(psd::PSDFile &self) {
   py::list out;
   for (const auto &f : self.linkedFiles) {
@@ -1841,6 +1904,23 @@ PYBIND11_MODULE(psdparse, m) {
          py::arg("index"), py::arg("mode") = "masked",
          "Extract pixels for layer `index` as BGRA bytes. "
          "mode: 'masked' (default), 'image' (no mask), 'mask' (mask only).")
+    .def_property_readonly("alpha_channels", &psdAlphaChannels,
+         "The merged image's extra channels after the color channels (alpha "
+         "channels, spot colors, the merged transparency) as dicts {'plane', "
+         "'name', 'kind' ('selected' / 'masked' / 'spot'), 'color_space', 'color', "
+         "'opacity'} from image resources 1045 / 1006 / 1077. Pixels via "
+         "merged_channel(plane). For Multichannel documents every channel is listed.")
+    .def("merged_channel", &psdMergedChannel, py::arg("plane"),
+         "One channel of the merged image as 8-bit grayscale bytes "
+         "(width*height). plane counts from 0 across all header.channels.")
+    .def_property_readonly("patterns", &psdPatterns,
+         "Patterns stored in the document ('Patt' / 'Pat2' / 'Pat3') as dicts "
+         "{'id', 'name', 'mode', 'width', 'height', 'block'}. Pattern fills refer "
+         "to them by 'id'. Pixels via pattern_image().")
+    .def("pattern_image", &psdPatternImage, py::arg("which"),
+         "Pixels of a pattern (an index into patterns, or its id) as "
+         "(bgra_bytes, width, height): 8-bit display values, opaque when the "
+         "pattern has no transparency. None if it cannot be decoded.")
     .def_property_readonly("linked_files", &psdLinkedFiles,
          "Smart-object source files from the document's lnk2 / lnk3 / lnkD / lnkE "
          "blocks, as dicts {'kind' ('data' embedded / 'external' / 'alias'), "

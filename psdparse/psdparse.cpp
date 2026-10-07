@@ -144,6 +144,10 @@ Data::processParsed()
   loadUnicodePathNames(*this);
   // スマートオブジェクトの埋め込み / リンクファイル (文書末尾の lnk2 など)
   loadLinkedFiles(*this);
+  // パターン (文書末尾の Patt / Pat2 / Pat3)
+  loadPatterns(*this);
+  // アルファ / スポットチャンネルの名前と表示設定
+  loadAlphaChannels(*this);
 
   // カラーテーブル
   if (header.mode == COLOR_MODE_INDEXED &&

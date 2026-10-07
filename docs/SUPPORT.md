@@ -90,7 +90,7 @@ Python バインディングが 0.10.0)。
 | RGB (8/16/32) | ✅ | 32bit (float) は線形光なので sRGB の伝達特性で 8bit へ符号化し、範囲外は頭打ち。Photoshop が保存するサムネイルと一致 (未リリース版で修正。以前は値 x 255 の切り捨てで暗く、1.0 超えは桁あふれしていた) |
 | Indexed (8bit) | ✅ | パレットは `PSDFile.color_table` |
 | CMYK (8/16/32) | ✅ | RGB へ変換して出力 |
-| Multichannel | ❌ | RGB への正準的変換が無く未対応 |
+| Multichannel | 🟡 | `merged_image()` は RGB への正準的変換が無く未対応。各チャンネルは `alpha_channels` / `merged_channel(plane)` でグレーとして取れる (未リリース) |
 | Duotone (8/16/32) | ✅ | grayscale として展開 (Adobe 仕様: duotone データは gray) |
 | Lab (8/16) | ✅ | 標準 D65 CIELAB→sRGB 近似で変換 (Photoshop は D50 のため彩度の高い色は差あり)。32bit Lab は非存在 |
 
@@ -198,7 +198,9 @@ Photoshop の汎用ディスクリプタで格納されるブロックを dict �
 | サムネイル (1036/1033) | ✅ | `PSDFile.thumbnail` (JPEG bytes + 寸法, v0.5.0) |
 | 任意リソースの生バイト | ✅ | `PSDFile.image_resource(id)` / `image_resource_ids` (v0.5.0) |
 | 上記の内容デコード (EXIF タグ解析等) | ❌ | 生バイトを返すのみ。解析は利用側 (Pillow 等) で |
-| バージョン情報 / アルファチャンネル名 / その他 | 📦→✅ | `image_resource(id)` で生バイト取得可 |
+| アルファ / スポットチャンネル (1006 / 1045 / 1077) | ✅ | `PSDFile.alpha_channels` (名前、種類、表示色、不透明度) と `merged_channel(plane)` で画素 (未リリース) |
+| パターン (`Patt` / `Pat2` / `Pat3`) | ✅ | `PSDFile.patterns` と `pattern_image(添字 or id)` で BGRA (未リリース) |
+| バージョン情報 / その他 | 📦→✅ | `image_resource(id)` で生バイト取得可 |
 | Global layer mask info | ✅ | `PSDFile.global_layer_mask` (overlay 色/opacity/kind, v0.6.0) |
 
 ---

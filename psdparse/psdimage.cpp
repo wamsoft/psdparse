@@ -1464,25 +1464,24 @@ namespace psd {
     return true;
   }
 
-  bool PSDFile::getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte)
+  // 合成画像の全チャンネルを展開する。各プレーンは header.depth の生サンプル
+  // (16/32bit は big-endian のまま)。色チャンネルの後ろに、透明度 / アルファ /
+  // スポットチャンネルが header.channels まで続く。
+  bool PSDFile::decodeMergedPlanes(std::vector<std::vector<uint8_t>> &planes)
   {
-    int imageWidth  = header.width;
-    int imageHeight = header.height;
-    int imagePixels = imageWidth * imageHeight;
+    planes.clear();
+    if (!imageData) return false;
+    const int imageWidth  = header.width;
+    const int imageHeight = header.height;
+    const int imagePixels = imageWidth * imageHeight;
     int imageChannelBytes = 0;
     switch (header.depth) {
     case 1:  imageChannelBytes = (imageWidth + 7) / 8 * imageHeight; break;
     case 8:  imageChannelBytes = imagePixels;                        break;
     case 16: imageChannelBytes = imagePixels * 2;                    break;
     case 32: imageChannelBytes = imagePixels * 4;                    break;
-    default:
-      return false;
-      break;
+    default: return false;
     }
-    if (bufPitchByte == 0) {
-      bufPitchByte = imageWidth * 4;
-    }
-
     // ソースチャネルバッファの準備
     imageData->init();
     uint8_t *tmpSourceBuffer = 0;
@@ -1495,12 +1494,9 @@ namespace psd {
 
     // 展開先チャネルバッファの準備
     int channels = header.channels;
+    planes.assign((size_t)channels, std::vector<uint8_t>((size_t)imageChannelBytes, 0));
     std::vector<uint8_t*> decodedChannels(channels);
-    std::vector<int>      channelIds(channels);
-    for (int i = 0; i < channels; i ++)	{
-      decodedChannels[i] = new uint8_t[imageChannelBytes]();
-      channelIds[i] = i;
-    }
+    for (int i = 0; i < channels; i ++) decodedChannels[i] = planes[(size_t)i].data();
     
     // チャネルデータ展開
     switch (compressionId) {
@@ -1523,28 +1519,23 @@ namespace psd {
       }
       break;
     case 2:	// zip (w/o prediction)
-      {
-        for (int i = 0; i < channels; i ++)	{
-#ifdef USE_ZLIB
-          decodeZipWithoutPrediction(decodedChannels[i], imageChannelBytes,
-                                     tmpSourceBuffer, dataLength);
-#else
-          memset(decodedChannel, 0xff, bufSize);
-#endif
-        }
-      }
-      break;
     case 3:	// zip (w/ prediction)
       {
-        for (int i = 0; i < channels; i ++)	{
+        // 合成画像の ZIP は全チャンネルぶんで 1 本の zlib ストリーム。まとめて
+        // 展開してからチャンネルへ分ける (以前はチャンネルごとにストリームの
+        // 先頭から展開していて、2 枚目以降が 1 枚目と同じになっていた)。
+        // 予測 (差分) は行単位なので、チャンネルを縦に積んだ 1 枚の画像とみなせる。
 #ifdef USE_ZLIB
-          decodeZipWithPrediction(decodedChannels[i], imageChannelBytes,
-                                  tmpSourceBuffer, dataLength,
-                                  imageWidth, imageHeight, header.depth);
-#else
-          memset(decodedChannel, 0xff, bufSize);
-#endif
+        std::vector<uint8_t> all((size_t)imageChannelBytes * channels);
+        bool zok = (compressionId == 2)
+          ? decodeZipWithoutPrediction(all.data(), (int)all.size(), tmpSourceBuffer, dataLength)
+          : decodeZipWithPrediction(all.data(), (int)all.size(), tmpSourceBuffer, dataLength,
+                                    imageWidth, imageHeight * channels, header.depth);
+        if (zok) {
+          for (int i = 0; i < channels; i ++)
+            memcpy(decodedChannels[i], all.data() + (size_t)imageChannelBytes * i, imageChannelBytes);
         }
+#endif
       }
       break;
     default:
@@ -1553,6 +1544,38 @@ namespace psd {
 
     if (tmpSourceBuffer) {
       delete[] tmpSourceBuffer;
+    }
+    return true;
+  }
+
+  bool PSDFile::getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte)
+  {
+    int imageWidth  = header.width;
+    int imageHeight = header.height;
+    int imagePixels = imageWidth * imageHeight;
+    int imageChannelBytes = 0;
+    switch (header.depth) {
+    case 1:  imageChannelBytes = (imageWidth + 7) / 8 * imageHeight; break;
+    case 8:  imageChannelBytes = imagePixels;                        break;
+    case 16: imageChannelBytes = imagePixels * 2;                    break;
+    case 32: imageChannelBytes = imagePixels * 4;                    break;
+    default:
+      return false;
+      break;
+    }
+    if (bufPitchByte == 0) {
+      bufPitchByte = imageWidth * 4;
+    }
+
+    // チャネルデータ展開 (decodeMergedPlanes)
+    std::vector<std::vector<uint8_t>> planes;
+    if (!decodeMergedPlanes(planes)) return false;
+    int channels = (int)planes.size();
+    std::vector<uint8_t*> decodedChannels(channels);
+    std::vector<int>      channelIds(channels);
+    for (int i = 0; i < channels; i ++)	{
+      decodedChannels[i] = planes[(size_t)i].data();
+      channelIds[i] = i;
     }
 
     switch(header.mode) {
@@ -1641,10 +1664,6 @@ namespace psd {
       break;
     default:
       break;
-    }
-
-    for (int i = 0; i < channels; i ++)	{
-      delete[] decodedChannels[i];
     }
 
 #ifdef ENABLE_BMP_OUTPUT

@@ -263,6 +263,34 @@ namespace psd {
 		PathData path;
 	};
 
+	// --- アルファ / スポットチャンネル ---------------------------------------
+	// 合成画像の色チャンネルの後ろに続く余分なチャンネル 1 本 (1006 / 1045 / 1077)
+	struct AlphaChannelInfo {
+		int plane = 0;             // 合成画像のチャンネル番号 (PSDFile::getMergedChannel に渡す)
+		u16str name;               // 1045 (Unicode)、無ければ 1006 の Pascal 名を ASCII として
+		std::string nameRaw;       // 1006 の Pascal 名の生バイト (1045 から取ったときは空)
+		bool hasDisplay = false;   // 1077 (DisplayInfo) があったか
+		int colorSpace = 0;        // 表示色の色空間 (0 RGB / 1 HSB / 2 CMYK / 7 Lab / 8 Gray)
+		int color[4] = {0, 0, 0, 0};
+		int opacity = 0;           // 0..100
+		int kind = 0;              // 0 選択範囲を色で表示 / 1 マスク範囲を色で表示 / 2 スポット
+	};
+	// 画像モードの色チャンネル数 (Multichannel は 0)
+	int colorChannelCount(int mode);
+
+	// --- パターン ('Patt' / 'Pat2' / 'Pat3') -----------------------------------
+	// 一覧は位置だけを持ち、画素は PSDFile::getPatternImage で展開する。
+	struct PatternInfo {
+		int blockKey = 0;          // 'Patt' / 'Pat2' / 'Pat3'
+		u16str name;
+		std::string id;            // パターンの ID (塗りつぶしレイヤ等が参照する)
+		int mode = 0;              // 画像モード (COLOR_MODE_*)
+		int width = 0, height = 0;
+		std::vector<uint8_t> palette;   // Indexed のとき 256 x RGB
+		int offset = 0;            // パターン本体の位置 (layerAndMaskTrailing 上)
+		int length = 0;
+	};
+
 	// --- スマートオブジェクト -------------------------------------------------
 
 	// 文書末尾の lnk2 / lnk3 / lnkD / lnkE にある 1 件 (埋め込み / 外部 / エイリアス)。
@@ -882,6 +910,8 @@ namespace psd {
     std::vector<LayerComp> layerComps; // レイヤーカンプ
     std::vector<SavedPath> savedPaths; // 保存パス (2000〜2997) と作業パス (1025)。リソース順
     std::vector<LinkedFileInfo> linkedFiles; // スマートオブジェクトの埋め込み / リンクファイル
+    std::vector<PatternInfo> patterns;       // 文書のパターン ('Patt' / 'Pat2' / 'Pat3')
+    std::vector<AlphaChannelInfo> alphaChannels; // 色チャンネルの後ろの余分なチャンネル
     int lastAppliedCompId;             // 最終適用カンプ
 
   protected:

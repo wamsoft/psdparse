@@ -741,6 +741,10 @@ Read-only accessors on `PSDFile` for whole-document metadata. Each returns
 ```python
 p.guides        # dict|None : {"horizontal_grid", "vertical_grid", "guides":[{"location","direction"}]}
 p.paths         # list[dict]: saved paths (2000-2997) and the work path (1025) — see Paths below
+p.alpha_channels # list[dict]: extra channels after the color channels (alpha / spot / merged transparency): plane, name, kind, color_space, color, opacity
+p.merged_channel(plane)  # bytes: one merged-image channel as 8-bit gray (width*height)
+p.patterns      # list[dict]: document patterns (Patt/Pat2/Pat3): id, name, mode, width, height
+p.pattern_image(i_or_id) # (bgra_bytes, width, height) | None
 p.linked_files  # list[dict]: smart-object source files (lnk2/lnk3/lnkD/lnkE): kind, uuid, name, file_type, size, has_data
 p.linked_file_data(i_or_uuid)  # bytes|None: the embedded file (or the cached copy of an external one)
 p.slices        # dict|None : {"group_name", "bounding":{...}, "slices":[{...}]}

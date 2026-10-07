@@ -294,6 +294,19 @@ namespace psd {
     // レイヤの TySh が持つ TextIndex (Txt2 内の本文の並び順) を読む。
     bool getLayerTextIndex(int index, int &out) const;
 
+    // --- 合成画像のチャンネル --------------------------------------------------
+    //
+    // 合成画像のチャンネル plane (0 から header.channels-1) を 8bit のグレーで
+    // 返す (width*height バイト)。アルファ / スポットチャンネルは alphaChannels
+    // の plane を渡す。16bit は上位バイト、32bit は 0..1 をそのまま 0..255 へ。
+    bool getMergedChannel(int plane, std::vector<uint8_t> &out);
+
+    // --- パターン ----------------------------------------------------------------
+    //
+    // patterns[index] の画素を BGRA (4 バイト/px) で返す。色は 8bit の表示値
+    // (16bit は上位バイト、32bit は線形光を sRGB へ)。透明度が無ければ不透明。
+    bool getPatternImage(int index, std::vector<uint8_t> &bgra, int &width, int &height);
+
     // --- スマートオブジェクトの埋め込みファイル ------------------------------
     //
     // linkedFiles[index] の中身 (埋め込みファイル、または外部ファイルの写し) を
@@ -326,6 +339,9 @@ namespace psd {
                             const std::vector<int> &styleLengths);
     // 書式 / 位置の編集など、写せない変更が起きたときの後始末。
     void invalidateTextEngineData();
+
+    // 合成画像の全チャンネルを展開する (各プレーンは header.depth の生サンプル)。
+    bool decodeMergedPlanes(std::vector<std::vector<uint8_t>> &planes);
 
     // OS マップ領域 (path から load した場合)。pimpl で windows.h 等の漏出を防ぐ。
     struct Mapping;
