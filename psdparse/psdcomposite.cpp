@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 namespace psd {
@@ -102,8 +103,16 @@ public:
     return true;
   }
 
-  void renderChildren(int parent, Canvas &canvas) {
+  // グループの子を下から描く。passThrough なら canvas は下の画像を含んだ面
+  // (通過グループ)。ノックアウトの行き先のため、グループの開始時点の面を積む。
+  void renderChildren(int parent, Canvas &canvas, bool passThrough = false) {
     std::vector<int> kids = psd_.childIndices(parent);
+    std::unique_ptr<Canvas> start;
+    if (parent >= 0) {
+      if (passThrough) start.reset(new Canvas(canvas));
+      scopes_.push_back(start.get());
+    }
+    struct Pop { std::vector<const Canvas*> &v; bool on; ~Pop() { if (on) v.pop_back(); } } pop{ scopes_, parent >= 0 };
     for (size_t k = 0; k < kids.size(); ) {
       const int idx = kids[k];
       // クリッピング: 下地 (clipping == 0) のすぐ上に続く clipping != 0 の兄弟
@@ -119,6 +128,10 @@ private:
   PSDFile &psd_;
   const CompositeOptions &opt_;
   CompositeStats &st_;
+  // ノックアウトの行き先: 描いている途中のグループの開始時点の面 (外側から順)。
+  // 独立したグループは nullptr (透明から始まる)
+  std::vector<const Canvas*> scopes_;
+  std::unique_ptr<Canvas> background_;   // 背景レイヤだけを描いた面 (深いノックアウト)
 
   bool visible(const LayerInfo &l) const { return l.isVisible(); }
 
@@ -852,6 +865,18 @@ private:
   }
 
   // layer の lfx2 を読む。描く効果が無ければ false。
+  // 1 バイトの旗の追加情報 ('clbl' / 'infx' / 'knko' / 'tsly' など)。無ければ def
+  static int flagBlock(const LayerInfo &l, int key, int def) {
+    for (const auto &a : l.extraData.additionalLayers) {
+      if (a.key != key || !a.data) continue;
+      IteratorBase *r = a.data->clone(); r->init();
+      const int v = r->rest() > 0 ? r->getCh() : def;
+      delete r;
+      return v;
+    }
+    return def;
+  }
+
   bool layerEffects(const LayerInfo &l, psdfx_layer_effects &fx, FxStore &store) {
     fx = psdfx_layer_effects();
     Descriptor d;
@@ -1147,6 +1172,20 @@ private:
     if (!layerSurface(l, base, bx, by)) return;
     const float opacity = l.opacity / 255.f;
     const float fill = l.fill_opacity / 255.f;
+    if (const int kn = flagBlock(l, 'knko', 0)) {
+      std::vector<uint8_t> shape((size_t)canvas.width * canvas.height, 0);
+      for (int y = 0; y < base.height; y++) {
+        const int dy = by + y;
+        if (dy < 0 || dy >= canvas.height) continue;
+        for (int x = 0; x < base.width; x++) {
+          const int dx = bx + x;
+          if (dx < 0 || dx >= canvas.width) continue;
+          const size_t si = (size_t)y * base.width + x;
+          shape[(size_t)dy * canvas.width + dx] = base.shape.empty() ? base.px[si * 4 + 3] : base.shape[si];
+        }
+      }
+      knockOut(canvas, shape, opacity, kn);
+    }
 
     if (clipped.empty()) {
       drawLayer(l, base, bx, by, canvas, 0, 0, opacity, fill, (uint32_t)l.blendModeKey, nullptr);
@@ -1164,6 +1203,39 @@ private:
         const int dx = bx + x;
         if (dx < 0 || dx >= canvas.width) continue;
         clipMask[(size_t)dy * canvas.width + dx] = base.px[((size_t)y * base.width + x) * 4 + 3];
+      }
+    }
+    if (flagBlock(l, 'clbl', 1) == 0) {
+      // 「クリップしたレイヤーをグループとして描画」が切: 下地を描いてから、クリップ
+      // されたレイヤを下地の形の範囲で直接下の画像へ重ねる
+      drawLayer(l, base, bx, by, canvas, 0, 0, opacity, fill, (uint32_t)l.blendModeKey, nullptr);
+      drawClipped(clipped, canvas, clipMask.data());
+      return;
+    }
+    {
+      psdfx_layer_effects fx;
+      FxStore store;
+      if (opt_.effects && layerEffects(l, fx, store)) {
+        // 下地に効果があるときは、下地の画素にクリップされたレイヤを重ねてから
+        // 効果を掛ける (オーバーレイなどはクリップされたレイヤの上にも乗る。照合で
+        // 確認)。効果の形は下地の形
+        Canvas content(canvas.width, canvas.height);
+        psdfx_surface cd = content.surface(), bs = base.surface();
+        psdfx_composite(&cd, &bs, bx, by, PSDFX_KEY('n','o','r','m'), fill, nullptr, 0);
+        drawClipped(clipped, content, clipMask.data());
+        content.shape.assign(clipMask.size(), 0);
+        for (int y = 0; y < base.height; y++) {
+          const int dy = by + y;
+          if (dy < 0 || dy >= canvas.height) continue;
+          for (int x = 0; x < base.width; x++) {
+            const int dx = bx + x;
+            if (dx < 0 || dx >= canvas.width) continue;
+            const size_t si = (size_t)y * base.width + x;
+            content.shape[(size_t)dy * canvas.width + dx] = base.shape.empty() ? base.px[si * 4 + 3] : base.shape[si];
+          }
+        }
+        drawLayer(l, content, 0, 0, canvas, 0, 0, opacity, 1.f, (uint32_t)l.blendModeKey, nullptr);
+        return;
       }
     }
     drawClipped(clipped, group, clipMask.data());
@@ -1218,22 +1290,81 @@ private:
     // 通過グループでも塗りの不透明度が 100% 未満なら、独立した面に描いて通常で
     // 重ねる (中の調整レイヤは下の画像に届かない。照合で確認)
     if (key == 'pass' && g.fill_opacity >= 255) {
-      if (opacity >= 1.f && mask.empty()) {
-        renderChildren(idx, canvas);
+      if (opacity >= 1.f && mask.empty() && !flagBlock(g, 'knko', 0)) {
+        renderChildren(idx, canvas, true);
         return;
       }
+      if (flagBlock(g, 'knko', 0)) { renderKnockoutGroup(idx, canvas); return; }
       Canvas after = canvas;
-      renderChildren(idx, after);
+      renderChildren(idx, after, true);
       psdfx_surface dst = canvas.surface(), src = after.surface();
       psdfx_lerp(&dst, &src, opacity, mask.empty() ? nullptr : mask.data(), canvas.width);
       return;
     }
+    if (flagBlock(g, 'knko', 0)) { renderKnockoutGroup(idx, canvas); return; }
     Canvas buf(canvas.width, canvas.height);
     renderChildren(idx, buf);
     psdfx_surface dst = canvas.surface(), src = buf.surface();
     psdfx_composite(&dst, &src, 0, 0, key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key,
                     opacity * g.fill_opacity / 255.f,
                     mask.empty() ? nullptr : mask.data(), canvas.width);
+  }
+
+  // --- ノックアウト ---------------------------------------------------------------
+  //
+  // ノックアウトの付いたレイヤ / グループは、自分の形の中の下の画像を「行き先」に
+  // 置き換えてから、自分を塗りの不透明度で重ねる (照合で確認)。
+  //   浅い (1): いちばん内側のグループの開始時点の画像 (独立したグループなら透明)
+  //   深い (2): 背景レイヤ (無ければ透明)。途中に独立したグループがあればそこで止まる
+  // 外側にグループが無いときは浅い場合も背景レイヤまで。
+
+  const Canvas *backgroundCanvas() {
+    if (!background_) {
+      background_.reset(new Canvas(psd_.header.width, psd_.header.height));
+      // 合成画像に透明度の無い文書の一番下の通常レイヤを背景レイヤとみなす
+      if (!psd_.mergedHasTransparency() && !psd_.layerList.empty()) {
+        LayerInfo &b = psd_.layerList[0];
+        Canvas surf; int x = 0, y = 0;
+        if (b.layerType == LAYER_TYPE_NORMAL && b.parentIndex < 0 && visible(b) && layerSurface(b, surf, x, y)) {
+          psdfx_surface d = background_->surface(), s2 = surf.surface();
+          psdfx_composite(&d, &s2, x, y, PSDFX_KEY('n','o','r','m'), 1.f, nullptr, 0);
+        }
+      }
+    }
+    return background_.get();
+  }
+
+  // 行き先 (nullptr = 透明)
+  const Canvas *knockoutTarget(int mode) {
+    if (mode == 1 && !scopes_.empty()) return scopes_.back();
+    for (size_t i = scopes_.size(); i-- > 0;) if (!scopes_[i]) return nullptr;
+    return backgroundCanvas();
+  }
+
+  // canvas のうち形 shape (文書大、0..255) x opacity の分を行き先に置き換える
+  void knockOut(Canvas &canvas, const std::vector<uint8_t> &shape, float opacity, int mode) {
+    const Canvas *target = knockoutTarget(mode);
+    Canvas transparent;
+    if (!target) { transparent = Canvas(canvas.width, canvas.height); target = &transparent; }
+    std::vector<uint8_t> k(shape.size());
+    for (size_t i = 0; i < k.size(); i++) k[i] = (uint8_t)(shape[i] * opacity + 0.5f);
+    psdfx_surface d = canvas.surface(), s2 = const_cast<Canvas*>(target)->surface();
+    psdfx_lerp(&d, &s2, 1.f, k.data(), canvas.width);
+  }
+
+  // ノックアウトの付いたグループ: 中身を独立した面に描き、その形で下を抜いてから
+  // 塗りの不透明度で重ねる
+  void renderKnockoutGroup(int idx, Canvas &canvas) {
+    LayerInfo &g = psd_.layerList[(size_t)idx];
+    const int key = g.sectionBlendKey ? g.sectionBlendKey : g.blendModeKey;
+    Canvas buf(canvas.width, canvas.height);
+    renderGroupContent(idx, buf);
+    std::vector<uint8_t> shape(buf.px.size() / 4);
+    for (size_t i = 0; i < shape.size(); i++) shape[i] = buf.px[i * 4 + 3];
+    knockOut(canvas, shape, g.opacity / 255.f, flagBlock(g, 'knko', 0));
+    psdfx_surface dst = canvas.surface(), src = buf.surface();
+    psdfx_composite(&dst, &src, 0, 0, key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key,
+                    g.opacity / 255.f * (g.fill_opacity / 255.f), nullptr, 0);
   }
 
   // グループのマスク (ユーザーマスク / ベクタマスク、濃度・ぼかし込み) を文書大で。
