@@ -284,6 +284,13 @@ typedef struct psdfx_layer_effects {
   /* 「内部効果を描画モードとしてまとめる」: オーバーレイ / 内側の効果にも塗りの
    * 不透明度を掛ける (既定 0 = 塗りの不透明度はレイヤの画素だけ) */
   int blend_interior_as_group;
+  /* 同じ種類の効果の 2 つ目以降 (Photoshop の一覧で上の 1 つ目が上の各フィールド、
+   * その下に続くもの)。一覧で上にあるものほど上に描く。NULL / 0 可 */
+  const psdfx_shadow *more_drop_shadows;       int more_drop_shadow_count;
+  const psdfx_shadow *more_inner_shadows;      int more_inner_shadow_count;
+  const psdfx_stroke *more_strokes;            int more_stroke_count;
+  const psdfx_overlay *more_color_overlays;    int more_color_overlay_count;
+  const psdfx_overlay *more_gradient_overlays; int more_gradient_overlay_count;
 } psdfx_layer_effects;
 
 /* 効果がレイヤの外へはみ出す量 (px)。描画範囲を広げるのに使う。 */

@@ -221,6 +221,12 @@ extern "C" int psdfx_effects_margin(const psdfx_layer_effects *fx) {
   double m = 0;
   if (fx->drop_shadow.enabled)
     m = std::max(m, fx->drop_shadow.distance + fx->drop_shadow.size * 1.5);
+  for (int i = 0; i < fx->more_drop_shadow_count && fx->more_drop_shadows; i++)
+    if (fx->more_drop_shadows[i].enabled)
+      m = std::max(m, fx->more_drop_shadows[i].distance + fx->more_drop_shadows[i].size * 1.5);
+  for (int i = 0; i < fx->more_stroke_count && fx->more_strokes; i++)
+    if (fx->more_strokes[i].enabled && fx->more_strokes[i].position != PSDFX_STROKE_INSIDE)
+      m = std::max(m, fx->more_strokes[i].size);
   if (fx->outer_glow.enabled) m = std::max(m, fx->outer_glow.size * 1.5);
   if (fx->stroke.enabled && fx->stroke.position != PSDFX_STROKE_INSIDE) m = std::max(m, fx->stroke.size);
   if (fx->bevel.enabled && fx->bevel.style != PSDFX_BEVEL_INNER) m = std::max(m, fx->bevel.size * 1.5);
@@ -270,7 +276,12 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     S[i * 4 + 3] = A.v[i] > 0.f ? to8(clamp01(C.v[i] / A.v[i]) * fillOnContent) : 0;
 
   // --- 外側の効果 (下地へ) ---
-  const psdfx_shadow &ds = fx->drop_shadow;
+  // 同じ種類の 2 つ目以降は一覧の下のものから描き、1 つ目を最後に (いちばん上に)
+  auto eachBottomUp = [](const auto &first, const auto *more, int count, auto draw) {
+    for (int i = count - 1; i >= 0 && more; i--) draw(more[i]);
+    draw(first);
+  };
+  eachBottomUp(fx->drop_shadow, fx->more_drop_shadows, fx->more_drop_shadow_count, [&](const psdfx_shadow &ds) {
   if (ds.enabled && ds.opacity > 0) {
     const double th = ds.angle * kPi / 180.0;
     Plane sh = spreadBlur(shifted(A, -std::cos(th) * ds.distance, std::sin(th) * ds.distance),
@@ -280,6 +291,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     std::vector<uint8_t> px = solid(W, H, ds.color);
     compositeCoverage(dst, px, sh, ox, oy, ds.blend, ds.opacity * opacity);
   }
+  });
   const psdfx_glow &og = fx->outer_glow;
   if (og.enabled && og.opacity > 0) {
     Plane gl = spreadBlur(A, og.spread, og.size, kSigmaOuterGlow);
@@ -298,8 +310,8 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     compositeCoverage(&Ss, px, in, 0, 0, o.blend, o.opacity);
   };
   overlay(fx->pattern_overlay);
-  overlay(fx->gradient_overlay);
-  overlay(fx->color_overlay);
+  eachBottomUp(fx->gradient_overlay, fx->more_gradient_overlays, fx->more_gradient_overlay_count, overlay);
+  eachBottomUp(fx->color_overlay, fx->more_color_overlays, fx->more_color_overlay_count, overlay);
 
   const psdfx_satin &sa = fx->satin;
   if (sa.enabled && sa.opacity > 0) {
@@ -328,7 +340,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     compositeCoverage(&Ss, px, gl, 0, 0, ig.blend, ig.opacity);
   }
 
-  const psdfx_shadow &is = fx->inner_shadow;
+  eachBottomUp(fx->inner_shadow, fx->more_inner_shadows, fx->more_inner_shadow_count, [&](const psdfx_shadow &is) {
   if (is.enabled && is.opacity > 0) {
     Plane inv(W, H);
     for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
@@ -338,6 +350,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     std::vector<uint8_t> px = solid(W, H, is.color);
     compositeCoverage(&Ss, px, sh, 0, 0, is.blend, is.opacity);
   }
+  });
 
   const psdfx_bevel &bv = fx->bevel;
   Plane bevelOuterHi, bevelOuterSh;
@@ -379,10 +392,10 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
   for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i] * fillAfter);
 
   // --- 境界線 (形の上、外側は形の外へ) ---
-  const psdfx_stroke &st = fx->stroke;
   // 境界線の「形の内側」は被覆率 50% (8bit で 127) 以上。濃度 50% のマスクで
   // 半透明になった所も内側に数える (Photoshop の合成画像と照合して確認)
   const float kStrokeIn = 126.5f / 255.f;
+  eachBottomUp(fx->stroke, fx->more_strokes, fx->more_stroke_count, [&](const psdfx_stroke &st) {
   if (st.enabled && st.opacity > 0 && st.size > 0) {
     Plane cov(W, H);
     const double sz = st.position == PSDFX_STROKE_CENTER ? st.size * 0.5 : st.size;
@@ -403,6 +416,7 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
     std::vector<uint8_t> px = paintSource(st.fill, W, H, ox, oy, lb, doc_box);
     compositeCoverage(&Ss, px, cov, 0, 0, st.blend, st.opacity);
   }
+  });
   if (!bevelOuterHi.v.empty()) {
     std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
     compositeCoverage(&Ss, ps, bevelOuterSh, 0, 0, bv.shadow_blend, bv.shadow_opacity);

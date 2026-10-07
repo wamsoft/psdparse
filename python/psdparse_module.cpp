@@ -969,8 +969,13 @@ py::object keyDescriptor(const psd::LayerInfo &l, int key, int skip) {
 }
 
 // Object-based layer effects ('lfx2'): objVer(4) + descVer(4) then descriptor.
+// Some files keep them in 'lmfx' / 'lfxs' (same layout) instead.
 py::object layerEffects(const psd::LayerInfo &l) {
-  return keyDescriptor(l, 'lfx2', 8);
+  for (int key : { 'lfx2', 'lmfx', 'lfxs' }) {
+    py::object d = keyDescriptor(l, key, 8);
+    if (!d.is_none()) return d;
+  }
+  return py::none();
 }
 
 // Fill-layer content ('SoCo' solid / 'GdFl' gradient / 'PtFl' pattern):
@@ -1012,7 +1017,7 @@ py::object layerDescriptor(const psd::LayerInfo &l, const std::string &keyStr, i
             ((int)(uint8_t)keyStr[2] << 8)  |  (int)(uint8_t)keyStr[3];
   if (skip < 0) {
     switch (key) {
-    case 'lfx2':                             skip = 8;  break;  // objVer + descVer
+    case 'lfx2': case 'lmfx': case 'lfxs':   skip = 8;  break;  // objVer + descVer
     case 'SoCo': case 'GdFl': case 'PtFl':   skip = 4;  break;  // descVer
     case 'SoLd': case 'SoLE':                skip = 12; break;  // 'soLD' + ver + descVer
     case 'vstk': case 'CgEd':                skip = 4;  break;  // descVer

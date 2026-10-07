@@ -771,7 +771,11 @@ private:
     std::vector<std::vector<psdfx_alpha_stop>> as;
     std::vector<std::vector<uint8_t>> tiles;
     std::vector<psdfx_surface> tileSurfaces;
-    FxStore() { tileSurfaces.reserve(16); }
+    // 同じ種類の 2 つ目以降の効果
+    std::vector<psdfx_shadow> moreDrop, moreInner;
+    std::vector<psdfx_stroke> moreStroke;
+    std::vector<psdfx_overlay> moreColor, moreGrad;
+    FxStore() { tileSurfaces.reserve(64); }
   };
 
   bool fillSource(Descriptor *d, const char *paintKey, psdfx_fill_source &f, FxStore &store, double scale) {
@@ -864,6 +868,23 @@ private:
     return nullptr;
   }
 
+  // 有効な効果を一覧の順に (*Multi の一覧があればそれ、無ければ単独のキー)
+  static std::vector<Descriptor*> effectList(Descriptor &fx, const char *key, const char *multiKey) {
+    std::vector<Descriptor*> out;
+    if (multiKey) {
+      if (auto *list = dynamic_cast<DescriptorList*>(fx.item(multiKey).find())) {
+        for (auto *it : list->items) {
+          auto *e = dynamic_cast<Descriptor*>(it);
+          if (e && flag(e, "enab", true)) out.push_back(e);
+        }
+        if (!out.empty()) return out;
+      }
+    }
+    auto *d = dynamic_cast<Descriptor*>(fx.item(key).find());
+    if (d && flag(d, "enab", true)) out.push_back(d);
+    return out;
+  }
+
   // layer の lfx2 を読む。描く効果が無ければ false。
   // 1 バイトの旗の追加情報 ('clbl' / 'infx' / 'knko' / 'tsly' など)。無ければ def
   static int flagBlock(const LayerInfo &l, int key, int def) {
@@ -880,7 +901,9 @@ private:
   bool layerEffects(const LayerInfo &l, psdfx_layer_effects &fx, FxStore &store) {
     fx = psdfx_layer_effects();
     Descriptor d;
-    if (!readDescriptor(l, 'lfx2', 8, d)) return false;
+    // 'lfx2' が普通。同じ形で 'lmfx' / 'lfxs' に持つファイルもある
+    if (!readDescriptor(l, 'lfx2', 8, d) && !readDescriptor(l, 'lmfx', 8, d) &&
+        !readDescriptor(l, 'lfxs', 8, d)) return false;
     if (!flag(&d, "masterFXSwitch", true)) return false;
     // 'infx' (内部効果を描画モードとしてまとめる): 1 バイト目が 1 なら
     for (const auto &a : l.extraData.additionalLayers) {
@@ -895,22 +918,26 @@ private:
     bool any = false;
     auto angleOf = [&](Descriptor *e) { return flag(e, "uglg", true) ? (double)gAngle : num(e, "lagl", 120); };
 
-    if (Descriptor *e = effectDesc(d, "DrSh", "dropShadowMulti")) {
-      psdfx_shadow &s = fx.drop_shadow;
+    auto shadow = [&](Descriptor *e, psdfx_shadow &s, bool drop) {
+      s = psdfx_shadow();
       s.enabled = 1; any = true;
       s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 75) / 100.0);
       descColor(dynamic_cast<Descriptor*>(e->item("Clr ").find()), s.color);
       s.angle = angleOf(e); s.distance = num(e, "Dstn", 5) * sc;
       s.size = num(e, "blur", 5) * sc; s.spread = fraction(e, "Ckmt", num(e, "blur", 5));
-      s.knocks_out = flag(e, "layerConceals", true);
-    }
-    if (Descriptor *e = effectDesc(d, "IrSh", "innerShadowMulti")) {
-      psdfx_shadow &s = fx.inner_shadow;
-      s.enabled = 1; any = true;
-      s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 75) / 100.0);
-      descColor(dynamic_cast<Descriptor*>(e->item("Clr ").find()), s.color);
-      s.angle = angleOf(e); s.distance = num(e, "Dstn", 5) * sc;
-      s.size = num(e, "blur", 5) * sc; s.spread = fraction(e, "Ckmt", num(e, "blur", 5));
+      if (drop) s.knocks_out = flag(e, "layerConceals", true);
+    };
+    {
+      auto list = effectList(d, "DrSh", "dropShadowMulti");
+      for (size_t i = 0; i < list.size(); i++) {
+        if (i == 0) shadow(list[i], fx.drop_shadow, true);
+        else { store.moreDrop.emplace_back(); shadow(list[i], store.moreDrop.back(), true); }
+      }
+      auto ilist = effectList(d, "IrSh", "innerShadowMulti");
+      for (size_t i = 0; i < ilist.size(); i++) {
+        if (i == 0) shadow(ilist[i], fx.inner_shadow, false);
+        else { store.moreInner.emplace_back(); shadow(ilist[i], store.moreInner.back(), false); }
+      }
     }
     auto glow = [&](const char *key, psdfx_glow &g, bool inner) {
       Descriptor *e = effectDesc(d, key, nullptr);
@@ -925,8 +952,8 @@ private:
     };
     glow("OrGl", fx.outer_glow, false);
     glow("IrGl", fx.inner_glow, true);
-    if (Descriptor *e = effectDesc(d, "FrFX", "frameFXMulti")) {
-      psdfx_stroke &s = fx.stroke;
+    auto stroke = [&](Descriptor *e, psdfx_stroke &s) {
+      s = psdfx_stroke();
       s.enabled = 1; any = true;
       s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 100) / 100.0);
       s.size = num(e, "Sz  ", 3) * sc;
@@ -934,16 +961,35 @@ private:
       s.position = pos == "InsF" ? PSDFX_STROKE_INSIDE : pos == "CtrF" ? PSDFX_STROKE_CENTER
                                                                       : PSDFX_STROKE_OUTSIDE;
       fillSource(e, "PntT", s.fill, store, sc);
+    };
+    {
+      auto list = effectList(d, "FrFX", "frameFXMulti");
+      for (size_t i = 0; i < list.size(); i++) {
+        if (i == 0) stroke(list[i], fx.stroke);
+        else { store.moreStroke.emplace_back(); stroke(list[i], store.moreStroke.back()); }
+      }
     }
-    auto overlay = [&](const char *key, const char *multi, psdfx_overlay &o) {
-      Descriptor *e = effectDesc(d, key, multi);
-      if (!e) return;
+    auto overlayOf = [&](Descriptor *e, psdfx_overlay &o) {
+      o = psdfx_overlay();
       o.blend = blendFromEnum(e, "Md  "); o.opacity = (float)(num(e, "Opct", 100) / 100.0);
       if (fillSource(e, nullptr, o.fill, store, sc)) { o.enabled = 1; any = true; }
     };
-    overlay("SoFi", "solidFillMulti", fx.color_overlay);
-    overlay("GrFl", "gradientFillMulti", fx.gradient_overlay);
-    overlay("patternFill", nullptr, fx.pattern_overlay);
+    auto overlays = [&](const char *key, const char *multi, psdfx_overlay &first,
+                        std::vector<psdfx_overlay> &more) {
+      auto list = effectList(d, key, multi);
+      for (size_t i = 0; i < list.size(); i++) {
+        if (i == 0) overlayOf(list[i], first);
+        else { more.emplace_back(); overlayOf(list[i], more.back()); }
+      }
+    };
+    overlays("SoFi", "solidFillMulti", fx.color_overlay, store.moreColor);
+    overlays("GrFl", "gradientFillMulti", fx.gradient_overlay, store.moreGrad);
+    if (Descriptor *e = effectDesc(d, "patternFill", nullptr)) overlayOf(e, fx.pattern_overlay);
+    fx.more_drop_shadows = store.moreDrop.data();      fx.more_drop_shadow_count = (int)store.moreDrop.size();
+    fx.more_inner_shadows = store.moreInner.data();    fx.more_inner_shadow_count = (int)store.moreInner.size();
+    fx.more_strokes = store.moreStroke.data();         fx.more_stroke_count = (int)store.moreStroke.size();
+    fx.more_color_overlays = store.moreColor.data();   fx.more_color_overlay_count = (int)store.moreColor.size();
+    fx.more_gradient_overlays = store.moreGrad.data(); fx.more_gradient_overlay_count = (int)store.moreGrad.size();
     if (Descriptor *e = effectDesc(d, "ChFX", nullptr)) {
       psdfx_satin &s = fx.satin;
       s.enabled = 1; any = true;
