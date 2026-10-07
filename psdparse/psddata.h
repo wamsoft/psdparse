@@ -6,6 +6,7 @@
 
 #include <vector>
 #include <map>
+#include <memory>
 #include <string>
 #include <cstring>
 
@@ -295,9 +296,31 @@ namespace psd {
 		bool filtersEnabled = false;
 	};
 
+	// --- 調整レイヤ -------------------------------------------------------------
+	//
+	// 調整の種類ごとに形がばらばらなので、名前付きの数値 / 配列 / 表 (行の並び) /
+	// 文字列の入れ物に入れる。descriptor 形式の調整 (vibA / blwh / clrL) と、
+	// 明るさ・コントラストの新しい値 (CgEd) は descriptor で持つ。
+	// 各項目の意味は docs/PYTHON_API.md の Adjustment layers を参照。
+	struct AdjustmentInfo {
+		int key = 0;             // 'levl' など
+		std::string type;        // "levels" / "curves" / ...
+		bool valid = true;       // バイナリ形式が最後まで読めたか
+		std::vector<std::pair<std::string, double>> scalars;
+		std::vector<std::pair<std::string, std::vector<double>>> arrays;
+		std::vector<std::pair<std::string, std::vector<std::vector<double>>>> tables;
+		std::vector<std::pair<std::string, std::string>> text;
+		std::vector<std::pair<std::string, u16str>> unicode;
+		std::shared_ptr<Descriptor> descriptor;
+	};
+
 	// パスレコード列 (26 バイト × n) を読む。読めたところまでを out に入れ、
 	// 途中で壊れていたら false。
 	bool parsePathRecords(const uint8_t *p, size_t n, PathData &out);
+
+	struct LayerInfo;
+	// 調整レイヤのパラメータを読む。調整のブロックが無ければ false。
+	bool decodeAdjustment(const LayerInfo &layer, AdjustmentInfo &out);
 
   // RGBAカラー
   struct ColorRgba {

@@ -45,6 +45,7 @@ add_library(${PROJECT_NAME} STATIC
 	psdparse.cpp
 	psdpath.cpp
 	psdlinked.cpp
+	psdadjust.cpp
 	psdresource.cpp
 	psdwrite.cpp
 )

@@ -218,6 +218,51 @@ py::object layerVectorMask(const psd::LayerInfo &l) {
   return std::move(d);
 }
 
+py::dict descToPy(psd::Descriptor *d);
+
+// Adjustment layer parameters as a flat dict: {"type", "key", <named values>}.
+py::object layerAdjustment(const psd::LayerInfo &l) {
+  psd::AdjustmentInfo a;
+  if (!psd::decodeAdjustment(l, a)) return py::none();
+  py::dict d;
+  d["type"] = a.type;
+  char k[5] = { (char)((a.key >> 24) & 0xff), (char)((a.key >> 16) & 0xff),
+                (char)((a.key >> 8) & 0xff), (char)(a.key & 0xff), 0 };
+  d["key"] = std::string(k);
+  for (const auto &kv : a.scalars) {
+    double v = kv.second;
+    if (v == (double)(long long)v) d[kv.first.c_str()] = (long long)v;
+    else d[kv.first.c_str()] = v;
+  }
+  auto toList = [](const std::vector<double> &vs) {
+    py::list out;
+    for (double v : vs) {
+      if (v == (double)(long long)v) out.append((long long)v); else out.append(v);
+    }
+    return out;
+  };
+  for (const auto &kv : a.arrays) d[kv.first.c_str()] = toList(kv.second);
+  for (const auto &kv : a.tables) {
+    py::list rows;
+    for (const auto &row : kv.second) {
+      if (a.type == "curves" && kv.first == "points") {
+        py::list pts;                       // (入力, 出力) の組にして返す
+        for (size_t i = 0; i + 1 < row.size(); i += 2)
+          pts.append(py::make_tuple((long long)row[i], (long long)row[i + 1]));
+        rows.append(pts);
+      } else {
+        rows.append(toList(row));
+      }
+    }
+    d[kv.first.c_str()] = rows;
+  }
+  for (const auto &kv : a.text) d[kv.first.c_str()] = py::bytes(kv.second);
+  for (const auto &kv : a.unicode) d[kv.first.c_str()] = u16ToStr(kv.second);
+  if (a.descriptor) d["descriptor"] = descToPy(a.descriptor.get());
+  if (!a.valid) d["incomplete"] = true;
+  return std::move(d);
+}
+
 // Smart object placement ('SoLd' / 'SoLE', or the older 'PlLd').
 py::object layerSmartObject(const psd::LayerInfo &l) {
   const psd::SmartObjectInfo &so = l.smartObject;
@@ -1100,6 +1145,13 @@ PYBIND11_MODULE(psdparse, m) {
         "Per-layer layer-comp state as {comp_id: {'enabled', 'offset_x', "
         "'offset_y'}} (empty when the layer is in no comps). `enabled` says "
         "whether this layer is shown in that document comp (PSDFile.layer_comps).")
+    .def_property_readonly("adjustment", &layerAdjustment,
+        "Adjustment layer parameters as a dict {'type', 'key', ...}, or None. "
+        "type is one of levels, curves, hue_saturation, color_balance, "
+        "brightness_contrast, selective_color, threshold, posterize, invert, "
+        "channel_mixer, photo_filter, exposure, gradient_map, vibrance, "
+        "black_white, color_lookup. Binary blocks are decoded into named values; "
+        "descriptor-based ones come as 'descriptor'. See docs/PYTHON_API.md.")
     .def_property_readonly("smart_object", &layerSmartObject,
         "Smart object placement ('SoLd' / 'SoLE', or the older 'PlLd') as "
         "{'key', 'uuid', 'placed_id', 'page', 'total_pages', 'anti_alias', "

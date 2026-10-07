@@ -125,6 +125,7 @@ Read-only view of one layer.
 | `effects` | `dict` \| `None` | layer effects (`lfx2`) as a descriptor dict — see [Descriptor blocks](#descriptor-blocks) |
 | `fill` | `dict` \| `None` | fill-layer content (solid/gradient/pattern) — see [Descriptor blocks](#descriptor-blocks) |
 | `sheet_color` | `dict` \| `None` | layer-panel color label (`lclr`): `{"index", "name"}` — `None` when no `lclr` block |
+| `adjustment` | `dict` \| `None` | adjustment layer parameters `{"type", "key", ...}` — see [Adjustment layers](#adjustment-layers) |
 | `smart_object` | `dict` \| `None` | smart object placement (`SoLd` / `SoLE` / `PlLd`): `{"key", "uuid", "placed_id", "page", "total_pages", "anti_alias", "placed_type", "transform", "size", "filters", "linked_file"}` — `transform` is the 4 corners `(x, y)` (top-left, top-right, bottom-right, bottom-left), `linked_file` an index into `PSDFile.linked_files` |
 | `vector_mask` | `dict` \| `None` | vector mask (`vmsk`, or `vsms` on shape layers): `{"key", "inverted", "not_linked", "disabled", "path"}` — see [Paths](#paths) |
 | `comp_states` | `dict` | per layer-comp state `{comp_id: {"enabled", "offset_x", "offset_y"}}` (empty if the layer is in no comps). `enabled` says if the layer shows in that comp — see [Layer comps](#layer-comps) |
@@ -755,6 +756,30 @@ p.thumbnail              # dict|None  : {"format","width","height","bits","resou
 
 - **`xmp`** decodes as UTF-8 `str`; if a file's packet is not valid UTF-8, read
   the raw bytes with `p.image_resource(1060)` instead.
+
+### Adjustment layers
+
+`layer.adjustment` is `None` or a dict with `"type"`, `"key"` (the block's 4cc)
+and the values below. Values are as stored (integers unless noted).
+
+| type | values |
+|---|---|
+| `levels` | `records`: rows `[input_black, input_white, output_black, output_white, gamma]` (gamma as float). Row 0 is the composite, then one row per channel (29 or more rows) |
+| `curves` | `channels`: channel index per curve (0 = composite); `points`: per curve a list of `(input, output)` pairs, or `maps` (256 values each) for map-style curves |
+| `hue_saturation` | `colorize`, `colorization` `[hue, saturation, lightness]`, `master` `[hue, saturation, lightness]`, `ranges`: 6 rows `[range1..4, hue, saturation, lightness]` |
+| `color_balance` | `shadows` / `midtones` / `highlights` `[cyan_red, magenta_green, yellow_blue]`, `preserve_luminosity` |
+| `brightness_contrast` | `brightness`, `contrast`, `mean`, `lab_only`; newer files also carry the real values in `descriptor` (`CgEd`) |
+| `selective_color` | `method` (0 relative / 1 absolute), `records`: 10 rows `[cyan, magenta, yellow, black]` (row 0 unused, then reds, yellows, greens, cyans, blues, magentas, whites, neutrals, blacks) |
+| `threshold` / `posterize` | `level` / `levels` |
+| `invert` | — |
+| `channel_mixer` | `monochrome`, `channels`: rows `[red, green, blue, extra, constant]` per output channel |
+| `photo_filter` | `version`; `color_space` + `color` (version 2) or `xyz` (version 3); `density`, `preserve_luminosity` |
+| `exposure` | `exposure`, `offset`, `gamma` (floats) |
+| `gradient_map` | `name`, `reversed`, `dithered`, `color_stops` rows `[location, midpoint, kind, c0, c1, c2, c3]`, `transparency_stops` rows `[location, midpoint, opacity]`, plus `interpolation`, `method` (version 3), noise settings |
+| `vibrance` / `black_white` / `color_lookup` | `descriptor` (the block's descriptor as a dict) |
+
+`"incomplete": True` is added when a binary block ended early (the values read so
+far are kept). Read-only for now; saving keeps the original bytes.
 
 ### Paths
 
