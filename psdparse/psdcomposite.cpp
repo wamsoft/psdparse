@@ -422,8 +422,15 @@ private:
     Canvas adj = target;
     psdfx_surface s = adj.surface();
     if (!adjustSurface(a, s)) { st_.skippedAdjustments++; return; }
-    // マスク: ユーザーマスク / ベクタマスクを文書大で
-    const int W = target.width, H = target.height;
+    const int W = target.width;
+    std::vector<uint8_t> mask = adjustmentMask(l, clipMask, target.width, target.height);
+    psdfx_surface d = target.surface();
+    psdfx_apply_adjusted(&d, &s, (uint32_t)l.blendModeKey, l.opacity / 255.f * (l.fill_opacity / 255.f),
+                         mask.data(), W);
+  }
+
+  // 調整レイヤのマスク (ユーザーマスク / ベクタマスク、clipMask があれば掛ける) を文書大で
+  std::vector<uint8_t> adjustmentMask(LayerInfo &l, const uint8_t *clipMask, int W, int H) {
     Canvas m(W, H);
     for (size_t i = 3; i < m.px.size(); i += 4) m.px[i] = 255;
     LayerInfo maskLayer;
@@ -435,9 +442,7 @@ private:
       if (clipMask) v = (v * clipMask[i] + 127) / 255;
       mask[i] = (uint8_t)v;
     }
-    psdfx_surface d = target.surface();
-    psdfx_apply_adjusted(&d, &s, (uint32_t)l.blendModeKey, l.opacity / 255.f * (l.fill_opacity / 255.f),
-                         mask.data(), W);
+    return mask;
   }
 
   static double scalarOf(const AdjustmentInfo &a, const char *k, double def = 0.0) {
@@ -1094,13 +1099,46 @@ private:
     if (!visible(l)) return;   // 下地が非表示ならクリップ側も見えない
 
     if (l.layerType == LAYER_TYPE_FOLDER) {
-      renderGroup(idx, canvas);   // グループを下地にしたクリッピングはまだ扱わない
-      if (!clipped.empty()) st_.unsupportedClipBase++;
+      if (clipped.empty()) { renderGroup(idx, canvas); return; }
+      // グループを下地にしたクリッピング: グループの中身を独立した面に描き、その
+      // 形をクリップの範囲にする
+      Canvas group(canvas.width, canvas.height);
+      renderGroupContent(idx, group);
+      std::vector<uint8_t> clipMask((size_t)canvas.width * canvas.height);
+      for (size_t i = 0; i < clipMask.size(); i++) clipMask[i] = group.px[i * 4 + 3];
+      const int key = l.sectionBlendKey ? l.sectionBlendKey : l.blendModeKey;
+      if (key == 'pass' && l.fill_opacity >= 255) {
+        // 通過グループは下の画像と混ざるように描くが、その効き目はグループの中身の
+        // 形の中だけ (中が調整レイヤだけなら何も変わらない。照合で確認)。その上へ
+        // クリップされたレイヤを範囲内に重ねる
+        Canvas after = canvas;
+        renderGroup(idx, after);
+        std::vector<uint8_t> inside(clipMask.size());
+        for (size_t i = 0; i < inside.size(); i++) inside[i] = clipMask[i] ? 255 : 0;
+        psdfx_surface dst = canvas.surface(), src = after.surface();
+        psdfx_lerp(&dst, &src, 1.f, inside.data(), canvas.width);
+        drawClipped(clipped, canvas, clipMask.data());
+        return;
+      }
+      drawClipped(clipped, group, clipMask.data());
+      psdfx_surface dst = canvas.surface(), src = group.surface();
+      psdfx_composite(&dst, &src, 0, 0, key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key,
+                      l.opacity / 255.f * (l.fill_opacity / 255.f), nullptr, 0);
       return;
     }
     if (l.layerType == LAYER_TYPE_ADJUST) {
-      applyAdjustment(l, canvas, nullptr);
-      if (!clipped.empty()) st_.unsupportedClipBase++;
+      if (clipped.empty()) { applyAdjustment(l, canvas, nullptr); return; }
+      // 調整レイヤを下地にしたクリッピング: 調整済みの画像を下地の中身、調整の
+      // マスクをクリップの範囲とみなす
+      AdjustmentInfo a;
+      Canvas group = canvas;
+      psdfx_surface gs = group.surface();
+      if (!decodeAdjustment(l, a) || !a.valid || !adjustSurface(a, gs)) st_.skippedAdjustments++;
+      std::vector<uint8_t> mask = adjustmentMask(l, nullptr, canvas.width, canvas.height);
+      drawClipped(clipped, group, mask.data());
+      psdfx_surface d = canvas.surface();
+      psdfx_apply_adjusted(&d, &gs, (uint32_t)l.blendModeKey, l.opacity / 255.f * (l.fill_opacity / 255.f),
+                           mask.data(), canvas.width);
       return;
     }
 
@@ -1128,19 +1166,44 @@ private:
         clipMask[(size_t)dy * canvas.width + dx] = base.px[((size_t)y * base.width + x) * 4 + 3];
       }
     }
+    drawClipped(clipped, group, clipMask.data());
+    psdfx_surface dst = canvas.surface(), src = group.surface();
+    psdfx_composite(&dst, &src, 0, 0, (uint32_t)l.blendModeKey, opacity, nullptr, 0);
+  }
+
+  // クリップされたレイヤを、下地の面 group (文書大) へ clipMask の範囲で重ねる
+  void drawClipped(const std::vector<int> &clipped, Canvas &group, const uint8_t *clipMask) {
     for (int ci : clipped) {
       LayerInfo &c = psd_.layerList[(size_t)ci];
       if (!visible(c)) continue;
-      if (c.layerType == LAYER_TYPE_ADJUST) { applyAdjustment(c, group, clipMask.data()); continue; }
-      if (c.layerType == LAYER_TYPE_FOLDER) { st_.unsupportedClipBase++; continue; }
+      if (c.layerType == LAYER_TYPE_ADJUST) { applyAdjustment(c, group, clipMask); continue; }
+      if (c.layerType == LAYER_TYPE_FOLDER) {
+        // クリップされたグループ: 中身を独立した面に描いてから範囲内に重ねる
+        Canvas buf(group.width, group.height);
+        renderGroupContent(ci, buf);
+        const int key = c.sectionBlendKey ? c.sectionBlendKey : c.blendModeKey;
+        psdfx_surface d = group.surface(), s = buf.surface();
+        psdfx_composite(&d, &s, 0, 0, key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key,
+                        c.opacity / 255.f * (c.fill_opacity / 255.f), clipMask, group.width);
+        continue;
+      }
       Canvas cs;
       int cx = 0, cy = 0;
       if (!layerSurface(c, cs, cx, cy)) continue;
       drawLayer(c, cs, cx, cy, group, 0, 0, c.opacity / 255.f, c.fill_opacity / 255.f,
-                (uint32_t)c.blendModeKey, clipMask.data());
+                (uint32_t)c.blendModeKey, clipMask);
     }
-    psdfx_surface dst = canvas.surface(), src = group.surface();
-    psdfx_composite(&dst, &src, 0, 0, (uint32_t)l.blendModeKey, opacity, nullptr, 0);
+  }
+
+  // グループの中身を透明な面 buf へ描き、グループのマスクを掛ける (不透明度と
+  // ブレンドは呼び出し側)
+  void renderGroupContent(int idx, Canvas &buf) {
+    LayerInfo &g = psd_.layerList[(size_t)idx];
+    renderChildren(idx, buf);
+    std::vector<uint8_t> mask = groupMask(g);
+    if (!mask.empty())
+      for (size_t i = 0; i < mask.size(); i++)
+        buf.px[i * 4 + 3] = (uint8_t)((buf.px[i * 4 + 3] * mask[i] + 127) / 255);
   }
 
   void renderGroup(int idx, Canvas &canvas) {
