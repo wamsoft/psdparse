@@ -98,6 +98,47 @@ Returns the pixels of one layer as raw BGRA bytes.
 
 Length = `layer.width * layer.height * 4`. Returns `b""` for empty layers (`width == 0` or `height == 0`). Raises `IndexError` on bad index, `ValueError` on bad mode.
 
+### Compositing from layers (unreleased)
+
+```python
+p.composite(effects: bool = True, background: tuple | None = None) -> (bytes, dict)
+```
+
+Renders the document from its layers instead of returning the stored merged
+image: blend modes, pass-through / isolated groups, clipping, layer and vector
+masks (density / feather), fill layers (solid / gradient / pattern), shape
+fills, fill opacity, channel restriction, artboards, and layer effects when
+`effects=True`. Returns `(bgra, stats)` — canvas-sized BGRA (straight alpha)
+and a dict counting what could not be reproduced:
+`skipped_adjustments`, `unsupported_clip_base`, `unsupported_effects`.
+`background=(r, g, b)` composites onto an opaque colour instead of
+transparency.
+
+```python
+p.render_layer(index: int, effects: bool = True) -> (bytes, left, top, width, height) | None
+```
+
+Renders a single layer (masks, fill / shape content, opacity and effects) onto
+a transparent surface, not composited with the layers below. The rectangle
+includes what the effects add around the layer (shadow, glow, stroke). `None`
+for groups, dividers, adjustment layers and empty layers.
+
+```python
+p.merged_has_transparency -> bool
+```
+
+Whether the stored merged image carries transparency. `merged_image()` is
+un-matted from the white background Photoshop composites transparent documents
+onto, so it can be compared with `composite()` directly.
+
+```python
+out, stats = p.composite()
+p.set_merged_image(out)          # refresh the stored composite after edits
+```
+
+The drawing code is a plain C API (`psdparse/psdfx.h`, see
+[PSDFX.md](PSDFX.md)), so other hosts can call the same routines.
+
 ## `class psdparse.LayerInfo`
 
 Read-only view of one layer.
