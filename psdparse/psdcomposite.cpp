@@ -411,6 +411,236 @@ private:
     return true;
   }
 
+  // --- 調整レイヤ ---------------------------------------------------------------
+
+  // 調整レイヤを target (文書大の面) へ掛ける。target の色を調整し、レイヤの
+  // ブレンドモード・不透明度 x 塗りの不透明度・マスク (と clipMask) で元の色へ
+  // 重ねる。アルファは変えない。再現できない調整は数えて飛ばす。
+  void applyAdjustment(LayerInfo &l, Canvas &target, const uint8_t *clipMask) {
+    AdjustmentInfo a;
+    if (!decodeAdjustment(l, a) || !a.valid) { st_.skippedAdjustments++; return; }
+    Canvas adj = target;
+    psdfx_surface s = adj.surface();
+    if (!adjustSurface(a, s)) { st_.skippedAdjustments++; return; }
+    // マスク: ユーザーマスク / ベクタマスクを文書大で
+    const int W = target.width, H = target.height;
+    Canvas m(W, H);
+    for (size_t i = 3; i < m.px.size(); i += 4) m.px[i] = 255;
+    LayerInfo maskLayer;
+    if (userMaskLayer(l, maskLayer)) applyUserMask(maskLayer, m, 0, 0);
+    applyVectorMask(l, m, 0, 0);
+    std::vector<uint8_t> mask((size_t)W * H);
+    for (size_t i = 0; i < mask.size(); i++) {
+      int v = m.px[i * 4 + 3];
+      if (clipMask) v = (v * clipMask[i] + 127) / 255;
+      mask[i] = (uint8_t)v;
+    }
+    psdfx_surface d = target.surface();
+    psdfx_apply_adjusted(&d, &s, (uint32_t)l.blendModeKey, l.opacity / 255.f * (l.fill_opacity / 255.f),
+                         mask.data(), W);
+  }
+
+  static double scalarOf(const AdjustmentInfo &a, const char *k, double def = 0.0) {
+    for (const auto &v : a.scalars) if (v.first == k) return v.second;
+    return def;
+  }
+  static const std::vector<double> *arrayOf(const AdjustmentInfo &a, const char *k) {
+    for (const auto &v : a.arrays) if (v.first == k) return &v.second;
+    return nullptr;
+  }
+  static const std::vector<std::vector<double>> *tableOf(const AdjustmentInfo &a, const char *k) {
+    for (const auto &v : a.tables) if (v.first == k) return &v.second;
+    return nullptr;
+  }
+
+  // Lab (D50、L 0..100) → sRGB
+  static void labToRgb(double L, double A, double B, uint8_t out[3]) {
+    auto finv = [](double t) { return t > 6.0 / 29 ? t * t * t : 3 * (6.0 / 29) * (6.0 / 29) * (t - 4.0 / 29); };
+    const double fy = (L + 16) / 116, fx = fy + A / 500, fz = fy - B / 200;
+    const double X = 0.9642 * finv(fx), Y = finv(fy), Z = 0.8249 * finv(fz);
+    const double lin[3] = { 3.1338561 * X - 1.6168667 * Y - 0.4906146 * Z,
+                            -0.9787684 * X + 1.9161415 * Y + 0.0334540 * Z,
+                            0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z };
+    for (int i = 0; i < 3; i++) {
+      double v = std::min(1.0, std::max(0.0, lin[i]));
+      v = v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055;
+      out[i] = (uint8_t)(v * 255 + 0.5);
+    }
+  }
+
+  // 調整を面に掛ける。対応していない調整なら false。
+  bool adjustSurface(const AdjustmentInfo &a, psdfx_surface &s) {
+    uint8_t lut[4][256];
+    auto identity = [&](uint8_t *t) { for (int i = 0; i < 256; i++) t[i] = (uint8_t)i; };
+    auto applyLuts = [&]() { psdfx_apply_lut(&s, lut[1], lut[2], lut[3]); };
+    if (a.type == "invert") {
+      for (int i = 0; i < 256; i++) lut[1][i] = lut[2][i] = lut[3][i] = (uint8_t)(255 - i);
+      applyLuts();
+      return true;
+    }
+    if (a.type == "posterize") {
+      psdfx_posterize_lut((int)scalarOf(a, "levels", 4), lut[1]);
+      std::memcpy(lut[2], lut[1], 256); std::memcpy(lut[3], lut[1], 256);
+      applyLuts();
+      return true;
+    }
+    if (a.type == "threshold") { psdfx_threshold(&s, (int)scalarOf(a, "level", 128)); return true; }
+    if (a.type == "exposure") {
+      psdfx_exposure_lut(scalarOf(a, "exposure"), scalarOf(a, "offset"), scalarOf(a, "gamma", 1.0), lut[1]);
+      std::memcpy(lut[2], lut[1], 256); std::memcpy(lut[3], lut[1], 256);
+      applyLuts();
+      return true;
+    }
+    if (a.type == "brightness_contrast") {
+      double b = scalarOf(a, "brightness"), c = scalarOf(a, "contrast");
+      bool legacy = true;
+      if (a.descriptor) {   // 新しいファイルは 'CgEd' に実際の値と方式を持つ
+        Descriptor *d = a.descriptor.get();
+        b = num(d, "Brgh", b); c = num(d, "Cntr", c);
+        legacy = flag(d, "useLegacy", false);
+      }
+      psdfx_brightness_contrast_lut(b, c, legacy ? 1 : 0, lut[1]);
+      std::memcpy(lut[2], lut[1], 256); std::memcpy(lut[3], lut[1], 256);
+      applyLuts();
+      return true;
+    }
+    if (a.type == "levels") {
+      // 先に全体 (records[0])、次にチャンネルごと (records[1..3])
+      const auto *rec = tableOf(a, "records");
+      if (!rec || rec->size() < 4) return false;
+      uint8_t master[256];
+      const auto &m = (*rec)[0];
+      psdfx_levels_lut(m[0], m[1], m[2], m[3], m[4], master);
+      for (int ch = 1; ch <= 3; ch++) {
+        const auto &r = (*rec)[(size_t)ch];
+        uint8_t t[256];
+        psdfx_levels_lut(r[0], r[1], r[2], r[3], r[4], t);
+        for (int i = 0; i < 256; i++) lut[ch][i] = t[master[i]];
+      }
+      applyLuts();
+      return true;
+    }
+    if (a.type == "curves") {
+      // チャンネルごとの曲線を先に、全体 (チャンネル 0) を後に
+      const auto *ch = arrayOf(a, "channels");
+      const auto *pts = tableOf(a, "points");
+      const auto *maps = tableOf(a, "maps");
+      const auto *rows = pts ? pts : maps;
+      if (!ch || !rows) return false;
+      for (int i = 0; i < 4; i++) identity(lut[i]);
+      for (size_t k = 0; k < ch->size() && k < rows->size(); k++) {
+        const int c = (int)(*ch)[k];
+        if (c < 0 || c > 3) continue;
+        const auto &row = (*rows)[k];
+        if (maps) { for (int i = 0; i < 256 && i < (int)row.size(); i++) lut[c][i] = (uint8_t)row[(size_t)i]; }
+        else psdfx_curve_lut(row.data(), (int)row.size() / 2, lut[c]);
+      }
+      for (int c = 1; c <= 3; c++)
+        for (int i = 0; i < 256; i++) lut[c][i] = lut[0][lut[c][i]];
+      applyLuts();
+      return true;
+    }
+    if (a.type == "hue_saturation") {
+      const auto *mst = arrayOf(a, "master");
+      const auto *col = arrayOf(a, "colorization");
+      const auto *rg = tableOf(a, "ranges");
+      const bool colorize = scalarOf(a, "colorize") != 0;
+      const auto *v = colorize ? col : mst;
+      if (!v || v->size() < 3) return false;
+      std::vector<psdfx_hue_range> ranges;
+      if (rg) for (const auto &r : *rg) {
+        if (r.size() < 7) continue;
+        ranges.push_back({ { r[0], r[1], r[2], r[3] }, r[4], r[5], r[6] });
+      }
+      psdfx_hue_saturation(&s, (*v)[0], (*v)[1], (*v)[2], colorize ? 1 : 0, ranges.data(), (int)ranges.size());
+      return true;
+    }
+    if (a.type == "vibrance") {
+      Descriptor *d = a.descriptor.get();
+      if (!d) return false;
+      psdfx_vibrance(&s, num(d, "vibrance"), num(d, "Strt"));
+      return true;
+    }
+    if (a.type == "color_balance") {
+      const auto *sh = arrayOf(a, "shadows"), *md = arrayOf(a, "midtones"), *hi = arrayOf(a, "highlights");
+      if (!sh || !md || !hi) return false;
+      psdfx_color_balance(&s, sh->data(), md->data(), hi->data(), scalarOf(a, "preserve_luminosity") != 0);
+      return true;
+    }
+    if (a.type == "selective_color") {
+      const auto *rec = tableOf(a, "records");
+      if (!rec || rec->size() < 10) return false;
+      double adj[9][4];
+      for (int r = 0; r < 9; r++)
+        for (int k = 0; k < 4; k++) adj[r][k] = (*rec)[(size_t)r + 1][(size_t)k];
+      psdfx_selective_color(&s, adj, scalarOf(a, "method") == 0 ? 1 : 0);
+      return true;
+    }
+    if (a.type == "channel_mixer") {
+      const auto *rows = tableOf(a, "channels");
+      if (!rows || rows->empty()) return false;
+      double mtx[3][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 } };
+      for (size_t r = 0; r < 3 && r < rows->size(); r++) {
+        const auto &row = (*rows)[r];
+        if (row.size() < 5) continue;
+        mtx[r][0] = row[0] / 100; mtx[r][1] = row[1] / 100; mtx[r][2] = row[2] / 100; mtx[r][3] = row[4] / 100;
+      }
+      psdfx_channel_mixer(&s, mtx, scalarOf(a, "monochrome") != 0);
+      return true;
+    }
+    if (a.type == "photo_filter") {
+      uint8_t rgb[3];
+      const int version = (int)scalarOf(a, "version");
+      if (version == 3) {
+        const auto *v = arrayOf(a, "xyz");     // 実際は Lab x 100
+        if (!v || v->size() < 3) return false;
+        labToRgb((*v)[0] / 100, (*v)[1] / 100, (*v)[2] / 100, rgb);
+      } else {
+        const auto *c = arrayOf(a, "color");
+        if (!c || c->size() < 3) return false;
+        const int space = (int)scalarOf(a, "color_space");
+        if (space == 0) for (int i = 0; i < 3; i++) rgb[i] = (uint8_t)((*c)[(size_t)i] / 257.0 + 0.5);
+        else if (space == 7) labToRgb((*c)[0] / 100, (int16_t)(*c)[1] / 100.0, (int16_t)(*c)[2] / 100.0, rgb);
+        else return false;
+      }
+      psdfx_photo_filter(&s, rgb, scalarOf(a, "density") / 100.0, scalarOf(a, "preserve_luminosity") != 0);
+      return true;
+    }
+    if (a.type == "black_white") {
+      Descriptor *d = a.descriptor.get();
+      if (!d) return false;
+      const double w[6] = { num(d, "Rd  ", 40), num(d, "Yllw", 60), num(d, "Grn ", 40),
+                            num(d, "Cyn ", 60), num(d, "Bl  ", 20), num(d, "Mgnt", 80) };
+      uint8_t tint[3];
+      const bool useTint = flag(d, "useTint", false) &&
+                           descColor(dynamic_cast<Descriptor*>(d->item("tintColor").find()), tint);
+      psdfx_black_white(&s, w, useTint ? tint : nullptr);
+      return true;
+    }
+    if (a.type == "gradient_map") {
+      const auto *cs = tableOf(a, "color_stops");
+      if (!cs || cs->size() < 2) return false;
+      std::vector<psdfx_color_stop> stops;
+      for (const auto &r : *cs) {
+        if (r.size() < 7 || r[2] != 0) return false;   // RGB の分岐点だけ
+        psdfx_color_stop c;
+        c.location = r[0] / 4096.0; c.midpoint = r[1] / 100.0;
+        c.r = (uint8_t)(r[3] / 257.0 + 0.5); c.g = (uint8_t)(r[4] / 257.0 + 0.5); c.b = (uint8_t)(r[5] / 257.0 + 0.5);
+        stops.push_back(c);
+      }
+      std::sort(stops.begin(), stops.end(),
+                [](const psdfx_color_stop &x, const psdfx_color_stop &y) { return x.location < y.location; });
+      psdfx_alpha_stop as[2] = { { 0, 0.5, 1 }, { 1, 0.5, 1 } };
+      psdfx_gradient g;
+      g.colors = stops.data(); g.color_count = (int)stops.size();
+      g.alphas = as; g.alpha_count = 2;
+      g.smoothness = scalarOf(a, "interpolation", 4096) / 4096.0;
+      psdfx_gradient_map(&s, &g, scalarOf(a, "reversed") != 0, scalarOf(a, "dithered") != 0, 0, 0);
+      return true;
+    }
+    return false;
+  }
+
   // マスクの濃度: 黒い (隠す) 部分の効き具合を density/255 に弱める
   static void applyDensity(std::vector<uint8_t> &m, int density) {
     for (auto &v : m) v = (uint8_t)(255 - ((255 - v) * density + 127) / 255);
@@ -869,7 +1099,8 @@ private:
       return;
     }
     if (l.layerType == LAYER_TYPE_ADJUST) {
-      st_.skippedAdjustments++;
+      applyAdjustment(l, canvas, nullptr);
+      if (!clipped.empty()) st_.unsupportedClipBase++;
       return;
     }
 
@@ -900,7 +1131,7 @@ private:
     for (int ci : clipped) {
       LayerInfo &c = psd_.layerList[(size_t)ci];
       if (!visible(c)) continue;
-      if (c.layerType == LAYER_TYPE_ADJUST) { st_.skippedAdjustments++; continue; }
+      if (c.layerType == LAYER_TYPE_ADJUST) { applyAdjustment(c, group, clipMask.data()); continue; }
       if (c.layerType == LAYER_TYPE_FOLDER) { st_.unsupportedClipBase++; continue; }
       Canvas cs;
       int cx = 0, cy = 0;
@@ -916,12 +1147,14 @@ private:
     LayerInfo &g = psd_.layerList[(size_t)idx];
     const float opacity = g.opacity / 255.f;
     const int key = g.sectionBlendKey ? g.sectionBlendKey : g.blendModeKey;
-    std::vector<uint8_t> mask = documentMask(g);
+    std::vector<uint8_t> mask = groupMask(g);
     if (g.artboard.present) {
       renderArtboard(idx, canvas);
       return;
     }
-    if (key == 'pass') {
+    // 通過グループでも塗りの不透明度が 100% 未満なら、独立した面に描いて通常で
+    // 重ねる (中の調整レイヤは下の画像に届かない。照合で確認)
+    if (key == 'pass' && g.fill_opacity >= 255) {
       if (opacity >= 1.f && mask.empty()) {
         renderChildren(idx, canvas);
         return;
@@ -935,9 +1168,27 @@ private:
     Canvas buf(canvas.width, canvas.height);
     renderChildren(idx, buf);
     psdfx_surface dst = canvas.surface(), src = buf.surface();
-    psdfx_composite(&dst, &src, 0, 0, (uint32_t)key,
+    psdfx_composite(&dst, &src, 0, 0, key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key,
                     opacity * g.fill_opacity / 255.f,
                     mask.empty() ? nullptr : mask.data(), canvas.width);
+  }
+
+  // グループのマスク (ユーザーマスク / ベクタマスク、濃度・ぼかし込み) を文書大で。
+  // どちらも無ければ空。
+  std::vector<uint8_t> groupMask(LayerInfo &g) {
+    LayerInfo maskLayer;
+    const bool user = userMaskLayer(g, maskLayer);
+    const bool vec = g.vectorMask.present && !g.vectorMask.disabled();
+    std::vector<uint8_t> out;
+    if (!user && !vec) return out;
+    const int W = psd_.header.width, H = psd_.header.height;
+    Canvas m(W, H);
+    for (size_t i = 3; i < m.px.size(); i += 4) m.px[i] = 255;
+    if (user) applyUserMask(maskLayer, m, 0, 0);
+    applyVectorMask(g, m, 0, 0);
+    out.resize((size_t)W * H);
+    for (size_t i = 0; i < out.size(); i++) out[i] = m.px[i * 4 + 3];
+    return out;
   }
 
   // アートボード: 枠を背景色で塗った独立した面へ中身を描き、枠の外を落として重ねる。

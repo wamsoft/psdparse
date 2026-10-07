@@ -308,6 +308,65 @@ void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_surface *layer
                                   const double doc_box[4],
                                   const uint8_t *shape, int shape_stride);
 
+/* ------------------------------------------------------------------------
+ * 調整 (調整レイヤの画素処理)
+ *
+ * どれも面をその場で書き換える。アルファ 0 の画素は触らない。チャンネル値は
+ * 0..255、割合は % (Photoshop のダイアログの値そのまま)。
+ * ------------------------------------------------------------------------ */
+
+/* チャンネルごとの表を掛ける (レベル補正 / トーンカーブ / 反転 / ポスタリゼーション /
+ * 明るさ・コントラスト / 露光量は表を作ってこれで掛ける) */
+void psdfx_apply_lut(psdfx_surface *s, const uint8_t lut_r[256], const uint8_t lut_g[256],
+                     const uint8_t lut_b[256]);
+/* レベル補正の表 (入力の黒 / 白、出力の黒 / 白は 0..255、gamma は中間調 1.0 = 既定) */
+void psdfx_levels_lut(double in_black, double in_white, double out_black, double out_white,
+                      double gamma, uint8_t lut[256]);
+/* トーンカーブの表。points は (入力, 出力) の組を count 個 (0..255) */
+void psdfx_curve_lut(const double *points, int count, uint8_t lut[256]);
+/* 明るさ・コントラストの表 (legacy = 1 で「従来方式を使用」) */
+void psdfx_brightness_contrast_lut(double brightness, double contrast, int legacy, uint8_t lut[256]);
+/* 露光量の表 (露光量は段、オフセット、ガンマ) */
+void psdfx_exposure_lut(double exposure, double offset, double gamma, uint8_t lut[256]);
+/* ポスタリゼーションの表 */
+void psdfx_posterize_lut(int levels, uint8_t lut[256]);
+/* 2 階調化 (輝度が level 以上なら白) */
+void psdfx_threshold(psdfx_surface *s, int level);
+
+/* 色相・彩度の範囲 1 つ (bounds は境界の角度 4 つ、hue は度、saturation / lightness は %) */
+typedef struct psdfx_hue_range {
+  double bounds[4];
+  double hue, saturation, lightness;
+} psdfx_hue_range;
+/* 色相・彩度 (hue は度、saturation / lightness は %)。colorize = 1 で「色彩の統一」
+ * (hue / saturation / lightness に色彩の統一の値を渡す) */
+void psdfx_hue_saturation(psdfx_surface *s, double hue, double saturation, double lightness,
+                          int colorize, const psdfx_hue_range *ranges, int range_count);
+/* 自然な彩度 (vibrance / saturation は %) */
+void psdfx_vibrance(psdfx_surface *s, double vibrance, double saturation);
+/* カラーバランス (シャドウ / 中間調 / ハイライトの シアン-レッド, マゼンタ-グリーン,
+ * イエロー-ブルー、-100..100) */
+void psdfx_color_balance(psdfx_surface *s, const double shadows[3], const double midtones[3],
+                         const double highlights[3], int preserve_luminosity);
+/* 特定色域の選択。adjustments はレッド系 .. ブラック系の 9 範囲 x (C, M, Y, K) % */
+void psdfx_selective_color(psdfx_surface *s, const double adjustments[9][4], int relative);
+/* チャンネルミキサー。matrix は出力 R / G / B ごとの (R, G, B の割合, 定数) (1.0 = 100%) */
+void psdfx_channel_mixer(psdfx_surface *s, const double matrix[3][4], int monochrome);
+/* レンズフィルター (color は R, G, B、density は 0..1) */
+void psdfx_photo_filter(psdfx_surface *s, const uint8_t color[3], double density,
+                        int preserve_luminosity);
+/* 白黒 (weights はレッド系 / イエロー系 / グリーン系 / シアン系 / ブルー系 / マゼンタ系 %、
+ * tint は着色の R, G, B か NULL) */
+void psdfx_black_white(psdfx_surface *s, const double weights[6], const uint8_t *tint);
+/* グラデーションマップ (輝度でグラデーションを引く)。ディザの模様は文書上の位置
+ * (面の左上が origin) で決まる */
+void psdfx_gradient_map(psdfx_surface *s, const psdfx_gradient *g, int reverse, int dither,
+                        int origin_x, int origin_y);
+/* 調整済みの面 adjusted を元の面 dst へ、ブレンドモード・不透明度・マスク
+ * (dst と同じ大きさ、NULL 可) で重ねる。dst のアルファは変えない */
+void psdfx_apply_adjusted(psdfx_surface *dst, const psdfx_surface *adjusted, uint32_t blend_key,
+                          float opacity, const uint8_t *mask, int mask_stride);
+
 #ifdef __cplusplus
 }
 #endif
