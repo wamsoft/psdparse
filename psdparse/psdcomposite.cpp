@@ -328,6 +328,262 @@ private:
     return false;
   }
 
+  // --- レイヤー効果 (lfx2) → psdfx_layer_effects ------------------------------
+
+  // 効果の descriptor のブレンド (列挙名) をレイヤのブレンドキーへ
+  static uint32_t blendFromEnum(Descriptor *d, const char *key) {
+    auto *e = d ? dynamic_cast<DescriptorEnumerated*>(d->item(key).find()) : nullptr;
+    const std::string v = e ? e->enumId : std::string("Nrml");
+    static const struct { const char *name; uint32_t key; } kMap[] = {
+      { "Nrml", PSDFX_KEY('n','o','r','m') }, { "Dslv", PSDFX_KEY('d','i','s','s') },
+      { "Drkn", PSDFX_KEY('d','a','r','k') }, { "Mltp", PSDFX_KEY('m','u','l',' ') },
+      { "CBrn", PSDFX_KEY('i','d','i','v') }, { "linearBurn", PSDFX_KEY('l','b','r','n') },
+      { "darkerColor", PSDFX_KEY('d','k','C','l') }, { "Lghn", PSDFX_KEY('l','i','t','e') },
+      { "Scrn", PSDFX_KEY('s','c','r','n') }, { "CDdg", PSDFX_KEY('d','i','v',' ') },
+      { "linearDodge", PSDFX_KEY('l','d','d','g') }, { "lighterColor", PSDFX_KEY('l','g','C','l') },
+      { "Ovrl", PSDFX_KEY('o','v','e','r') }, { "SftL", PSDFX_KEY('s','L','i','t') },
+      { "HrdL", PSDFX_KEY('h','L','i','t') }, { "vividLight", PSDFX_KEY('v','L','i','t') },
+      { "linearLight", PSDFX_KEY('l','L','i','t') }, { "pinLight", PSDFX_KEY('p','L','i','t') },
+      { "hardMix", PSDFX_KEY('h','M','i','x') }, { "Dfrn", PSDFX_KEY('d','i','f','f') },
+      { "Xclu", PSDFX_KEY('s','m','u','d') }, { "blendSubtraction", PSDFX_KEY('f','s','u','b') },
+      { "blendDivide", PSDFX_KEY('f','d','i','v') }, { "H   ", PSDFX_KEY('h','u','e',' ') },
+      { "Strt", PSDFX_KEY('s','a','t',' ') }, { "Clr ", PSDFX_KEY('c','o','l','r') },
+      { "Lmns", PSDFX_KEY('l','u','m',' ') },
+    };
+    for (const auto &m : kMap) if (v == m.name) return m.key;
+    return PSDFX_KEY('n','o','r','m');
+  }
+
+  static bool flag(Descriptor *d, const char *k, bool def) {
+    auto *b = d ? dynamic_cast<DescriptorBoolean*>(d->item(k).find()) : nullptr;
+    return b ? b->val : def;
+  }
+
+  static std::string enumOf(Descriptor *d, const char *k) {
+    auto *e = d ? dynamic_cast<DescriptorEnumerated*>(d->item(k).find()) : nullptr;
+    return e ? e->enumId : std::string();
+  }
+
+  // 割合: 単位が % なら /100、ピクセルなら size で割る
+  static double fraction(Descriptor *d, const char *k, double size) {
+    DescriptorItem *it = d ? d->item(k).find() : nullptr;
+    if (auto *u = dynamic_cast<DescriptorUnitFloat*>(it)) {
+      if (u->unit == UNIT_PERCENT) return u->val / 100.0;
+      return size > 0 ? u->val / size : 0.0;
+    }
+    return num(d, k) / 100.0;
+  }
+
+  // 効果の描画に使うグラデーションの分岐点とパターンのタイルの置き場
+  struct FxStore {
+    std::vector<std::vector<psdfx_color_stop>> cs;
+    std::vector<std::vector<psdfx_alpha_stop>> as;
+    std::vector<std::vector<uint8_t>> tiles;
+    std::vector<psdfx_surface> tileSurfaces;
+    FxStore() { tileSurfaces.reserve(16); }
+  };
+
+  bool fillSource(Descriptor *d, const char *paintKey, psdfx_fill_source &f, FxStore &store, double scale) {
+    f = psdfx_fill_source();
+    f.scale = 1.0;
+    // 塗りの種類: 'PntT' (境界線) が無ければ、持っているキーで決める
+    std::string pt = paintKey ? enumOf(d, paintKey) : std::string();
+    const bool isGrad = pt == "GrFl" || (pt.empty() && d->item("Grad").find());
+    const bool isPat = pt == "Ptrn" || (pt.empty() && d->item("Ptrn").find() && !d->item("Clr ").find());
+    if (isGrad) {
+      store.cs.emplace_back(); store.as.emplace_back();
+      if (!descGradient(dynamic_cast<Descriptor*>(d->item("Grad").find()), store.cs.back(),
+                        store.as.back(), f.gradient)) return false;
+      f.kind = PSDFX_FILL_GRADIENT;
+      f.gradient_style = gradientStyle(d);
+      f.angle = num(d, "Angl", 90);
+      f.scale = num(d, "Scl ", 100) / 100.0;
+      f.reverse = flag(d, "Rvrs", false);
+      f.align_with_layer = flag(d, "Algn", true);
+      auto *ofs = dynamic_cast<Descriptor*>(d->item("Ofst").find());
+      f.offset_x = num(ofs, "Hrzn"); f.offset_y = num(ofs, "Vrtc");
+      return true;
+    }
+    if (isPat) {
+      auto *pd = dynamic_cast<Descriptor*>(d->item("Ptrn").find());
+      auto *id = pd ? dynamic_cast<DescriptorString*>(pd->item("Idnt").find()) : nullptr;
+      if (!id) return false;
+      std::string want;
+      for (char16_t ch : id->val) if (ch) want.push_back((char)ch);
+      for (size_t i = 0; i < psd_.patterns.size(); i++) {
+        if (psd_.patterns[i].id != want) continue;
+        store.tiles.emplace_back();
+        int tw = 0, th = 0;
+        if (!psd_.getPatternImage((int)i, store.tiles.back(), tw, th)) return false;
+        if (store.tileSurfaces.size() == store.tileSurfaces.capacity()) return false;
+        store.tileSurfaces.push_back({ store.tiles.back().data(), tw, th, tw * 4 });
+        f.kind = PSDFX_FILL_PATTERN;
+        f.pattern = &store.tileSurfaces.back();
+        f.scale = num(d, "Scl ", 100) / 100.0;
+        f.align_with_layer = flag(d, "Algn", true);
+        auto *ph = dynamic_cast<Descriptor*>(d->item("phase").find());
+        f.phase_x = num(ph, "Hrzn"); f.phase_y = num(ph, "Vrtc");
+        return true;
+      }
+      return false;
+    }
+    f.kind = PSDFX_FILL_SOLID;
+    descColor(dynamic_cast<Descriptor*>(d->item("Clr ").find()), f.color);
+    (void)scale;
+    return true;
+  }
+
+  int globalAngle() {
+    std::vector<uint8_t> b;
+    for (auto &r : psd_.imageResourceList) {
+      if (r.id != 1037 || !r.data) continue;
+      IteratorBase *it = r.data->clone(); it->init();
+      int v = it->rest() >= 4 ? it->getInt32() : 30;
+      delete it;
+      return v;
+    }
+    return 30;
+  }
+  int globalAltitude() {
+    for (auto &r : psd_.imageResourceList) {
+      if (r.id != 1049 || !r.data) continue;
+      IteratorBase *it = r.data->clone(); it->init();
+      int v = it->rest() >= 4 ? it->getInt32() : 30;
+      delete it;
+      return v;
+    }
+    return 30;
+  }
+
+  // 効果の 1 つ分 (key)。新しい形式の配列 (multiKey) なら有効な最初の要素。
+  static Descriptor *effectDesc(Descriptor &fx, const char *key, const char *multiKey) {
+    auto *d = dynamic_cast<Descriptor*>(fx.item(key).find());
+    if (d && flag(d, "enab", true)) return d;
+    if (multiKey) {
+      if (auto *list = dynamic_cast<DescriptorList*>(fx.item(multiKey).find())) {
+        for (auto *it : list->items) {
+          auto *e = dynamic_cast<Descriptor*>(it);
+          if (e && flag(e, "enab", true)) return e;
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  // layer の lfx2 を読む。描く効果が無ければ false。
+  bool layerEffects(const LayerInfo &l, psdfx_layer_effects &fx, FxStore &store) {
+    fx = psdfx_layer_effects();
+    Descriptor d;
+    if (!readDescriptor(l, 'lfx2', 8, d)) return false;
+    if (!flag(&d, "masterFXSwitch", true)) return false;
+    const double sc = num(&d, "Scl ", 100) / 100.0;
+    const int gAngle = globalAngle(), gAlt = globalAltitude();
+    bool any = false;
+    auto angleOf = [&](Descriptor *e) { return flag(e, "uglg", true) ? (double)gAngle : num(e, "lagl", 120); };
+
+    if (Descriptor *e = effectDesc(d, "DrSh", "dropShadowMulti")) {
+      psdfx_shadow &s = fx.drop_shadow;
+      s.enabled = 1; any = true;
+      s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 75) / 100.0);
+      descColor(dynamic_cast<Descriptor*>(e->item("Clr ").find()), s.color);
+      s.angle = angleOf(e); s.distance = num(e, "Dstn", 5) * sc;
+      s.size = num(e, "blur", 5) * sc; s.spread = fraction(e, "Ckmt", num(e, "blur", 5));
+      s.knocks_out = flag(e, "layerConceals", true);
+    }
+    if (Descriptor *e = effectDesc(d, "IrSh", "innerShadowMulti")) {
+      psdfx_shadow &s = fx.inner_shadow;
+      s.enabled = 1; any = true;
+      s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 75) / 100.0);
+      descColor(dynamic_cast<Descriptor*>(e->item("Clr ").find()), s.color);
+      s.angle = angleOf(e); s.distance = num(e, "Dstn", 5) * sc;
+      s.size = num(e, "blur", 5) * sc; s.spread = fraction(e, "Ckmt", num(e, "blur", 5));
+    }
+    auto glow = [&](const char *key, psdfx_glow &g, bool inner) {
+      Descriptor *e = effectDesc(d, key, nullptr);
+      if (!e) return;
+      g.enabled = 1; any = true;
+      g.blend = blendFromEnum(e, "Md  "); g.opacity = (float)(num(e, "Opct", 75) / 100.0);
+      fillSource(e, nullptr, g.fill, store, sc);
+      g.size = num(e, "blur", 5) * sc; g.spread = fraction(e, "Ckmt", num(e, "blur", 5));
+      g.precise = enumOf(e, "GlwT") == "PrBL";
+      g.source_center = inner && enumOf(e, "glwS") == "SrcC";
+    };
+    glow("OrGl", fx.outer_glow, false);
+    glow("IrGl", fx.inner_glow, true);
+    if (Descriptor *e = effectDesc(d, "FrFX", "frameFXMulti")) {
+      psdfx_stroke &s = fx.stroke;
+      s.enabled = 1; any = true;
+      s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 100) / 100.0);
+      s.size = num(e, "Sz  ", 3) * sc;
+      const std::string pos = enumOf(e, "Styl");
+      s.position = pos == "InsF" ? PSDFX_STROKE_INSIDE : pos == "CtrF" ? PSDFX_STROKE_CENTER
+                                                                      : PSDFX_STROKE_OUTSIDE;
+      fillSource(e, "PntT", s.fill, store, sc);
+    }
+    auto overlay = [&](const char *key, const char *multi, psdfx_overlay &o) {
+      Descriptor *e = effectDesc(d, key, multi);
+      if (!e) return;
+      o.blend = blendFromEnum(e, "Md  "); o.opacity = (float)(num(e, "Opct", 100) / 100.0);
+      if (fillSource(e, nullptr, o.fill, store, sc)) { o.enabled = 1; any = true; }
+    };
+    overlay("SoFi", "solidFillMulti", fx.color_overlay);
+    overlay("GrFl", "gradientFillMulti", fx.gradient_overlay);
+    overlay("patternFill", nullptr, fx.pattern_overlay);
+    if (Descriptor *e = effectDesc(d, "ChFX", nullptr)) {
+      psdfx_satin &s = fx.satin;
+      s.enabled = 1; any = true;
+      s.blend = blendFromEnum(e, "Md  "); s.opacity = (float)(num(e, "Opct", 50) / 100.0);
+      descColor(dynamic_cast<Descriptor*>(e->item("Clr ").find()), s.color);
+      s.angle = num(e, "lagl", 19); s.distance = num(e, "Dstn", 11) * sc;
+      s.size = num(e, "blur", 14) * sc; s.invert = flag(e, "Invr", true);
+    }
+    if (Descriptor *e = effectDesc(d, "ebbl", nullptr)) {
+      psdfx_bevel &b = fx.bevel;
+      b.enabled = 1; any = true;
+      const std::string st = enumOf(e, "bvlS");
+      b.style = st == "OtrB" ? PSDFX_BEVEL_OUTER : st == "Embs" ? PSDFX_BEVEL_EMBOSS
+              : st == "PlEb" ? PSDFX_BEVEL_PILLOW : PSDFX_BEVEL_INNER;
+      b.up = enumOf(e, "bvlD") != "Out ";
+      b.depth = num(e, "srgR", 100) / 100.0;
+      b.size = num(e, "blur", 5) * sc; b.soften = num(e, "Sftn", 0) * sc;
+      b.angle = angleOf(e); b.altitude = flag(e, "uglg", true) ? (double)gAlt : num(e, "Lald", 30);
+      b.highlight_blend = blendFromEnum(e, "hglM"); b.shadow_blend = blendFromEnum(e, "sdwM");
+      b.highlight_opacity = (float)(num(e, "hglO", 75) / 100.0);
+      b.shadow_opacity = (float)(num(e, "sdwO", 75) / 100.0);
+      descColor(dynamic_cast<Descriptor*>(e->item("hglC").find()), b.highlight_color);
+      descColor(dynamic_cast<Descriptor*>(e->item("sdwC").find()), b.shadow_color);
+    }
+    return any;
+  }
+
+  // 1 枚のレイヤを (効果込みで) dst へ重ねる。clipAtop なら dst の不透明な所にだけ
+  void drawLayer(LayerInfo &l, Canvas &surface, int sx, int sy, Canvas &dst, int dx, int dy,
+                 float opacity, float fill, uint32_t blend, bool clipAtop) {
+    psdfx_layer_effects fx;
+    FxStore store;
+    const bool withFx = opt_.effects && layerEffects(l, fx, store);
+    psdfx_surface src = surface.surface();
+    if (!withFx) {
+      psdfx_surface d = dst.surface();
+      if (clipAtop) psdfx_composite_atop(&d, &src, sx - dx, sy - dy, blend, opacity * fill);
+      else psdfx_composite(&d, &src, sx - dx, sy - dy, blend, opacity * fill, nullptr, 0);
+      return;
+    }
+    const double docBox[4] = { (double)-dx, (double)-dy,
+                               (double)(psd_.header.width - dx), (double)(psd_.header.height - dy) };
+    if (!clipAtop) {
+      psdfx_surface d = dst.surface();
+      psdfx_composite_with_effects(&d, &src, sx - dx, sy - dy, blend, opacity, fill, &fx, docBox);
+      return;
+    }
+    // クリップされたレイヤの効果: 透明な面へ描いてから source-atop で
+    Canvas tmp(dst.width, dst.height);
+    psdfx_surface t = tmp.surface();
+    psdfx_composite_with_effects(&t, &src, sx - dx, sy - dy, PSDFX_KEY('n','o','r','m'), 1.f, fill, &fx, docBox);
+    psdfx_surface d = dst.surface();
+    psdfx_composite_atop(&d, &t, 0, 0, blend, opacity);
+  }
+
   // 画素を持つレイヤ 1 枚を面にする (マスク込み)。left / top は面の左上の位置。空なら false。
   bool layerSurface(LayerInfo &l, Canvas &out, int &left, int &top) {
     LayerInfo maskLayer;
@@ -423,12 +679,13 @@ private:
     const float fill = l.fill_opacity / 255.f;
 
     if (clipped.empty()) {
-      psdfx_surface dst = canvas.surface(), src = base.surface();
-      psdfx_composite(&dst, &src, bx, by, (uint32_t)l.blendModeKey, opacity * fill, nullptr, 0);
+      drawLayer(l, base, bx, by, canvas, 0, 0, opacity, fill, (uint32_t)l.blendModeKey, false);
       return;
     }
-    // 下地の上にクリップされたレイヤを source-atop で重ね、まとめて下へ
-    if (fill < 1.f) scaleAlpha(base, fill);
+    // 下地 (効果込み) の上にクリップされたレイヤを source-atop で重ね、まとめて下へ。
+    // 下地の効果の外側 (影など) もクリップの範囲になるよう、文書大の面で扱う。
+    Canvas group(canvas.width, canvas.height);
+    drawLayer(l, base, bx, by, group, 0, 0, 1.f, fill, PSDFX_KEY('n','o','r','m'), false);
     for (int ci : clipped) {
       LayerInfo &c = psd_.layerList[(size_t)ci];
       if (!visible(c)) continue;
@@ -437,12 +694,11 @@ private:
       Canvas cs;
       int cx = 0, cy = 0;
       if (!layerSurface(c, cs, cx, cy)) continue;
-      psdfx_surface dst = base.surface(), src = cs.surface();
-      psdfx_composite_atop(&dst, &src, cx - bx, cy - by, (uint32_t)c.blendModeKey,
-                           c.opacity / 255.f * c.fill_opacity / 255.f);
+      drawLayer(c, cs, cx, cy, group, 0, 0, c.opacity / 255.f, c.fill_opacity / 255.f,
+                (uint32_t)c.blendModeKey, true);
     }
-    psdfx_surface dst = canvas.surface(), src = base.surface();
-    psdfx_composite(&dst, &src, bx, by, (uint32_t)l.blendModeKey, opacity, nullptr, 0);
+    psdfx_surface dst = canvas.surface(), src = group.surface();
+    psdfx_composite(&dst, &src, 0, 0, (uint32_t)l.blendModeKey, opacity, nullptr, 0);
   }
 
   void renderGroup(int idx, Canvas &canvas) {

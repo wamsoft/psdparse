@@ -52,6 +52,7 @@ add_library(${PROJECT_NAME} STATIC
 	psdfx.cpp
 	psdfx_path.cpp
 	psdfx_paint.cpp
+	psdfx_effects.cpp
 	psdfx.h
 	psdcomposite.cpp
 	psdresource.cpp

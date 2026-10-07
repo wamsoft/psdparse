@@ -1,0 +1,385 @@
+// psdfx — レイヤー効果。API は psdfx.h。
+//
+// 描画の順 (下から):
+//   ドロップシャドウ → 光彩 (外側)          … 下地へ、それぞれのブレンドで
+//   [レイヤ (塗りの不透明度) → パターン / グラデーション / カラーオーバーレイ →
+//    サテン → 光彩 (内側) → シャドウ (内側) → ベベル] → 境界線
+//                                           … まとめてレイヤのブレンドで下地へ
+// 内側の効果は「形の中での被覆率」で重ね、最後にレイヤのアルファを掛ける
+// (縁の半透明を二重に数えないため)。
+//
+// 影や光彩のぼかしの幅と Photoshop の「サイズ」の対応は、Photoshop の保存した
+// 合成画像と照合して決めた近似 (kBlurSigma)。
+#include "psdfx.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <vector>
+
+namespace {
+
+const double kPi = 3.14159265358979323846;
+// 効果の「サイズ」をガウスの sigma へ換算する係数 (照合で調整する)
+double kBlurSigma = 0.5;
+
+inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+inline uint8_t to8(float v) { return (uint8_t)(clamp01(v) * 255.f + 0.5f); }
+
+struct Plane {
+  int w = 0, h = 0;
+  std::vector<float> v;
+  Plane() = default;
+  Plane(int w_, int h_, float init = 0.f) : w(w_), h(h_), v((size_t)w_ * h_, init) {}
+  float &at(int x, int y) { return v[(size_t)y * w + x]; }
+  float get(int x, int y) const {
+    if (x < 0 || y < 0 || x >= w || y >= h) return 0.f;
+    return v[(size_t)y * w + x];
+  }
+};
+
+// --- ぼかし (箱ぼかし 3 回) ----------------------------------------------------
+void boxPass(float *v, int n, int step, int r, std::vector<float> &tmp) {
+  if (r <= 0 || n <= 1) return;
+  tmp.resize((size_t)n);
+  const float inv = 1.f / (2 * r + 1);
+  // 端の外は 0 (影やマスクが端で途切れないよう、外は透明とみなす)
+  float acc = 0.f;
+  for (int i = 0; i <= r && i < n; i++) acc += v[(size_t)i * step];
+  for (int i = 0; i < n; i++) {
+    tmp[(size_t)i] = acc * inv;
+    const int add = i + r + 1, sub = i - r;
+    if (add < n) acc += v[(size_t)add * step];
+    if (sub >= 0) acc -= v[(size_t)sub * step];
+  }
+  for (int i = 0; i < n; i++) v[(size_t)i * step] = tmp[(size_t)i];
+}
+
+void blur(Plane &p, double sigma) {
+  if (!(sigma > 0.25)) return;
+  const int n = 3;
+  double wIdeal = std::sqrt(12.0 * sigma * sigma / n + 1.0);
+  int wl = (int)std::floor(wIdeal);
+  if (wl % 2 == 0) wl--;
+  const int wu = wl + 2;
+  const double mIdeal = (12.0 * sigma * sigma - n * wl * wl - 4.0 * n * wl - 3.0 * n) / (-4.0 * wl - 4.0);
+  const int m = (int)std::round(mIdeal);
+  std::vector<float> tmp;
+  for (int pass = 0; pass < n; pass++) {
+    const int r = ((pass < m ? wl : wu) - 1) / 2;
+    for (int y = 0; y < p.h; y++) boxPass(&p.v[(size_t)y * p.w], p.w, 1, r, tmp);
+    for (int x = 0; x < p.w; x++) boxPass(&p.v[(size_t)x], p.h, p.w, r, tmp);
+  }
+}
+
+// --- 距離変換 (Felzenszwalb の 2 乗ユークリッド距離) ---------------------------
+void edt1d(const float *f, int n, float *d, std::vector<int> &v, std::vector<float> &z) {
+  v.resize((size_t)n); z.resize((size_t)n + 1);
+  int k = 0;
+  v[0] = 0; z[0] = -std::numeric_limits<float>::infinity(); z[1] = std::numeric_limits<float>::infinity();
+  for (int q = 1; q < n; q++) {
+    float s;
+    while (true) {
+      s = ((f[q] + (float)q * q) - (f[v[(size_t)k]] + (float)v[(size_t)k] * v[(size_t)k])) /
+          (2.f * q - 2.f * v[(size_t)k]);
+      if (s <= z[(size_t)k] && k > 0) { k--; continue; }
+      break;
+    }
+    k++;
+    v[(size_t)k] = q; z[(size_t)k] = s; z[(size_t)k + 1] = std::numeric_limits<float>::infinity();
+  }
+  k = 0;
+  for (int q = 0; q < n; q++) {
+    while (z[(size_t)k + 1] < q) k++;
+    const float dq = (float)(q - v[(size_t)k]);
+    d[q] = dq * dq + f[v[(size_t)k]];
+  }
+}
+
+// inside(x, y) が真の画素までの距離 (真の画素は 0)
+Plane distanceTo(const Plane &a, bool wantInside) {
+  const float INF = 1e20f;
+  Plane d(a.w, a.h);
+  for (size_t i = 0; i < d.v.size(); i++) {
+    const bool in = a.v[i] >= 0.5f;
+    d.v[i] = (in == wantInside) ? 0.f : INF;
+  }
+  std::vector<float> f, out;
+  std::vector<int> vv; std::vector<float> zz;
+  f.resize((size_t)std::max(a.w, a.h)); out.resize(f.size());
+  for (int x = 0; x < a.w; x++) {
+    for (int y = 0; y < a.h; y++) f[(size_t)y] = d.v[(size_t)y * a.w + x];
+    edt1d(f.data(), a.h, out.data(), vv, zz);
+    for (int y = 0; y < a.h; y++) d.v[(size_t)y * a.w + x] = out[(size_t)y];
+  }
+  for (int y = 0; y < a.h; y++) {
+    edt1d(&d.v[(size_t)y * a.w], a.w, out.data(), vv, zz);
+    for (int x = 0; x < a.w; x++) d.v[(size_t)y * a.w + x] = std::sqrt(out[(size_t)x]);
+  }
+  return d;
+}
+
+// 形を r ピクセル広げる (アンチエイリアス付き)
+Plane dilate(const Plane &a, double r) {
+  if (r <= 0.0) return a;
+  Plane d = distanceTo(a, true);
+  Plane o(a.w, a.h);
+  for (size_t i = 0; i < o.v.size(); i++)
+    o.v[i] = std::max(a.v[i], clamp01((float)(r + 1.0 - d.v[i])));
+  return o;
+}
+
+Plane shifted(const Plane &a, double dx, double dy) {
+  Plane o(a.w, a.h);
+  const int ix = (int)std::lround(dx), iy = (int)std::lround(dy);
+  for (int y = 0; y < a.h; y++)
+    for (int x = 0; x < a.w; x++) o.at(x, y) = a.get(x - ix, y - iy);
+  return o;
+}
+
+// 影 / 光彩の形: 広げ (spread) てからぼかす。spread 0..1、size は全体の幅
+Plane spreadBlur(const Plane &a, double spread, double size) {
+  spread = std::min(1.0, std::max(0.0, spread));
+  Plane p = dilate(a, size * spread);
+  blur(p, size * (1.0 - spread) * kBlurSigma);
+  return p;
+}
+
+// 塗りの元から色の面を作る (W x H、左上が文書の (ox, oy))
+std::vector<uint8_t> paintSource(const psdfx_fill_source &src, int W, int H, int ox, int oy,
+                                 const double layerBox[4], const double docBox[4]) {
+  std::vector<uint8_t> px((size_t)W * H * 4, 255);
+  psdfx_surface s{ px.data(), W, H, W * 4 };
+  if (src.kind == PSDFX_FILL_GRADIENT && src.gradient.color_count > 0) {
+    psdfx_draw_gradient(&s, ox, oy, &src.gradient, src.gradient_style, src.angle,
+                        src.scale > 0 ? src.scale : 1.0, src.reverse,
+                        src.align_with_layer ? layerBox : docBox, src.offset_x, src.offset_y);
+  } else if (src.kind == PSDFX_FILL_PATTERN && src.pattern) {
+    const double sc = src.scale > 0 ? src.scale : 1.0;
+    const double oxp = (src.align_with_layer ? layerBox[0] : docBox[0]) + src.phase_x;
+    const double oyp = (src.align_with_layer ? layerBox[1] : docBox[1]) + src.phase_y;
+    psdfx_draw_pattern(&s, ox, oy, src.pattern, sc, oxp, oyp);
+  } else {
+    for (size_t i = 0; i < px.size(); i += 4) {
+      px[i] = src.color[2]; px[i + 1] = src.color[1]; px[i + 2] = src.color[0]; px[i + 3] = 255;
+    }
+  }
+  return px;
+}
+
+// 色の面 px に被覆率 cov を掛けた面を dst へ重ねる
+void compositeCoverage(psdfx_surface *dst, std::vector<uint8_t> &px, const Plane &cov,
+                       int dx, int dy, uint32_t blend, float opacity) {
+  for (size_t i = 0; i < cov.v.size(); i++) px[i * 4 + 3] = to8(px[i * 4 + 3] / 255.f * cov.v[i]);
+  psdfx_surface src{ px.data(), cov.w, cov.h, cov.w * 4 };
+  psdfx_composite(dst, &src, dx, dy, blend, opacity, nullptr, 0);
+}
+
+std::vector<uint8_t> solid(int W, int H, const uint8_t rgb[3]) {
+  std::vector<uint8_t> px((size_t)W * H * 4);
+  for (size_t i = 0; i < px.size(); i += 4) {
+    px[i] = rgb[2]; px[i + 1] = rgb[1]; px[i + 2] = rgb[0]; px[i + 3] = 255;
+  }
+  return px;
+}
+
+// 光彩の色: グラデーションなら被覆率 (形からの距離) を位置として引く
+std::vector<uint8_t> glowColor(const psdfx_glow &g, const Plane &m, bool inner) {
+  if (g.fill.kind != PSDFX_FILL_GRADIENT || g.fill.gradient.color_count == 0)
+    return solid(m.w, m.h, g.fill.color);
+  std::vector<uint8_t> px((size_t)m.w * m.h * 4);
+  for (size_t i = 0; i < m.v.size(); i++) {
+    uint8_t c[4];
+    // 外側: 形の際 (被覆 1) が位置 0。内側 (エッジから): 際が位置 1 側
+    const double t = inner ? m.v[i] : 1.0 - m.v[i];
+    psdfx_gradient_color(&g.fill.gradient, g.fill.reverse ? 1.0 - t : t, c);
+    px[i * 4] = c[2]; px[i * 4 + 1] = c[1]; px[i * 4 + 2] = c[0]; px[i * 4 + 3] = c[3];
+  }
+  return px;
+}
+
+}  // anonymous namespace
+
+extern "C" int psdfx_effects_margin(const psdfx_layer_effects *fx) {
+  if (!fx) return 0;
+  double m = 0;
+  if (fx->drop_shadow.enabled)
+    m = std::max(m, fx->drop_shadow.distance + fx->drop_shadow.size * 1.5);
+  if (fx->outer_glow.enabled) m = std::max(m, fx->outer_glow.size * 1.5);
+  if (fx->stroke.enabled && fx->stroke.position != PSDFX_STROKE_INSIDE) m = std::max(m, fx->stroke.size);
+  if (fx->bevel.enabled && fx->bevel.style != PSDFX_BEVEL_INNER) m = std::max(m, fx->bevel.size * 1.5);
+  return (int)std::ceil(m) + 2;
+}
+
+extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_surface *layer,
+                                             int left, int top, uint32_t blend, float opacity,
+                                             float fill_opacity, const psdfx_layer_effects *fx,
+                                             const double doc_box[4]) {
+  if (!dst || !layer || !layer->pixels) return;
+  if (!fx) { psdfx_composite(dst, layer, left, top, blend, opacity * fill_opacity, nullptr, 0); return; }
+  const int m = psdfx_effects_margin(fx);
+  const int W = layer->width + 2 * m, H = layer->height + 2 * m;
+  const int ox = left - m, oy = top - m;   // 作業面の左上 (dst 座標)
+  if ((int64_t)W * H > (1LL << 26)) {       // 大きすぎるときは効果を省く
+    psdfx_composite(dst, layer, left, top, blend, opacity * fill_opacity, nullptr, 0);
+    return;
+  }
+
+  // レイヤのアルファと色
+  Plane A(W, H);
+  std::vector<uint8_t> S((size_t)W * H * 4, 0);   // 内側の合成面 (形の中での被覆率で持つ)
+  double lb[4] = { 1e30, 1e30, -1e30, -1e30 };      // 不透明な所の範囲 (dst 座標)
+  for (int y = 0; y < layer->height; y++) {
+    const uint8_t *row = layer->pixels + (size_t)y * layer->stride;
+    for (int x = 0; x < layer->width; x++) {
+      const float a = row[x * 4 + 3] / 255.f;
+      A.at(x + m, y + m) = a;
+      uint8_t *s = &S[((size_t)(y + m) * W + x + m) * 4];
+      s[0] = row[x * 4]; s[1] = row[x * 4 + 1]; s[2] = row[x * 4 + 2];
+      if (a > 0.f) {
+        lb[0] = std::min(lb[0], (double)(left + x)); lb[1] = std::min(lb[1], (double)(top + y));
+        lb[2] = std::max(lb[2], (double)(left + x + 1)); lb[3] = std::max(lb[3], (double)(top + y + 1));
+      }
+    }
+  }
+  if (lb[0] > lb[2]) { lb[0] = left; lb[1] = top; lb[2] = left + layer->width; lb[3] = top + layer->height; }
+  // 形の中: レイヤの色を塗りの不透明度で。形の外は空
+  const uint8_t fillA = to8(clamp01(fill_opacity));
+  for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = A.v[i] > 0.f ? fillA : 0;
+
+  // --- 外側の効果 (下地へ) ---
+  const psdfx_shadow &ds = fx->drop_shadow;
+  if (ds.enabled && ds.opacity > 0) {
+    const double th = ds.angle * kPi / 180.0;
+    Plane sh = spreadBlur(shifted(A, -std::cos(th) * ds.distance, std::sin(th) * ds.distance),
+                          ds.spread, ds.size);
+    if (ds.knocks_out)
+      for (size_t i = 0; i < sh.v.size(); i++) sh.v[i] *= 1.f - A.v[i];
+    std::vector<uint8_t> px = solid(W, H, ds.color);
+    compositeCoverage(dst, px, sh, ox, oy, ds.blend, ds.opacity * opacity);
+  }
+  const psdfx_glow &og = fx->outer_glow;
+  if (og.enabled && og.opacity > 0) {
+    Plane gl = spreadBlur(A, og.spread, og.size);
+    std::vector<uint8_t> px = glowColor(og, gl, false);
+    compositeCoverage(dst, px, gl, ox, oy, og.blend, og.opacity * opacity);
+  }
+
+  // --- 内側の効果 (形の中で S へ) ---
+  psdfx_surface Ss{ S.data(), W, H, W * 4 };
+  auto overlay = [&](const psdfx_overlay &o) {
+    if (!o.enabled || o.opacity <= 0) return;
+    std::vector<uint8_t> px = paintSource(o.fill, W, H, ox, oy, lb, doc_box);
+    Plane in(W, H);
+    for (size_t i = 0; i < in.v.size(); i++) in.v[i] = A.v[i] > 0.f ? 1.f : 0.f;
+    compositeCoverage(&Ss, px, in, 0, 0, o.blend, o.opacity);
+  };
+  overlay(fx->pattern_overlay);
+  overlay(fx->gradient_overlay);
+  overlay(fx->color_overlay);
+
+  const psdfx_satin &sa = fx->satin;
+  if (sa.enabled && sa.opacity > 0) {
+    const double th = sa.angle * kPi / 180.0;
+    const double dx = std::cos(th) * sa.distance * 0.5, dy = -std::sin(th) * sa.distance * 0.5;
+    Plane a1 = shifted(A, dx, dy), a2 = shifted(A, -dx, -dy);
+    blur(a1, sa.size * kBlurSigma); blur(a2, sa.size * kBlurSigma);
+    Plane cov(W, H);
+    for (size_t i = 0; i < cov.v.size(); i++) {
+      float v = std::fabs(a1.v[i] - a2.v[i]);
+      cov.v[i] = sa.invert ? 1.f - v : v;
+    }
+    std::vector<uint8_t> px = solid(W, H, sa.color);
+    compositeCoverage(&Ss, px, cov, 0, 0, sa.blend, sa.opacity);
+  }
+
+  const psdfx_glow &ig = fx->inner_glow;
+  if (ig.enabled && ig.opacity > 0) {
+    Plane inv(W, H);
+    for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
+    // 文書の外 (作業面の外) も「形の外」として扱うため、縁は 1 のまま広げる
+    Plane gl = spreadBlur(inv, ig.spread, ig.size);
+    if (ig.source_center) for (auto &v : gl.v) v = 1.f - v;
+    std::vector<uint8_t> px = glowColor(ig, gl, true);
+    compositeCoverage(&Ss, px, gl, 0, 0, ig.blend, ig.opacity);
+  }
+
+  const psdfx_shadow &is = fx->inner_shadow;
+  if (is.enabled && is.opacity > 0) {
+    Plane inv(W, H);
+    for (size_t i = 0; i < inv.v.size(); i++) inv.v[i] = 1.f - A.v[i];
+    const double th = is.angle * kPi / 180.0;
+    Plane sh = spreadBlur(shifted(inv, -std::cos(th) * is.distance, std::sin(th) * is.distance),
+                          is.spread, is.size);
+    std::vector<uint8_t> px = solid(W, H, is.color);
+    compositeCoverage(&Ss, px, sh, 0, 0, is.blend, is.opacity);
+  }
+
+  const psdfx_bevel &bv = fx->bevel;
+  Plane bevelOuterHi, bevelOuterSh;
+  if (bv.enabled && bv.size > 0) {
+    Plane hgt = A;
+    blur(hgt, bv.size * kBlurSigma);
+    const double az = bv.angle * kPi / 180.0, al = bv.altitude * kPi / 180.0;
+    const double lx = std::cos(al) * std::cos(az), ly = -std::cos(al) * std::sin(az), lz = std::sin(al);
+    const double k = (bv.up ? 1.0 : -1.0) * bv.depth * bv.size;
+    Plane hi(W, H), sh(W, H);
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {
+        const double gx = (hgt.get(x + 1, y) - hgt.get(x - 1, y)) * 0.5 * k;
+        const double gy = (hgt.get(x, y + 1) - hgt.get(x, y - 1)) * 0.5 * k;
+        const double nl = std::sqrt(gx * gx + gy * gy + 1.0);
+        const double shade = (-gx * lx - gy * ly + lz) / nl;
+        const double d = shade - lz;
+        if (d > 0) hi.at(x, y) = (float)std::min(1.0, d / (1.0 - lz + 1e-6));
+        else sh.at(x, y) = (float)std::min(1.0, -d / (lz + 1e-6));
+      }
+    if (bv.soften > 0) { blur(hi, bv.soften * kBlurSigma); blur(sh, bv.soften * kBlurSigma); }
+    if (bv.style != PSDFX_BEVEL_OUTER) {
+      std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
+      Plane hiIn = hi, shIn = sh;
+      for (size_t i = 0; i < A.v.size(); i++) if (A.v[i] <= 0.f) { hiIn.v[i] = 0; shIn.v[i] = 0; }
+      compositeCoverage(&Ss, ps, shIn, 0, 0, bv.shadow_blend, bv.shadow_opacity);
+      compositeCoverage(&Ss, ph, hiIn, 0, 0, bv.highlight_blend, bv.highlight_opacity);
+    }
+    if (bv.style == PSDFX_BEVEL_OUTER || bv.style == PSDFX_BEVEL_EMBOSS) {
+      bevelOuterHi = hi; bevelOuterSh = sh;
+      for (size_t i = 0; i < A.v.size(); i++) {
+        bevelOuterHi.v[i] *= 1.f - A.v[i]; bevelOuterSh.v[i] *= 1.f - A.v[i];
+      }
+    }
+  }
+
+  // 形の中の被覆率 → 実際のアルファ
+  for (size_t i = 0; i < A.v.size(); i++) S[i * 4 + 3] = to8(S[i * 4 + 3] / 255.f * A.v[i]);
+
+  // --- 境界線 (形の上、外側は形の外へ) ---
+  const psdfx_stroke &st = fx->stroke;
+  if (st.enabled && st.opacity > 0 && st.size > 0) {
+    Plane cov(W, H);
+    const double sz = st.position == PSDFX_STROKE_CENTER ? st.size * 0.5 : st.size;
+    if (st.position != PSDFX_STROKE_INSIDE) {
+      Plane din = distanceTo(A, true);
+      for (size_t i = 0; i < cov.v.size(); i++) {
+        const bool in = A.v[i] >= 0.5f;
+        cov.v[i] = in ? 1.f - A.v[i] : clamp01((float)(sz + 1.0 - din.v[i]));
+      }
+    }
+    if (st.position != PSDFX_STROKE_OUTSIDE) {
+      Plane dout = distanceTo(A, false);
+      for (size_t i = 0; i < cov.v.size(); i++) {
+        const bool in = A.v[i] >= 0.5f;
+        if (in) cov.v[i] = std::max(cov.v[i], A.v[i] * clamp01((float)(sz + 1.0 - dout.v[i])));
+      }
+    }
+    std::vector<uint8_t> px = paintSource(st.fill, W, H, ox, oy, lb, doc_box);
+    compositeCoverage(&Ss, px, cov, 0, 0, st.blend, st.opacity);
+  }
+  if (!bevelOuterHi.v.empty()) {
+    std::vector<uint8_t> ph = solid(W, H, bv.highlight_color), ps = solid(W, H, bv.shadow_color);
+    compositeCoverage(&Ss, ps, bevelOuterSh, 0, 0, bv.shadow_blend, bv.shadow_opacity);
+    compositeCoverage(&Ss, ph, bevelOuterHi, 0, 0, bv.highlight_blend, bv.highlight_opacity);
+  }
+
+  psdfx_composite(dst, &Ss, ox, oy, blend, opacity, nullptr, 0);
+}
