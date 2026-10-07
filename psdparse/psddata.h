@@ -377,6 +377,59 @@ namespace psd {
 	// 入れ物として使う。type は "drop_shadow" など)。'lrFX' が無ければ false。
 	bool decodeLegacyEffects(const LayerInfo &layer, std::vector<AdjustmentInfo> &out);
 
+	// --- シェイプ ('vscg' 塗り / 'vstk' 線 / 'vogk' ライブシェイプ) ---------------
+	//
+	// パスそのものはベクタマスク (LayerInfo::vectorMask) にある。
+
+	// シェイプの線 ('vstk')。数値は descriptor の値そのまま。
+	struct ShapeStroke {
+		bool strokeEnabled = true;
+		bool fillEnabled = true;    // 塗りを描くか (線だけのシェイプは false)
+		double width = 1.0;         // 線幅 (ふつうは px。widthInPoints なら pt)
+		bool widthInPoints = false;
+		double resolution = 72.0;   // 'strokeStyleResolution'
+		int alignment = 2;          // 0 外側 / 1 内側 / 2 中央 (psdfx の PSDFX_STROKE_* と同じ値)
+		int cap = 0;                // 0 なし (butt) / 1 丸 / 2 四角 (PSDFX_CAP_*)
+		int join = 0;               // 0 マイター / 1 丸 / 2 ベベル (PSDFX_JOIN_*)
+		double miterLimit = 100.0;  // 線幅に対する比
+		std::vector<double> dashes; // 破線 (線, 間隔, ...)。長さは線幅を 1 とした値
+		double dashOffset = 0.0;    // 同じく線幅を 1 とした値
+		double opacity = 1.0;       // 0..1
+		std::string blendMode;      // 'BlnM' の列挙名 ("normal" など)
+		int contentKind = 0;        // 線の塗り: 'SoCo' / 'GdFl' / 'PtFl' (0 = 不明)
+		std::shared_ptr<Descriptor> content;     // 線の塗りの descriptor
+		std::shared_ptr<Descriptor> descriptor;  // 'vstk' 全体
+	};
+
+	// ライブシェイプの元の形 ('vogk' の keyDescriptorList の 1 項目)
+	struct ShapeOrigin {
+		int type = 0;               // 1 矩形 / 2 角丸矩形 / 4 直線 / 5 楕円 (ほかは値のまま)
+		int index = 0;              // 対応するサブパス (PathSubpath::index)
+		double resolution = 0.0;
+		bool hasBox = false;
+		double box[4] = {0, 0, 0, 0};    // left, top, right, bottom (px)
+		bool hasRadii = false;
+		double radii[4] = {0, 0, 0, 0};  // 角丸: 左上, 右上, 右下, 左下 (px)
+		bool hasLine = false;
+		double line[4] = {0, 0, 0, 0};   // 直線: 始点 x, y, 終点 x, y (px)
+		double lineWeight = 0.0;
+		bool invalidated = false;   // 'keyShapeInvalidated' (編集されてライブシェイプでなくなった)
+	};
+
+	struct ShapeInfo {
+		bool present = false;       // 下のどれかがある
+		bool hasFill = false;
+		int fillKind = 0;           // 'SoCo' / 'GdFl' / 'PtFl'
+		std::shared_ptr<Descriptor> fill;        // 'vscg' の descriptor
+		bool hasStroke = false;
+		ShapeStroke stroke;
+		std::vector<ShapeOrigin> origins;
+		std::shared_ptr<Descriptor> originDescriptor;   // 'vogk' 全体
+	};
+
+	// シェイプの塗り / 線 / 元の形を読む。どれも無ければ false。
+	bool decodeShape(const LayerInfo &layer, ShapeInfo &out);
+
   // RGBAカラー
   struct ColorRgba {
     uint8_t r;

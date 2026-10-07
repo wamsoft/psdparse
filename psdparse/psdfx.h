@@ -150,6 +150,41 @@ void psdfx_fill_path(const psdfx_subpath *subpaths, int count, int initial_fill,
                      uint8_t *mask, int width, int height, int stride,
                      double offset_x, double offset_y);
 
+/*
+ * サブパス 1 本を折れ線にする。xy へ x, y を交互に書き、点の数を返す
+ * (閉じたパスでも始点は繰り返さない)。xy が NULL か max_points が足りなければ
+ * 書かずに必要な点の数だけ返す。tolerance は曲線からのずれの上限 (px)。
+ */
+int psdfx_flatten_subpath(const psdfx_subpath *subpath, double tolerance,
+                          double *xy, int max_points);
+
+/* 線の端 / 角の形 */
+enum { PSDFX_CAP_BUTT = 0, PSDFX_CAP_ROUND = 1, PSDFX_CAP_SQUARE = 2 };
+enum { PSDFX_JOIN_MITER = 0, PSDFX_JOIN_ROUND = 1, PSDFX_JOIN_BEVEL = 2 };
+
+typedef struct psdfx_stroke_style {
+  double width;            /* 線幅 (px) */
+  int alignment;           /* PSDFX_STROKE_OUTSIDE / INSIDE / CENTER (下の効果と同じ値)。
+                            * 内側 / 外側は閉じたパスの形の内 / 外にだけ線幅ぶん描く。
+                            * 開いたパスは常に中央 */
+  int cap;                 /* PSDFX_CAP_* */
+  int join;                /* PSDFX_JOIN_* */
+  double miter_limit;      /* マイター (角の先端の長さ / 線幅) の上限。超えたら面取り */
+  const double *dashes;    /* 破線: 線, 間隔, 線, ... の長さ (px)。NULL / 0 個なら実線 */
+  int dash_count;
+  double dash_offset;      /* 破線の始まりのずらし (px) */
+} psdfx_stroke_style;
+
+/*
+ * サブパス群の線を描き、被覆率 (0..255) を mask へ書く。引数の意味は
+ * psdfx_fill_path と同じ (initial_fill とサブパスの合成方法は、内側 / 外側の
+ * 線で「形の内側」を決めるのに使う)。
+ */
+void psdfx_stroke_path(const psdfx_subpath *subpaths, int count, int initial_fill,
+                       const psdfx_stroke_style *style,
+                       uint8_t *mask, int width, int height, int stride,
+                       double offset_x, double offset_y);
+
 /* ------------------------------------------------------------------------
  * レイヤー効果
  *

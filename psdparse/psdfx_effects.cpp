@@ -103,11 +103,11 @@ void edt1d(const float *f, int n, float *d, std::vector<int> &v, std::vector<flo
 }
 
 // inside(x, y) が真の画素までの距離 (真の画素は 0)
-Plane distanceTo(const Plane &a, bool wantInside) {
+Plane distanceTo(const Plane &a, bool wantInside, float threshold = 0.5f) {
   const float INF = 1e20f;
   Plane d(a.w, a.h);
   for (size_t i = 0; i < d.v.size(); i++) {
-    const bool in = a.v[i] >= 0.5f;
+    const bool in = a.v[i] >= threshold;
     d.v[i] = (in == wantInside) ? 0.f : INF;
   }
   std::vector<float> f, out;
@@ -380,20 +380,23 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
 
   // --- 境界線 (形の上、外側は形の外へ) ---
   const psdfx_stroke &st = fx->stroke;
+  // 境界線の「形の内側」は被覆率 50% (8bit で 127) 以上。濃度 50% のマスクで
+  // 半透明になった所も内側に数える (Photoshop の合成画像と照合して確認)
+  const float kStrokeIn = 126.5f / 255.f;
   if (st.enabled && st.opacity > 0 && st.size > 0) {
     Plane cov(W, H);
     const double sz = st.position == PSDFX_STROKE_CENTER ? st.size * 0.5 : st.size;
     if (st.position != PSDFX_STROKE_INSIDE) {
-      Plane din = distanceTo(A, true);
+      Plane din = distanceTo(A, true, kStrokeIn);
       for (size_t i = 0; i < cov.v.size(); i++) {
-        const bool in = A.v[i] >= 0.5f;
+        const bool in = A.v[i] >= kStrokeIn;
         cov.v[i] = in ? 1.f - A.v[i] : clamp01((float)(sz + 1.0 - din.v[i]));
       }
     }
     if (st.position != PSDFX_STROKE_OUTSIDE) {
-      Plane dout = distanceTo(A, false);
+      Plane dout = distanceTo(A, false, kStrokeIn);
       for (size_t i = 0; i < cov.v.size(); i++) {
-        const bool in = A.v[i] >= 0.5f;
+        const bool in = A.v[i] >= kStrokeIn;
         if (in) cov.v[i] = std::max(cov.v[i], A.v[i] * clamp01((float)(sz + 1.0 - dout.v[i])));
       }
     }

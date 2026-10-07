@@ -12,6 +12,7 @@
 #include "psddesc.h"
 #include "psdwrite.h"
 #include "psdengine.h"
+#include "psdfx.h"
 
 #include <fstream>
 #include <functional>
@@ -245,6 +246,222 @@ py::object layerVectorMask(const psd::LayerInfo &l) {
   d["disabled"]   = vm.disabled();
   d["path"]       = pathToPy(vm.path, h.width, h.height);
   return std::move(d);
+}
+
+// --- シェイプ ('vscg' / 'vstk' / 'vogk') とパスのラスタライズ ------------------
+
+py::dict descToPy(psd::Descriptor *d);
+
+py::object fillKindName(int k) {
+  switch (k) {
+  case 'SoCo': return py::str("solid");
+  case 'GdFl': return py::str("gradient");
+  case 'PtFl': return py::str("pattern");
+  default:     return py::none();
+  }
+}
+
+py::object layerShape(const psd::LayerInfo &l) {
+  psd::ShapeInfo si;
+  if (!psd::decodeShape(l, si)) return py::none();
+  const double dpi = l.owner ? l.owner->header.hres : 72.0;
+  py::dict d;
+  d["fill_enabled"]   = si.hasStroke ? si.stroke.fillEnabled : true;
+  d["stroke_enabled"] = si.hasStroke && si.stroke.strokeEnabled;
+  if (si.hasFill) {
+    py::dict f;
+    f["kind"]       = fillKindName(si.fillKind);
+    f["descriptor"] = si.fill ? py::object(descToPy(si.fill.get())) : py::object(py::none());
+    d["fill"] = f;
+  } else {
+    d["fill"] = py::none();
+  }
+  if (si.hasStroke) {
+    const psd::ShapeStroke &s = si.stroke;
+    const double w = s.width * (s.widthInPoints ? (dpi > 0 ? dpi : 72.0) / 72.0 : 1.0);
+    static const char *kAlign[] = { "outside", "inside", "center" };
+    static const char *kCap[] = { "butt", "round", "square" };
+    static const char *kJoin[] = { "miter", "round", "bevel" };
+    py::dict st;
+    st["width"]        = w;
+    st["alignment"]    = kAlign[std::min(2, std::max(0, s.alignment))];
+    st["cap"]          = kCap[std::min(2, std::max(0, s.cap))];
+    st["join"]         = kJoin[std::min(2, std::max(0, s.join))];
+    st["miter_limit"]  = s.miterLimit;
+    py::list dashes;
+    for (double v : s.dashes) dashes.append(v * w);
+    st["dashes"]       = dashes;
+    st["dash_offset"]  = s.dashOffset * w;
+    st["opacity"]      = s.opacity;
+    st["blend_mode"]   = s.blendMode;
+    st["content_kind"] = fillKindName(s.contentKind);
+    st["content"]      = s.content ? py::object(descToPy(s.content.get())) : py::object(py::none());
+    d["stroke"] = st;
+  } else {
+    d["stroke"] = py::none();
+  }
+  py::list origins;
+  for (const auto &o : si.origins) {
+    py::dict od;
+    const char *name = o.type == 1 ? "rectangle" : o.type == 2 ? "rounded_rectangle"
+                     : o.type == 4 ? "line" : o.type == 5 ? "ellipse" : nullptr;
+    od["type"]    = name ? py::object(py::str(name)) : py::object(py::none());
+    od["type_id"] = o.type;
+    od["index"]   = o.index;
+    od["box"]     = o.hasBox ? py::object(py::make_tuple(o.box[0], o.box[1], o.box[2], o.box[3]))
+                             : py::object(py::none());
+    od["radii"]   = o.hasRadii ? py::object(py::make_tuple(o.radii[0], o.radii[1], o.radii[2], o.radii[3]))
+                               : py::object(py::none());
+    od["line"]    = o.hasLine ? py::object(py::make_tuple(o.line[0], o.line[1], o.line[2], o.line[3]))
+                              : py::object(py::none());
+    od["line_weight"] = o.hasLine ? py::object(py::float_(o.lineWeight)) : py::object(py::none());
+    od["invalidated"] = o.invalidated;
+    origins.append(od);
+  }
+  d["origins"] = origins;
+  if (l.vectorMask.present && l.owner)
+    d["path"] = pathToPy(l.vectorMask.path, l.owner->header.width, l.owner->header.height);
+  else
+    d["path"] = py::none();
+  return std::move(d);
+}
+
+py::object psdShapeMask(psd::PSDFile &self, int index, const std::string &part) {
+  if (index < 0 || index >= (int)self.layerList.size())
+    throw std::out_of_range("layer index out of range");
+  psd::ShapePart p;
+  if (part == "fill") p = psd::SHAPE_PART_FILL;
+  else if (part == "stroke") p = psd::SHAPE_PART_STROKE;
+  else if (part == "both") p = psd::SHAPE_PART_BOTH;
+  else throw std::invalid_argument("part must be 'fill', 'stroke' or 'both'");
+  std::vector<uint8_t> m;
+  int left = 0, top = 0, w = 0, h = 0;
+  bool ok;
+  {
+    py::gil_scoped_release release;
+    ok = self.shapeMask(index, p, m, left, top, w, h);
+  }
+  if (!ok) return py::none();
+  return py::make_tuple(py::bytes((const char *)m.data(), m.size()), left, top, w, h);
+}
+
+// Python のパス (layer.vector_mask['path'] / PSDFile.paths[i]['path'] と同じ形、
+// またはサブパスの list) を psdfx の形へ。座標は文書ピクセル。
+struct PyPath {
+  std::vector<std::vector<psdfx_knot>> knots;
+  std::vector<psdfx_subpath> subs;
+  int initialFill = 0;
+};
+
+void pyToPath(py::handle path, PyPath &out) {
+  py::object subs;
+  if (py::isinstance<py::dict>(path)) {
+    py::dict d = py::reinterpret_borrow<py::dict>(path);
+    if (!d.contains("subpaths")) throw std::invalid_argument("path dict needs 'subpaths'");
+    subs = d["subpaths"];
+    if (d.contains("initial_fill") && !d["initial_fill"].is_none())
+      out.initialFill = d["initial_fill"].cast<int>() == 1 ? 1 : 0;
+  } else {
+    subs = py::reinterpret_borrow<py::object>(path);
+  }
+  auto xy = [](py::handle t, double &x, double &y) {
+    auto s = py::reinterpret_borrow<py::sequence>(t);
+    if (py::len(s) != 2) throw std::invalid_argument("points must be (x, y)");
+    x = s[0].cast<double>(); y = s[1].cast<double>();
+  };
+  std::vector<int> closed, ops;
+  for (py::handle sp : subs) {
+    py::dict sd = py::reinterpret_borrow<py::dict>(sp);
+    std::vector<psdfx_knot> ks;
+    for (py::handle kh : sd["knots"]) {
+      psdfx_knot k{};
+      if (py::isinstance<py::dict>(kh)) {
+        py::dict kd = py::reinterpret_borrow<py::dict>(kh);
+        xy(kd["anchor"], k.x, k.y);
+        k.in_x = k.x; k.in_y = k.y; k.out_x = k.x; k.out_y = k.y;
+        if (kd.contains("preceding")) xy(kd["preceding"], k.in_x, k.in_y);
+        if (kd.contains("leaving")) xy(kd["leaving"], k.out_x, k.out_y);
+      } else {   // (x, y) だけなら直線の頂点
+        xy(kh, k.x, k.y);
+        k.in_x = k.out_x = k.x; k.in_y = k.out_y = k.y;
+      }
+      ks.push_back(k);
+    }
+    out.knots.push_back(std::move(ks));
+    closed.push_back(sd.contains("closed") ? (sd["closed"].cast<bool>() ? 1 : 0) : 1);
+    ops.push_back(sd.contains("operation") ? sd["operation"].cast<int>() : -1);
+  }
+  for (size_t i = 0; i < out.knots.size(); i++)
+    out.subs.push_back({ out.knots[i].data(), (int)out.knots[i].size(), closed[i], ops[i] });
+}
+
+void checkSize(int w, int h) {
+  if (w <= 0 || h <= 0) throw std::invalid_argument("width and height must be positive");
+  if ((int64_t)w * h > (1LL << 28)) throw std::invalid_argument("raster too large");
+}
+
+py::list pyFlattenPath(py::object path, double tolerance) {
+  PyPath p;
+  pyToPath(path, p);
+  py::list out;
+  for (const auto &s : p.subs) {
+    const int n = psdfx_flatten_subpath(&s, tolerance, nullptr, 0);
+    std::vector<double> xy((size_t)n * 2);
+    psdfx_flatten_subpath(&s, tolerance, xy.data(), n);
+    py::list pts;
+    for (int i = 0; i < n; i++) pts.append(py::make_tuple(xy[(size_t)i * 2], xy[(size_t)i * 2 + 1]));
+    py::dict d;
+    d["closed"] = s.closed != 0;
+    d["operation"] = s.operation;
+    d["points"] = pts;
+    out.append(d);
+  }
+  return out;
+}
+
+py::bytes pyRasterizePath(py::object path, int width, int height, double left, double top) {
+  checkSize(width, height);
+  PyPath p;
+  pyToPath(path, p);
+  std::vector<uint8_t> m((size_t)width * height);
+  {
+    py::gil_scoped_release release;
+    psdfx_fill_path(p.subs.data(), (int)p.subs.size(), p.initialFill, m.data(), width, height,
+                    width, left, top);
+  }
+  return py::bytes((const char *)m.data(), m.size());
+}
+
+int pickName(const std::string &v, std::initializer_list<const char *> names, const char *what) {
+  int i = 0;
+  for (const char *n : names) { if (v == n) return i; i++; }
+  throw std::invalid_argument(std::string("unknown ") + what + ": " + v);
+}
+
+py::bytes pyStrokePath(py::object path, int width, int height, double left, double top,
+                       double lineWidth, const std::string &alignment, const std::string &cap,
+                       const std::string &join, double miterLimit, std::vector<double> dashes,
+                       double dashOffset) {
+  checkSize(width, height);
+  PyPath p;
+  pyToPath(path, p);
+  psdfx_stroke_style st{};
+  st.width = lineWidth;
+  const int a = pickName(alignment, { "outside", "inside", "center" }, "alignment");
+  st.alignment = a == 0 ? PSDFX_STROKE_OUTSIDE : a == 1 ? PSDFX_STROKE_INSIDE : PSDFX_STROKE_CENTER;
+  st.cap = pickName(cap, { "butt", "round", "square" }, "cap");
+  st.join = pickName(join, { "miter", "round", "bevel" }, "join");
+  st.miter_limit = miterLimit;
+  st.dashes = dashes.empty() ? nullptr : dashes.data();
+  st.dash_count = (int)dashes.size();
+  st.dash_offset = dashOffset;
+  std::vector<uint8_t> m((size_t)width * height);
+  {
+    py::gil_scoped_release release;
+    psdfx_stroke_path(p.subs.data(), (int)p.subs.size(), p.initialFill, &st, m.data(), width,
+                      height, width, left, top);
+  }
+  return py::bytes((const char *)m.data(), m.size());
 }
 
 // ファイル由来のバイト列 (ID や 4 文字コード) を str へ。UTF-8 として読めない
@@ -1196,6 +1413,29 @@ PYBIND11_MODULE(psdparse, m) {
   m.doc() = "psdparse: PSD reader/writer (pure C++17, zlib only).";
 
   // Internal: parse + re-serialize EngineData for byte-exact round-trip tests.
+  m.def("flatten_path", &pyFlattenPath, py::arg("path"), py::arg("tolerance") = 0.1,
+        "Flatten a path (layer.vector_mask['path'], PSDFile.paths[i]['path'], or a "
+        "list of subpath dicts with 'knots' / 'closed' / 'operation') into "
+        "polylines: a list of {'closed', 'operation', 'points': [(x, y), ...]}. "
+        "tolerance is the maximum distance from the curve in pixels.");
+  m.def("rasterize_path", &pyRasterizePath, py::arg("path"), py::arg("width"),
+        py::arg("height"), py::arg("left") = 0.0, py::arg("top") = 0.0,
+        "Fill a path into width x height 8-bit coverage (bytes, anti-aliased). "
+        "The raster's top-left is (left, top) in path coordinates. Subpaths are "
+        "combined the way Photoshop combines shape operations (operation -1 joins "
+        "the previous subpath; 0 xor, 1 union, 2 subtract, 3 intersect); "
+        "'initial_fill' 1 starts from a filled raster. Knots may also be plain "
+        "(x, y) tuples for straight segments.");
+  m.def("stroke_path", &pyStrokePath, py::arg("path"), py::arg("width"), py::arg("height"),
+        py::arg("left") = 0.0, py::arg("top") = 0.0, py::arg("line_width") = 1.0,
+        py::arg("alignment") = "center", py::arg("cap") = "butt", py::arg("join") = "miter",
+        py::arg("miter_limit") = 4.0, py::arg("dashes") = std::vector<double>(),
+        py::arg("dash_offset") = 0.0,
+        "Stroke a path into width x height 8-bit coverage (bytes, anti-aliased). "
+        "alignment 'inside' / 'outside' puts the whole line width on one side of "
+        "closed subpaths (open subpaths are always centered); cap 'butt' / 'round' "
+        "/ 'square'; join 'miter' / 'round' / 'bevel'; miter_limit as a ratio of "
+        "the line width; dashes = (on, off, ...) lengths in pixels.");
   m.def("_reserialize_engine_data", [](py::bytes b) -> py::object {
       py::buffer_info info(py::buffer(b).request());
       std::string out;
@@ -1424,6 +1664,18 @@ PYBIND11_MODULE(psdparse, m) {
         "bottom-right, bottom-left), 'size' ((w, h) of the source) or None, "
         "'filters' (smart filters enabled, None when none), 'linked_file' "
         "(index into PSDFile.linked_files, or None)}, or None.")
+    .def_property_readonly("shape", &layerShape,
+         "Shape layer data, or None: {'fill_enabled', 'stroke_enabled', 'fill' "
+         "({'kind': 'solid'/'gradient'/'pattern', 'descriptor'} from 'vscg', or None), "
+         "'stroke' (from 'vstk', or None: {'width' (px), 'alignment' "
+         "('inside'/'center'/'outside'), 'cap' ('butt'/'round'/'square'), 'join' "
+         "('miter'/'round'/'bevel'), 'miter_limit', 'dashes' and 'dash_offset' (px), "
+         "'opacity' (0..1), 'blend_mode', 'content_kind', 'content'}), 'origins' "
+         "(live-shape origins from 'vogk': {'type' ('rectangle'/'rounded_rectangle'/"
+         "'line'/'ellipse' or None), 'type_id', 'index', 'box', 'radii', 'line', "
+         "'line_weight', 'invalidated'}), 'path' (the vector mask path, document "
+         "pixels)}. Rasterize with PSDFile.shape_mask(i) or psdparse.rasterize_path / "
+         "stroke_path.")
     .def_property_readonly("vector_mask", &layerVectorMask,
         "Vector mask ('vmsk', or 'vsms' on shape layers) as {'key', 'inverted', "
         "'not_linked', 'disabled', 'path'}, or None. 'path' holds 'subpaths' "
@@ -2022,6 +2274,14 @@ PYBIND11_MODULE(psdparse, m) {
          "(bgra_bytes, stats); stats counts what could not be reproduced "
          "(adjustment layers are skipped for now). background=(r, g, b) "
          "composites onto an opaque color instead of transparency.")
+    .def("shape_mask", &psdShapeMask, py::arg("index"), py::arg("part") = "both",
+         "Rasterize a layer's vector mask / shape path to 8-bit coverage "
+         "(anti-aliased, 0..255): part='fill' (the path area), 'stroke' (the "
+         "shape stroke from 'vstk': width, alignment, caps, joins, dashes) or "
+         "'both'. Returns (bytes, left, top, width, height) — a rectangle in "
+         "document pixels that holds the path and its stroke (it can extend past "
+         "the canvas) — or None without a vector mask (or without a stroke for "
+         "'stroke'). Mask density / feather are not applied.")
     .def("render_layer", &psdRenderLayer, py::arg("index"), py::arg("effects") = true,
          "Render one layer with its effects onto a transparent surface (not "
          "composited with the layers below): returns (bgra_bytes, left, top, "

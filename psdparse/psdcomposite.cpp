@@ -21,6 +21,50 @@ namespace psd {
 
 namespace {
 
+// パス (座標は文書に対する割合) を psdfx の形 (文書ピクセル) へ
+struct PathBuf {
+  std::vector<std::vector<psdfx_knot>> knots;
+  std::vector<psdfx_subpath> subs;
+  int initialFill = 0;
+};
+
+void toPsdfx(const PathData &p, double W, double H, PathBuf &b) {
+  b.knots.clear(); b.subs.clear();
+  for (const auto &sp : p.subpaths) {
+    std::vector<psdfx_knot> ks;
+    for (const auto &k : sp.knots)
+      ks.push_back({ k.preceding.x * W, k.preceding.y * H, k.anchor.x * W, k.anchor.y * H,
+                     k.leaving.x * W, k.leaving.y * H });
+    b.knots.push_back(std::move(ks));
+  }
+  for (size_t i = 0; i < b.knots.size(); i++) {
+    const auto &sp = p.subpaths[i];
+    b.subs.push_back({ b.knots[i].data(), (int)b.knots[i].size(), sp.closed ? 1 : 0, sp.operation });
+  }
+  b.initialFill = p.initialFill == 1 ? 1 : 0;
+}
+
+// シェイプの線 ('vstk') を psdfx の線の描き方へ。破線の長さは線幅を 1 とした値
+// なので線幅を掛ける。pt 指定の線幅は文書の解像度で px にする。
+bool toStrokeStyle(const ShapeStroke &s, double dpi, psdfx_stroke_style &st,
+                   std::vector<double> &dashes) {
+  st = psdfx_stroke_style();
+  const double w = s.width * (s.widthInPoints ? (dpi > 0 ? dpi : 72.0) / 72.0 : 1.0);
+  if (!(w > 0)) return false;
+  st.width = w;
+  st.alignment = s.alignment == 0 ? PSDFX_STROKE_OUTSIDE : s.alignment == 1 ? PSDFX_STROKE_INSIDE
+                                                                           : PSDFX_STROKE_CENTER;
+  st.cap = s.cap;
+  st.join = s.join;
+  st.miter_limit = s.miterLimit;
+  dashes.clear();
+  for (double d : s.dashes) dashes.push_back(d * w);
+  st.dashes = dashes.empty() ? nullptr : dashes.data();
+  st.dash_count = (int)dashes.size();
+  st.dash_offset = s.dashOffset * w;
+  return true;
+}
+
 struct Canvas {
   int width = 0, height = 0;
   std::vector<uint8_t> px;
@@ -240,6 +284,11 @@ private:
       }
     }
     if (!kind) return false;
+    return paintContent(l, kind, d, out, left, top);
+  }
+
+  // 塗りの descriptor (kind は 'SoCo' / 'GdFl' / 'PtFl') で out を塗る
+  bool paintContent(const LayerInfo &l, int kind, Descriptor &d, Canvas &out, int left, int top) {
     psdfx_surface s = out.surface();
     if (kind == 'SoCo') {
       uint8_t rgb[3];
@@ -288,27 +337,26 @@ private:
     return false;
   }
 
-  // ベクタマスクを、面 (左上が文書の (left, top)) の大きさでアルファへ掛ける
+  // ベクタマスクを、面 (左上が文書の (left, top)) の大きさでアルファへ掛ける。
+  // シェイプの線 ('vstk') があれば、マスクの形は「塗り ∪ 線」(保存画素には
+  // パスの外へはみ出す線も描かれている)。
   void applyVectorMask(const LayerInfo &l, Canvas &c, int left, int top) {
     const VectorMask &vm = l.vectorMask;
     if (!vm.present || vm.disabled()) return;
-    const double W = psd_.header.width, H = psd_.header.height;
-    std::vector<std::vector<psdfx_knot>> knots;
-    std::vector<psdfx_subpath> subs;
-    for (const auto &sp : vm.path.subpaths) {
-      std::vector<psdfx_knot> ks;
-      for (const auto &k : sp.knots)
-        ks.push_back({ k.preceding.x * W, k.preceding.y * H, k.anchor.x * W, k.anchor.y * H,
-                       k.leaving.x * W, k.leaving.y * H });
-      knots.push_back(ks);
-    }
-    for (size_t i = 0; i < knots.size(); i++) {
-      const auto &sp = vm.path.subpaths[i];
-      subs.push_back({ knots[i].data(), (int)knots[i].size(), sp.closed ? 1 : 0, sp.operation });
-    }
+    PathBuf pb;
+    toPsdfx(vm.path, psd_.header.width, psd_.header.height, pb);
     std::vector<uint8_t> m((size_t)c.width * c.height);
-    psdfx_fill_path(subs.data(), (int)subs.size(), vm.path.initialFill == 1 ? 1 : 0,
+    psdfx_fill_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill,
                     m.data(), c.width, c.height, c.width, left, top);
+    ShapeInfo si;
+    psdfx_stroke_style st;
+    std::vector<double> dashes;
+    if (strokeStyle(l, si, st, dashes)) {
+      std::vector<uint8_t> sm((size_t)c.width * c.height);
+      psdfx_stroke_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill, &st,
+                        sm.data(), c.width, c.height, c.width, left, top);
+      for (size_t i = 0; i < m.size(); i++) m[i] = std::max(m[i], sm[i]);
+    }
     if (vm.inverted()) for (auto &v : m) v = (uint8_t)(255 - v);
     const LayerMask &lm = l.extraData.layerMask;
     if (lm.hasVectorFeather && lm.vectorMaskFeather > 0)
@@ -316,6 +364,51 @@ private:
     if (lm.vectorMaskDensity >= 0 && lm.vectorMaskDensity < 255) applyDensity(m, lm.vectorMaskDensity);
     for (size_t i = 0; i < m.size(); i++)
       c.px[i * 4 + 3] = (uint8_t)((c.px[i * 4 + 3] * m[i] + 127) / 255);
+  }
+
+  // シェイプの線の描き方。線が無い / 無効なら false。
+  bool strokeStyle(const LayerInfo &l, ShapeInfo &si, psdfx_stroke_style &st,
+                   std::vector<double> &dashes) {
+    if (!decodeShape(l, si) || !si.hasStroke || !si.stroke.strokeEnabled) return false;
+    return toStrokeStyle(si.stroke, psd_.header.hres, st, dashes);
+  }
+
+  // シェイプの塗り (fillEnabled) と線を、保存画素ではなくパスから描く。
+  // 線の無いシェイプなら false (呼び出し側が塗りだけを描く)。
+  bool paintShapeWithStroke(const LayerInfo &l, Canvas &out, int left, int top) {
+    const VectorMask &vm = l.vectorMask;
+    if (!vm.present || vm.disabled()) return false;
+    ShapeInfo si;
+    psdfx_stroke_style st;
+    std::vector<double> dashes;
+    if (!strokeStyle(l, si, st, dashes)) return false;
+    PathBuf pb;
+    toPsdfx(vm.path, psd_.header.width, psd_.header.height, pb);
+    const size_t n = (size_t)out.width * out.height;
+    std::vector<uint8_t> fm(n), sm(n);
+    psdfx_fill_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill,
+                    fm.data(), out.width, out.height, out.width, left, top);
+    psdfx_stroke_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill, &st,
+                      sm.data(), out.width, out.height, out.width, left, top);
+    Canvas fill(out.width, out.height);
+    if (si.stroke.fillEnabled && paintFill(l, fill, left, top)) {
+      if (vm.inverted()) for (auto &v : fm) v = (uint8_t)(255 - v);
+      for (size_t i = 0; i < n; i++) fill.px[i * 4 + 3] = (uint8_t)((fill.px[i * 4 + 3] * fm[i] + 127) / 255);
+    } else {
+      std::fill(fill.px.begin(), fill.px.end(), 0);
+    }
+    Canvas line(out.width, out.height);
+    if (si.stroke.content && si.stroke.contentKind &&
+        paintContent(l, si.stroke.contentKind, *si.stroke.content, line, left, top)) {
+      for (size_t i = 0; i < n; i++) line.px[i * 4 + 3] = (uint8_t)((line.px[i * 4 + 3] * sm[i] + 127) / 255);
+      psdfx_surface d = fill.surface(), s = line.surface();
+      psdfx_composite(&d, &s, 0, 0, blendFromName(si.stroke.blendMode),
+                      (float)si.stroke.opacity, nullptr, 0);
+    }
+    out.px.swap(fill.px);
+    out.shape.resize(n);
+    for (size_t i = 0; i < n; i++) out.shape[i] = std::max(si.stroke.fillEnabled ? fm[i] : (uint8_t)0, sm[i]);
+    return true;
   }
 
   // マスクの濃度: 黒い (隠す) 部分の効き具合を density/255 に弱める
@@ -361,7 +454,10 @@ private:
   // 効果の descriptor のブレンド (列挙名) をレイヤのブレンドキーへ
   static uint32_t blendFromEnum(Descriptor *d, const char *key) {
     auto *e = d ? dynamic_cast<DescriptorEnumerated*>(d->item(key).find()) : nullptr;
-    const std::string v = e ? e->enumId : std::string("Nrml");
+    return blendFromEnumId(e ? e->enumId : std::string("Nrml"));
+  }
+
+  static uint32_t blendFromEnumId(const std::string &v) {
     static const struct { const char *name; uint32_t key; } kMap[] = {
       { "Nrml", PSDFX_KEY('n','o','r','m') }, { "Dslv", PSDFX_KEY('d','i','s','s') },
       { "Drkn", PSDFX_KEY('d','a','r','k') }, { "Mltp", PSDFX_KEY('m','u','l',' ') },
@@ -380,6 +476,28 @@ private:
     };
     for (const auto &m : kMap) if (v == m.name) return m.key;
     return PSDFX_KEY('n','o','r','m');
+  }
+
+  // 'BlnM' の列挙名 (線の描画モードは "normal" / "multiply" のような長い名前)
+  static uint32_t blendFromName(const std::string &v) {
+    static const struct { const char *name; uint32_t key; } kMap[] = {
+      { "normal", PSDFX_KEY('n','o','r','m') }, { "dissolve", PSDFX_KEY('d','i','s','s') },
+      { "darken", PSDFX_KEY('d','a','r','k') }, { "multiply", PSDFX_KEY('m','u','l',' ') },
+      { "colorBurn", PSDFX_KEY('i','d','i','v') }, { "linearBurn", PSDFX_KEY('l','b','r','n') },
+      { "darkerColor", PSDFX_KEY('d','k','C','l') }, { "lighten", PSDFX_KEY('l','i','t','e') },
+      { "screen", PSDFX_KEY('s','c','r','n') }, { "colorDodge", PSDFX_KEY('d','i','v',' ') },
+      { "linearDodge", PSDFX_KEY('l','d','d','g') }, { "lighterColor", PSDFX_KEY('l','g','C','l') },
+      { "overlay", PSDFX_KEY('o','v','e','r') }, { "softLight", PSDFX_KEY('s','L','i','t') },
+      { "hardLight", PSDFX_KEY('h','L','i','t') }, { "vividLight", PSDFX_KEY('v','L','i','t') },
+      { "linearLight", PSDFX_KEY('l','L','i','t') }, { "pinLight", PSDFX_KEY('p','L','i','t') },
+      { "hardMix", PSDFX_KEY('h','M','i','x') }, { "difference", PSDFX_KEY('d','i','f','f') },
+      { "exclusion", PSDFX_KEY('s','m','u','d') }, { "blendSubtraction", PSDFX_KEY('f','s','u','b') },
+      { "blendDivide", PSDFX_KEY('f','d','i','v') }, { "hue", PSDFX_KEY('h','u','e',' ') },
+      { "saturation", PSDFX_KEY('s','a','t',' ') }, { "color", PSDFX_KEY('c','o','l','r') },
+      { "luminosity", PSDFX_KEY('l','u','m',' ') },
+    };
+    for (const auto &m : kMap) if (v == m.name) return m.key;
+    return blendFromEnumId(v);
   }
 
   static bool flag(Descriptor *d, const char *k, bool def) {
@@ -679,6 +797,17 @@ private:
         left = 0; top = 0; w = psd_.header.width; h = psd_.header.height;
       }
       Canvas fill(w, h);
+      if (l.layerType != LAYER_TYPE_FILL && paintShapeWithStroke(l, fill, left, top)) {
+        out = std::move(fill);
+        if (maskOn) {
+          applyUserMask(maskLayer, out, left, top);
+          Canvas m(w, h);
+          for (size_t i = 0; i < out.shape.size(); i++) m.px[i * 4 + 3] = out.shape[i];
+          applyUserMask(maskLayer, m, left, top);
+          for (size_t i = 0; i < out.shape.size(); i++) out.shape[i] = m.px[i * 4 + 3];
+        }
+        return true;
+      }
       if (paintFill(l, fill, left, top)) {
         out.width = fill.width; out.height = fill.height; out.px.swap(fill.px);
         if (maskOn) applyUserMask(maskLayer, out, left, top);
@@ -846,6 +975,68 @@ private:
 };
 
 }  // anonymous namespace
+
+bool PSDFile::shapeMask(int index, ShapePart part, std::vector<uint8_t> &mask, int &left, int &top,
+                        int &width, int &height, int64_t maxPixels) {
+  mask.clear();
+  left = top = width = height = 0;
+  if (index < 0 || index >= (int)layerList.size()) return false;
+  const LayerInfo &l = layerList[(size_t)index];
+  const VectorMask &vm = l.vectorMask;
+  if (!vm.present) return false;
+  PathBuf pb;
+  toPsdfx(vm.path, header.width, header.height, pb);
+  ShapeInfo si;
+  psdfx_stroke_style st;
+  std::vector<double> dashes;
+  const bool wantFill = part != SHAPE_PART_STROKE, wantStroke = part != SHAPE_PART_FILL;
+  const bool hasStroke = wantStroke && decodeShape(l, si) && si.hasStroke && si.stroke.strokeEnabled &&
+                         toStrokeStyle(si.stroke, header.hres, st, dashes);
+  if (!wantFill && !hasStroke) return false;
+  // 範囲: 制御点を含むパスの外接矩形を、線がはみ出す分だけ広げる。
+  // 反転したマスクの塗りは文書全体。
+  bool any = false;
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  for (const auto &ks : pb.knots)
+    for (const auto &k : ks)
+      for (int i = 0; i < 3; i++) {
+        const double x = i == 0 ? k.in_x : i == 1 ? k.x : k.out_x;
+        const double y = i == 0 ? k.in_y : i == 1 ? k.y : k.out_y;
+        if (!any) { x0 = x1 = x; y0 = y1 = y; any = true; }
+        x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y);
+      }
+  if (!any && !(wantFill && (vm.inverted() || pb.initialFill))) return false;
+  double reach = 1.0;
+  if (hasStroke) {
+    double r = st.width;
+    if (st.join == PSDFX_JOIN_MITER) r *= std::max(1.0, std::min(st.miter_limit, 10.0));
+    if (st.cap == PSDFX_CAP_SQUARE) r = std::max(r, st.width * 1.5);
+    reach += r;
+  }
+  int l0 = (int)std::floor(x0 - reach), t0 = (int)std::floor(y0 - reach);
+  int r0 = (int)std::ceil(x1 + reach), b0 = (int)std::ceil(y1 + reach);
+  if (wantFill && (vm.inverted() || pb.initialFill)) {
+    l0 = any ? std::min(l0, 0) : 0; t0 = any ? std::min(t0, 0) : 0;
+    r0 = any ? std::max(r0, header.width) : header.width;
+    b0 = any ? std::max(b0, header.height) : header.height;
+  }
+  const int64_t w = (int64_t)r0 - l0, h = (int64_t)b0 - t0;
+  if (w <= 0 || h <= 0 || w * h > maxPixels) return false;
+  left = l0; top = t0; width = (int)w; height = (int)h;
+  mask.assign((size_t)(w * h), 0);
+  if (wantFill) {
+    psdfx_fill_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill, mask.data(),
+                    width, height, width, left, top);
+    if (vm.inverted()) for (auto &v : mask) v = (uint8_t)(255 - v);
+  }
+  if (hasStroke) {
+    std::vector<uint8_t> sm(mask.size());
+    psdfx_stroke_path(pb.subs.data(), (int)pb.subs.size(), pb.initialFill, &st, sm.data(),
+                      width, height, width, left, top);
+    for (size_t i = 0; i < mask.size(); i++) mask[i] = std::max(mask[i], sm[i]);
+  }
+  return true;
+}
 
 bool PSDFile::renderLayer(int index, std::vector<uint8_t> &bgra, int &left, int &top,
                           int &width, int &height, const CompositeOptions &opt,

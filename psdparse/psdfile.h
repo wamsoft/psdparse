@@ -27,6 +27,13 @@ namespace psd {
     int64_t maxPixels = 1LL << 28;  // これより大きい文書は合成しない
   };
 
+  // PSDFile::shapeMask で取り出す部分
+  enum ShapePart {
+    SHAPE_PART_FILL = 0,     // パスの塗り (ベクタマスクの形)
+    SHAPE_PART_STROKE = 1,   // シェイプの線 ('vstk')
+    SHAPE_PART_BOTH = 2,     // 塗り ∪ 線
+  };
+
   // 合成で再現できなかったもの (結果が Photoshop と違いうる箇所) の数
   struct CompositeStats {
     int skippedAdjustments = 0;     // 調整レイヤ (未対応)
@@ -298,6 +305,14 @@ namespace psd {
     bool renderLayer(int index, std::vector<uint8_t> &bgra, int &left, int &top,
                      int &width, int &height, const CompositeOptions &opt = CompositeOptions(),
                      CompositeStats *stats = nullptr);
+
+    // レイヤのベクタマスク (シェイプのパス) をラスタライズした被覆率 (0..255、
+    // アンチエイリアス付き)。線はシェイプの線 ('vstk') の幅 / 位置 / 端 / 角 /
+    // 破線で描く。マスクの濃度・ぼかしは掛けない (形そのもの)。結果の矩形は
+    // パスと線を含む大きさで、left / top は文書上の位置 (文書の外にはみ出しうる)。
+    // ベクタマスクが無い / 取り出す部分が無い / maxPixels を超えるなら false。
+    bool shapeMask(int index, ShapePart part, std::vector<uint8_t> &mask, int &left, int &top,
+                   int &width, int &height, int64_t maxPixels = 1LL << 28);
 
     // 画像データ取得インタフェース (バッファピッチが０の場合は full fill)
     bool getMergedImage(void *buf, const ColorFormat &format, int bufPitchByte);
