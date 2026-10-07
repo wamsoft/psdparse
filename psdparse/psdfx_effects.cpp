@@ -418,7 +418,14 @@ extern "C" void psdfx_composite_with_effects(psdfx_surface *dst, const psdfx_sur
         if (in) cov.v[i] = std::max(cov.v[i], A.v[i] * clamp01((float)(sz + 1.0 - dout.v[i])));
       }
     }
-    std::vector<uint8_t> px = paintSource(st.fill, W, H, ox, oy, lb, doc_box);
+    // グラデーションの線は、形の範囲を外側の線幅 - 1 だけ広げた枠に描く
+    // (Photoshop の合成画像と照合して確認)
+    double sb[4] = { lb[0], lb[1], lb[2], lb[3] };
+    const double outW = st.position == PSDFX_STROKE_OUTSIDE ? st.size
+                      : st.position == PSDFX_STROKE_CENTER ? st.size * 0.5 : 0.0;
+    const double grow = std::max(0.0, std::ceil(outW) - 1.0);
+    sb[0] -= grow; sb[1] -= grow; sb[2] += grow; sb[3] += grow;
+    std::vector<uint8_t> px = paintSource(st.fill, W, H, ox, oy, sb, doc_box);
     compositeCoverage(&Ss, px, cov, 0, 0, st.blend, st.opacity);
   }
   });
