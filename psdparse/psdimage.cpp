@@ -729,19 +729,19 @@ namespace psd {
   bool decodeZipWithPrediction(void *dst, int dstSize, void *src, int srcSize,
                                 int width, int height, int depth)
   {
-    void *buf = 0;
+    // depth 32 のみ作業バッファを確保する (uint8_t[] として解放する)
+    std::unique_ptr<uint8_t[]> work;
+    uint8_t *buf = 0;
     if (depth == 8 || depth == 16)  {
-      buf = dst;
+      buf = (uint8_t *)dst;
     } else if (depth == 32) {
-      buf = new uint8_t[dstSize];
+      work.reset(new uint8_t[dstSize]);
+      buf = work.get();
     } else {
       return false; // err
     }
     bool success = decodeZipWithoutPrediction(buf, dstSize, src, srcSize);
     if(!success) {
-      if (buf != dst) {
-        delete [] buf;
-      }
       return false;
     }
 
@@ -807,7 +807,6 @@ namespace psd {
           srcPtr++;
         }
       }
-      delete [] buf;
     }
     return true;
   }
