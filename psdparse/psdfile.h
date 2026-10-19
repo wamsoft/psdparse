@@ -19,12 +19,49 @@ namespace psd {
     IMAGE_MODE_MASKEDIMAGE, // マスクをアルファに繰り込んだイメージデータ
   };
 
+  // 合成の途中結果の入れ物。CompositeOptions::cache で渡すと、次の合成で
+  // 次のものを使い回す (表示の切り替えを繰り返す画面向け)。
+  //   - フォルダの中身 (独立して描いた面)
+  //   - トップレベルの途中まで描いた画像 (切り替えたレイヤより下は描き直さない)
+  // 使い回すかどうかは、対象範囲のレイヤの状態 (表示・不透明度・描画モード・
+  // 位置・マスク・画素データ) と合成の指定を照らして決める。文書を編集したら
+  // clear() を呼ぶこと (照らし合わせは保険で、画素の中身までは見ない)。
+  // 通過フォルダは、中身を独立して描いても結果が変わらないとき (通常の描画
+  // モードだけで効果も調整レイヤもない) だけ使い回す。このときの結果は
+  // 使い回さない場合と丸め誤差 (各チャンネル 1 程度) だけ違うことがある。
+  class CompositeCache {
+  public:
+    CompositeCache();
+    ~CompositeCache();
+    CompositeCache(const CompositeCache &) = delete;
+    CompositeCache &operator=(const CompositeCache &) = delete;
+    void clear();
+    // 覚えておく画素の合計バイト数の上限 (既定 512MB)。超えたら古いものから捨てる
+    void setLimit(int64_t bytes);
+    int64_t limit() const;
+    int64_t bytes() const;     // いま覚えている画素のバイト数
+    int entries() const;       // いま覚えている面の数
+    struct Impl;
+    Impl *impl() { return impl_.get(); }
+  private:
+    std::unique_ptr<Impl> impl_;
+  };
+
   // 文書合成 (PSDFile::compositeImage) の指定
   struct CompositeOptions {
     bool effects = true;            // レイヤー効果を描く
     bool background = false;        // 不透明な背景色の上へ合成する (false なら透明)
     uint8_t backgroundColor[3] = {255, 255, 255};   // R, G, B
     int64_t maxPixels = 1LL << 28;  // これより大きい文書は合成しない
+    // レイヤ番号ごとの表示の上書き (-1 は文書のまま / 0 隠す / 1 表示)。
+    // 足りない分は文書のまま。文書 (layerList) は書き換えない
+    std::vector<int8_t> visibility;
+    // レイヤ番号ごとに効果を描かない (1 のレイヤは効果なし)。足りない分は効果あり
+    std::vector<uint8_t> noEffects;
+    // 下書き: 効果と調整レイヤを省いて速く描く (省いた数は CompositeStats::draftSkipped)
+    bool draft = false;
+    // 途中結果の使い回し (nullptr なら使わない)
+    CompositeCache *cache = nullptr;
   };
 
   // PSDFile::shapeMask で取り出す部分
@@ -39,6 +76,10 @@ namespace psd {
     int skippedAdjustments = 0;     // 調整レイヤ (未対応)
     int unsupportedClipBase = 0;    // グループを下地にしたクリッピング (未対応)
     int unsupportedEffects = 0;     // 再現できない効果
+    int draftSkipped = 0;           // 下書きで省いた効果 / 調整レイヤ
+    int cacheHits = 0;              // 使い回したフォルダの中身
+    int cacheMisses = 0;            // 描いて覚えたフォルダの中身
+    int reusedTopLevel = 0;         // 途中の画像を使い回して描かずに済んだトップレベルの塊
   };
 
   // PSD ファイルクラス
@@ -302,9 +343,19 @@ namespace psd {
     // はみ出しを含む矩形で、left / top は文書上の位置。ゲームなど、合成を自前で
     // 行う側が「Photoshop で見えるレイヤ 1 枚分」を受け取るのに使う。
     // 影など下地に対するブレンドは透明な下地に対して行われる (= 通常と同じ)。
+    // フォルダは中身を合成し、フォルダの不透明度・マスク・効果を掛けた 1 枚を
+    // 返す (文書の範囲内で、透明でない部分を囲む矩形)。フォルダ自身の表示 /
+    // 非表示は見ない (中のレイヤの表示は見る)。中身が空なら false。
     bool renderLayer(int index, std::vector<uint8_t> &bgra, int &left, int &top,
                      int &width, int &height, const CompositeOptions &opt = CompositeOptions(),
                      CompositeStats *stats = nullptr);
+
+    // 文書上の点 (x, y) で、いちばん上に見えている画素レイヤの番号を返す
+    // (無ければ -1)。表示は opt.visibility の上書きを含めて、親フォルダまで
+    // 見る。レイヤのマスク・不透明度・塗りの不透明度、親フォルダの不透明度と
+    // マスク、クリッピング (下地が見えていない所は当たらない) を考える。効果
+    // (影など) の部分は当たらない。不透明度を掛けたアルファが minAlpha 以上なら当たり。
+    int layerAtPoint(int x, int y, const CompositeOptions &opt = CompositeOptions(), int minAlpha = 1);
 
     // レイヤのベクタマスク (シェイプのパス) をラスタライズした被覆率 (0..255、
     // アンチエイリアス付き)。線はシェイプの線 ('vstk') の幅 / 位置 / 端 / 角 /

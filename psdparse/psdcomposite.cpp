@@ -18,12 +18,91 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <initializer_list>
+#include <map>
 #include <memory>
 #include <vector>
 
 namespace psd {
 
+// --- 合成の途中結果の入れ物 -------------------------------------------------------
+
+struct CompositeCache::Impl {
+  struct Entry {
+    std::vector<int32_t> sig;     // 描いたときのレイヤの状態と合成の指定
+    // 画素の矩形 (文書上)。フォルダの中身は透明でない範囲だけ、途中の画像は文書全体、
+    // レイヤのアルファは面の矩形。px は BGRA (アルファは 1 バイト/px)
+    int left = 0, top = 0, width = 0, height = 0;
+    std::vector<uint8_t> px;
+    CompositeStats stats;         // 描いたときに数えたもの (使い回したときに足す)
+    uint64_t used = 0;
+  };
+  std::map<int, Entry> groups;     // フォルダ番号 -> 中身 (透明な面へ独立して描いたもの)
+  std::map<int, Entry> prefixes;   // トップレベルの塊の最後のレイヤ番号 -> そこまで描いた画像
+  std::map<int, Entry> alphas;     // レイヤ番号 -> マスク込みのアルファ (当たり判定用)
+  int64_t bytes = 0;
+  int64_t limit = 512LL << 20;
+  uint64_t tick = 0;
+
+  const Entry *find(std::map<int, Entry> &m, int key, const std::vector<int32_t> &sig) {
+    auto it = m.find(key);
+    if (it == m.end() || it->second.sig != sig) return nullptr;
+    it->second.used = ++tick;
+    return &it->second;
+  }
+  void put(std::map<int, Entry> &m, int key, Entry &&e) {
+    auto it = m.find(key);
+    if (it != m.end()) { bytes -= (int64_t)it->second.px.size(); m.erase(it); }
+    if ((int64_t)e.px.size() > limit) return;
+    e.used = ++tick;
+    bytes += (int64_t)e.px.size();
+    m[key] = std::move(e);
+    trim();
+  }
+  // 上限を超えていたら、いちばん長く使っていないものから捨てる
+  void trim() {
+    while (bytes > limit) {
+      std::map<int, Entry> *om = nullptr;
+      std::map<int, Entry>::iterator oi;
+      uint64_t oldest = UINT64_MAX;
+      for (auto *mm : { &groups, &prefixes, &alphas })
+        for (auto i = mm->begin(); i != mm->end(); ++i)
+          if (i->second.used < oldest) { oldest = i->second.used; om = mm; oi = i; }
+      if (!om) break;
+      bytes -= (int64_t)oi->second.px.size();
+      om->erase(oi);
+    }
+  }
+  void clear() { groups.clear(); prefixes.clear(); alphas.clear(); bytes = 0; }
+};
+
+CompositeCache::CompositeCache() : impl_(new Impl) {}
+CompositeCache::~CompositeCache() = default;
+void CompositeCache::clear() { impl_->clear(); }
+void CompositeCache::setLimit(int64_t bytes) { impl_->limit = std::max<int64_t>(0, bytes); impl_->trim(); }
+int64_t CompositeCache::limit() const { return impl_->limit; }
+int64_t CompositeCache::bytes() const { return impl_->bytes; }
+int CompositeCache::entries() const {
+  return (int)(impl_->groups.size() + impl_->prefixes.size() + impl_->alphas.size());
+}
+
 namespace {
+
+void addStats(CompositeStats &a, const CompositeStats &b) {
+  a.skippedAdjustments += b.skippedAdjustments;
+  a.unsupportedClipBase += b.unsupportedClipBase;
+  a.unsupportedEffects += b.unsupportedEffects;
+  a.draftSkipped += b.draftSkipped;
+}
+
+CompositeStats subStats(const CompositeStats &a, const CompositeStats &b) {
+  CompositeStats d;
+  d.skippedAdjustments = a.skippedAdjustments - b.skippedAdjustments;
+  d.unsupportedClipBase = a.unsupportedClipBase - b.unsupportedClipBase;
+  d.unsupportedEffects = a.unsupportedEffects - b.unsupportedEffects;
+  d.draftSkipped = a.draftSkipped - b.draftSkipped;
+  return d;
+}
 
 // パス (座標は文書に対する割合) を psdfx の形 (文書ピクセル) へ
 struct PathBuf {
@@ -82,20 +161,35 @@ struct Canvas {
 class Compositor {
 public:
   Compositor(PSDFile &psd, const CompositeOptions &opt, CompositeStats &st)
-    : psd_(psd), opt_(opt), st_(st) {}
+    : psd_(psd), opt_(opt), st_(st) {
+    const int n = (int)psd_.layerList.size();
+    first_.resize((size_t)n);
+    for (int i = 0; i < n; i++) first_[(size_t)i] = i;
+    // フォルダの子孫は番号が連続していて、フォルダより下 (小さい番号) にある
+    for (int i = 0; i < n; i++) {
+      int p = psd_.layerList[(size_t)i].parentIndex;
+      for (int guard = 0; p >= 0 && p < n && guard < n; guard++) {
+        first_[(size_t)p] = std::min(first_[(size_t)p], i);
+        p = psd_.layerList[(size_t)p].parentIndex;
+      }
+    }
+    fxMemo_.assign((size_t)n, -1);
+    draftCounted_.assign((size_t)n, 0);
+  }
 
   // レイヤ 1 枚を (効果込みで) 透明な面へ描く。面は効果のはみ出しを含む矩形。
+  // フォルダは中身を合成した 1 枚 (文書の範囲内で、透明でない部分を囲む矩形)。
   bool renderSingle(int idx, std::vector<uint8_t> &out, int &left, int &top, int &w, int &h) {
     LayerInfo &l = psd_.layerList[(size_t)idx];
-    if (l.layerType == LAYER_TYPE_FOLDER || l.layerType == LAYER_TYPE_HIDDEN ||
-        l.layerType == LAYER_TYPE_ADJUST) return false;
+    if (l.layerType == LAYER_TYPE_FOLDER) return renderFolderSingle(idx, out, left, top, w, h);
+    if (l.layerType == LAYER_TYPE_HIDDEN || l.layerType == LAYER_TYPE_ADJUST) return false;
     Canvas surf;
     int sx = 0, sy = 0;
     if (!layerSurface(l, surf, sx, sy)) return false;
     psdfx_layer_effects fx;
     FxStore store;
     int margin = 0;
-    if (opt_.effects && layerEffects(l, fx, store)) margin = psdfx_effects_margin(&fx);
+    if (wantEffects(l) && layerEffects(l, fx, store)) margin = psdfx_effects_margin(&fx);
     left = sx - margin; top = sy - margin;
     w = surf.width + 2 * margin; h = surf.height + 2 * margin;
     if ((int64_t)w * h > opt_.maxPixels) return false;
@@ -127,6 +221,95 @@ public:
     }
   }
 
+  // 文書のトップレベルを描く。キャッシュがあれば、途中まで描いた画像のうち
+  // 状態が変わっていない一番上のものから続きを描く。
+  void renderTop(Canvas &canvas) {
+    CompositeCache::Impl *c = opt_.cache ? opt_.cache->impl() : nullptr;
+    if (!c) { renderChildren(-1, canvas); return; }
+    const std::vector<int> kids = psd_.childIndices(-1);
+    // 塊 (下地 + それにクリップされたレイヤ) に分ける
+    std::vector<std::pair<size_t, size_t>> units;
+    for (size_t k = 0; k < kids.size(); ) {
+      size_t end = k + 1;
+      while (end < kids.size() && psd_.layerList[(size_t)kids[end]].clipping != 0) end++;
+      units.push_back({ k, end });
+      k = end;
+    }
+    // 塊の最後のレイヤ番号 = そこまでに描くレイヤの番号の最大
+    auto lastOf = [&](size_t u) { return kids[units[u].second - 1]; };
+    size_t start = 0;
+    CompositeStats cum;
+    for (size_t u = units.size(); u-- > 0;) {
+      std::vector<int32_t> sig;
+      signature(0, lastOf(u), sig, true);
+      const auto *e = c->find(c->prefixes, lastOf(u), sig);
+      if (e && e->px.size() == canvas.px.size()) {
+        canvas.px = e->px;
+        cum = e->stats;
+        addStats(st_, e->stats);
+        start = u + 1;
+        st_.reusedTopLevel = (int)start;
+        break;
+      }
+    }
+    // 途中の画像は間引いて覚える (毎回写すと重く、メモリも食う)。数は 16 か所までで、
+    // 合計がキャッシュの上限の半分に収まるようにする
+    const int64_t docBytes = std::max<int64_t>(1, (int64_t)canvas.px.size());
+    const size_t maxSnaps = (size_t)std::max<int64_t>(1, std::min<int64_t>(16, c->limit / 2 / docBytes));
+    const size_t step = std::max<size_t>(1, (units.size() + maxSnaps - 1) / maxSnaps);
+    for (size_t u = start; u < units.size(); u++) {
+      const CompositeStats before = st_;
+      const std::vector<int> clipped(kids.begin() + (long)units[u].first + 1, kids.begin() + (long)units[u].second);
+      renderWithClipped(kids[units[u].first], clipped, canvas);
+      addStats(cum, subStats(st_, before));
+      if ((u + 1) % step != 0 && u + 1 != units.size()) continue;
+      CompositeCache::Impl::Entry e;
+      signature(0, lastOf(u), e.sig, true);
+      e.width = canvas.width; e.height = canvas.height;
+      e.px = canvas.px;
+      e.stats = cum;
+      c->put(c->prefixes, lastOf(u), std::move(e));
+    }
+  }
+
+  // (x, y) でいちばん上に見えている画素レイヤ。無ければ -1
+  int hitTest(int x, int y, int minAlpha) {
+    const int W = psd_.header.width, H = psd_.header.height;
+    if (x < 0 || y < 0 || x >= W || y >= H) return -1;
+    std::map<int, std::vector<uint8_t>> masks;   // フォルダのマスク (文書大)
+    auto groupMaskAt = [&](int p) -> int {
+      LayerInfo &g = psd_.layerList[(size_t)p];
+      auto it = masks.find(p);
+      if (it == masks.end()) it = masks.emplace(p, groupMask(g)).first;
+      return it->second.empty() ? 255 : it->second[(size_t)y * W + x];
+    };
+    for (int i = (int)psd_.layerList.size() - 1; i >= 0; i--) {
+      LayerInfo &l = psd_.layerList[(size_t)i];
+      if (l.layerType == LAYER_TYPE_FOLDER || l.layerType == LAYER_TYPE_HIDDEN ||
+          l.layerType == LAYER_TYPE_ADJUST) continue;
+      if (!visibleWithParents(i)) continue;
+      int a = surfaceAlphaAt(l, x, y);
+      if (a <= 0) continue;
+      a = a * l.opacity / 255 * l.fill_opacity / 255;
+      for (int p = l.parentIndex; p >= 0 && a > 0; p = psd_.layerList[(size_t)p].parentIndex) {
+        LayerInfo &g = psd_.layerList[(size_t)p];
+        a = a * g.opacity / 255 * g.fill_opacity / 255 * groupMaskAt(p) / 255;
+      }
+      if (a < minAlpha) continue;
+      if (l.clipping != 0) {
+        // クリップの下地が見えていない所には描かれない
+        const int b = clipBaseOf(i);
+        if (b < 0) continue;
+        LayerInfo &bl = psd_.layerList[(size_t)b];
+        if (!visible(bl)) continue;
+        if (bl.layerType != LAYER_TYPE_FOLDER && bl.layerType != LAYER_TYPE_ADJUST &&
+            surfaceAlphaAt(bl, x, y) <= 0) continue;
+      }
+      return i;
+    }
+    return -1;
+  }
+
 private:
   PSDFile &psd_;
   const CompositeOptions &opt_;
@@ -135,8 +318,280 @@ private:
   // 独立したグループは nullptr (透明から始まる)
   std::vector<const Canvas*> scopes_;
   std::unique_ptr<Canvas> background_;   // 背景レイヤだけを描いた面 (深いノックアウト)
+  std::vector<int> first_;               // フォルダの子孫のいちばん小さい番号 (フォルダ以外は自分)
+  std::vector<int8_t> fxMemo_;           // レイヤに描く効果があるか (-1 未確認)
+  std::vector<uint8_t> draftCounted_;    // 下書きで省いた数を数え済みか
 
-  bool visible(const LayerInfo &l) const { return l.isVisible(); }
+  int indexOf(const LayerInfo &l) const {
+    const LayerInfo *b = psd_.layerList.data();
+    if (&l < b || &l >= b + psd_.layerList.size()) return -1;
+    return (int)(&l - b);
+  }
+
+  // 表示 (opt.visibility の上書きを含む。親フォルダは見ない)
+  bool visible(const LayerInfo &l) const {
+    const int i = indexOf(l);
+    if (i >= 0 && i < (int)opt_.visibility.size() && opt_.visibility[(size_t)i] >= 0)
+      return opt_.visibility[(size_t)i] != 0;
+    return l.isVisible();
+  }
+
+  bool visibleWithParents(int i) const {
+    for (int guard = 0; i >= 0 && guard <= (int)psd_.layerList.size(); guard++) {
+      const LayerInfo &l = psd_.layerList[(size_t)i];
+      if (!visible(l)) return false;
+      i = l.parentIndex;
+    }
+    return true;
+  }
+
+  // 効果を描いてよいレイヤか (効果の有無は見ない)
+  bool effectsAllowed(const LayerInfo &l) const {
+    if (!opt_.effects || opt_.draft) return false;
+    const int i = indexOf(l);
+    return !(i >= 0 && i < (int)opt_.noEffects.size() && opt_.noEffects[(size_t)i]);
+  }
+
+  // 効果を描くか。下書きで省くときは、効果を持つレイヤを 1 回だけ数える
+  bool wantEffects(const LayerInfo &l) {
+    if (effectsAllowed(l)) return true;
+    if (opt_.draft && opt_.effects) {
+      const int i = indexOf(l);
+      if (i >= 0 && !draftCounted_[(size_t)i]) {
+        draftCounted_[(size_t)i] = 1;
+        psdfx_layer_effects fx;
+        FxStore store;
+        if (layerEffects(l, fx, store)) st_.draftSkipped++;
+      }
+    }
+    return false;
+  }
+
+  // 描く効果があるか (結果を覚える)
+  bool hasActiveEffects(const LayerInfo &l) {
+    if (!effectsAllowed(l)) return false;
+    const int i = indexOf(l);
+    if (i < 0) { psdfx_layer_effects fx; FxStore store; return layerEffects(l, fx, store); }
+    if (fxMemo_[(size_t)i] < 0) {
+      psdfx_layer_effects fx;
+      FxStore store;
+      fxMemo_[(size_t)i] = layerEffects(l, fx, store) ? 1 : 0;
+    }
+    return fxMemo_[(size_t)i] != 0;
+  }
+
+  // 下書きで調整レイヤを省くなら数えて true
+  bool skipAdjustmentForDraft(const LayerInfo &l) {
+    if (!opt_.draft) return false;
+    const int i = indexOf(l);
+    if (i >= 0 && !draftCounted_[(size_t)i]) { draftCounted_[(size_t)i] = 1; st_.draftSkipped++; }
+    return true;
+  }
+
+  static void pushPtr(std::vector<int32_t> &s, const void *p) {
+    const uint64_t v = (uint64_t)(uintptr_t)p;
+    s.push_back((int32_t)(uint32_t)v);
+    s.push_back((int32_t)(uint32_t)(v >> 32));
+  }
+
+  // レイヤ番号 a..b の状態と合成の指定を並べる (キャッシュの照合用)。
+  // prefix なら背景 (下地の色) も入れる
+  void signature(int a, int b, std::vector<int32_t> &s, bool prefix) {
+    s.clear();
+    pushPtr(s, &psd_);
+    s.push_back(psd_.header.width);
+    s.push_back(psd_.header.height);
+    s.push_back((int32_t)psd_.layerList.size());
+    s.push_back((opt_.effects ? 1 : 0) | (opt_.draft ? 2 : 0));
+    if (prefix) {
+      s.push_back(opt_.background ? 1 : 0);
+      s.push_back(opt_.backgroundColor[0] | (opt_.backgroundColor[1] << 8) | (opt_.backgroundColor[2] << 16));
+    }
+    const int n = (int)psd_.layerList.size();
+    for (int i = std::max(0, a); i <= b && i < n; i++) {
+      const LayerInfo &l = psd_.layerList[(size_t)i];
+      s.push_back((int32_t)l.layerType);
+      s.push_back(visible(l) ? 1 : 0);
+      s.push_back(l.flag & ~(1 << 1));
+      s.push_back(effectsAllowed(l) ? 1 : 0);
+      s.push_back(l.opacity);
+      s.push_back(l.fill_opacity);
+      s.push_back(l.clipping);
+      s.push_back(l.blendModeKey);
+      s.push_back(l.sectionBlendKey);
+      s.push_back(l.left); s.push_back(l.top); s.push_back(l.right); s.push_back(l.bottom);
+      s.push_back(l.parentIndex);
+      const LayerMask &m = l.extraData.layerMask;
+      s.push_back(m.present ? 1 : 0);
+      s.push_back(m.flags);
+      s.push_back(m.defaultColor);
+      s.push_back(m.left); s.push_back(m.top); s.push_back(m.width); s.push_back(m.height);
+      s.push_back(m.userMaskDensity);
+      s.push_back(m.vectorMaskDensity);
+      s.push_back((int32_t)(m.userMaskFeather * 256));
+      s.push_back((int32_t)(m.vectorMaskFeather * 256));
+      s.push_back((int32_t)l.channels.size());
+      for (const auto &ch : l.channels) { pushPtr(s, ch.imageData); s.push_back(ch.length); }
+      s.push_back((int32_t)l.extraData.additionalLayers.size());
+      for (const auto &x : l.extraData.additionalLayers) { s.push_back(x.key); s.push_back(x.size); pushPtr(s, x.data); }
+    }
+  }
+
+  // フォルダ idx の子を透明な面 buf (文書大、透明で渡される) へ独立して描く。
+  // キャッシュがあれば使い回す (覚えるのは透明でない範囲だけ)
+  void renderIsolated(int idx, Canvas &buf) {
+    CompositeCache::Impl *c = opt_.cache ? opt_.cache->impl() : nullptr;
+    if (!c || buf.width != psd_.header.width || buf.height != psd_.header.height) {
+      renderChildren(idx, buf);
+      return;
+    }
+    const int W = buf.width, H = buf.height;
+    std::vector<int32_t> sig;
+    signature(first_[(size_t)idx], idx - 1, sig, false);
+    if (const auto *e = c->find(c->groups, idx, sig)) {
+      for (int y = 0; y < e->height; y++)
+        std::memcpy(&buf.px[((size_t)(e->top + y) * W + e->left) * 4], &e->px[(size_t)y * e->width * 4],
+                    (size_t)e->width * 4);
+      addStats(st_, e->stats);
+      st_.cacheHits++;
+      return;
+    }
+    const CompositeStats before = st_;
+    renderChildren(idx, buf);
+    st_.cacheMisses++;
+    CompositeCache::Impl::Entry e;
+    e.sig = std::move(sig);
+    e.stats = subStats(st_, before);
+    int x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (int y = 0; y < H; y++) {
+      const uint8_t *row = &buf.px[(size_t)y * W * 4];
+      for (int x = 0; x < W; x++) {
+        if (!row[x * 4 + 3]) continue;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        y1 = y;
+      }
+    }
+    if (x1 >= 0) {
+      e.left = x0; e.top = y0; e.width = x1 - x0 + 1; e.height = y1 - y0 + 1;
+      e.px.resize((size_t)e.width * e.height * 4);
+      for (int y = 0; y < e.height; y++)
+        std::memcpy(&e.px[(size_t)y * e.width * 4], &buf.px[((size_t)(y0 + y) * W + x0) * 4], (size_t)e.width * 4);
+    }
+    c->put(c->groups, idx, std::move(e));
+  }
+
+  // 通過フォルダの中身を独立して描いても、下の画像へ直接重ねたのと同じになるか
+  // (中が通常の描画モードだけで、効果・調整レイヤ・ノックアウト・チャンネル制限がない)
+  bool passIsolatable(int idx) {
+    const std::vector<int> kids = psd_.childIndices(idx);
+    int base = -1;   // いまのクリップの下地
+    for (size_t k = 0; k < kids.size(); k++) {
+      const int ci = kids[k];
+      LayerInfo &c = psd_.layerList[(size_t)ci];
+      if (c.layerType == LAYER_TYPE_HIDDEN) continue;   // 区切り
+      if (c.clipping == 0) base = ci;
+      if (!visible(c)) continue;
+      if (c.layerType == LAYER_TYPE_ADJUST) return false;
+      if (flagBlock(c, 'knko', 0)) return false;
+      if (!excludedChannels(c).empty()) return false;
+      if (hasActiveEffects(c)) return false;   // 効果は下の画像と描画モードで混ざる
+      const bool hasClipped = k + 1 < kids.size() && psd_.layerList[(size_t)kids[k + 1]].clipping != 0;
+      if (c.layerType == LAYER_TYPE_FOLDER) {
+        if (c.artboard.present) return false;
+        const int key = c.sectionBlendKey ? c.sectionBlendKey : c.blendModeKey;
+        if (key == 'pass') {
+          if (hasClipped) return false;
+          LayerInfo maskLayer;
+          if (c.fill_opacity < 255 || c.opacity < 255 || userMaskLayer(c, maskLayer) ||
+              (c.vectorMask.present && !c.vectorMask.disabled())) return false;
+          if (!passIsolatable(ci)) return false;
+        } else if (key != 'norm') {
+          return false;
+        }
+        continue;
+      }
+      if (c.clipping == 0) {
+        if (c.blendModeKey != 'norm') return false;
+      } else if (c.blendModeKey != 'norm' && base >= 0 && flagBlock(psd_.layerList[(size_t)base], 'clbl', 1) == 0) {
+        return false;   // 「クリップしたレイヤーをグループとして描画」切なら直接下へ重なる
+      }
+    }
+    return true;
+  }
+
+  // フォルダを 1 枚に描く
+  bool renderFolderSingle(int idx, std::vector<uint8_t> &out, int &left, int &top, int &w, int &h) {
+    const int W = psd_.header.width, H = psd_.header.height;
+    if (W <= 0 || H <= 0 || (int64_t)W * H > opt_.maxPixels) return false;
+    Canvas canvas(W, H);
+    renderGroup(idx, canvas);
+    int x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (int y = 0; y < H; y++) {
+      const uint8_t *row = &canvas.px[(size_t)y * W * 4];
+      for (int x = 0; x < W; x++) {
+        if (!row[x * 4 + 3]) continue;
+        x0 = std::min(x0, x); x1 = std::max(x1, x);
+        y0 = std::min(y0, y); y1 = std::max(y1, y);
+      }
+    }
+    if (x1 < 0) return false;
+    left = x0; top = y0; w = x1 - x0 + 1; h = y1 - y0 + 1;
+    out.resize((size_t)w * h * 4);
+    for (int y = 0; y < h; y++)
+      std::memcpy(&out[(size_t)y * w * 4], &canvas.px[((size_t)(y0 + y) * W + x0) * 4], (size_t)w * 4);
+    return true;
+  }
+
+  // 画素レイヤ l の (x, y) のアルファ (マスク込み、不透明度は掛けない)
+  // キャッシュがあればアルファ (1 バイト/px) を覚えて次の当たり判定で使い回す
+  int surfaceAlphaAt(LayerInfo &l, int x, int y) {
+    const bool docWide = l.layerType == LAYER_TYPE_FILL || l.width <= 0 || l.height <= 0;
+    if (!docWide && (x < l.left || x >= l.right || y < l.top || y >= l.bottom)) return 0;
+    CompositeCache::Impl *c = opt_.cache ? opt_.cache->impl() : nullptr;
+    const int idx = indexOf(l);
+    std::vector<int32_t> sig;
+    if (c && idx >= 0) {
+      signature(idx, idx, sig, false);
+      if (const auto *e = c->find(c->alphas, idx, sig)) {
+        const int px = x - e->left, py = y - e->top;
+        if (px < 0 || py < 0 || px >= e->width || py >= e->height) return 0;
+        return e->px[(size_t)py * e->width + px];
+      }
+    }
+    Canvas surf;
+    int sx = 0, sy = 0;
+    const bool ok = layerSurface(l, surf, sx, sy);
+    if (c && idx >= 0) {
+      CompositeCache::Impl::Entry e;
+      e.sig = std::move(sig);
+      if (ok) {
+        e.left = sx; e.top = sy; e.width = surf.width; e.height = surf.height;
+        e.px.resize((size_t)surf.width * surf.height);
+        for (size_t i = 0; i < e.px.size(); i++) e.px[i] = surf.px[i * 4 + 3];
+      }
+      c->put(c->alphas, idx, std::move(e));
+    }
+    if (!ok) return 0;
+    const int px = x - sx, py = y - sy;
+    if (px < 0 || py < 0 || px >= surf.width || py >= surf.height) return 0;
+    return surf.px[((size_t)py * surf.width + px) * 4 + 3];
+  }
+
+  // クリップされたレイヤ i の下地 (同じ階層で下にある最初の clipping == 0)
+  int clipBaseOf(int i) {
+    const std::vector<int> kids = psd_.childIndices(psd_.layerList[(size_t)i].parentIndex);
+    auto it = std::find(kids.begin(), kids.end(), i);
+    if (it == kids.end()) return -1;
+    while (it != kids.begin()) {
+      --it;
+      const LayerInfo &b = psd_.layerList[(size_t)*it];
+      if (b.layerType == LAYER_TYPE_HIDDEN) continue;
+      if (b.clipping == 0) return *it;
+    }
+    return -1;
+  }
 
   // レイヤマスク (グレー) を文書全体の大きさで返す。無効 / 無しなら空。
   std::vector<uint8_t> documentMask(LayerInfo &l) {
@@ -1139,7 +1594,7 @@ private:
                      float opacity, float fill, uint32_t blend, const uint8_t *clipMask) {
     psdfx_layer_effects fx;
     FxStore store;
-    const bool withFx = opt_.effects && layerEffects(l, fx, store);
+    const bool withFx = wantEffects(l) && layerEffects(l, fx, store);
     psdfx_surface src = surface.surface();
     // シェイプの線は内側の効果 (オーバーレイなど) の上に乗る
     Canvas line;
@@ -1349,6 +1804,7 @@ private:
       return;
     }
     if (l.layerType == LAYER_TYPE_ADJUST) {
+      if (skipAdjustmentForDraft(l)) return;
       if (clipped.empty()) { applyAdjustment(l, canvas, nullptr); return; }
       // 調整レイヤを下地にしたクリッピング: 調整済みの画像を下地の中身、調整の
       // マスクをクリップの範囲とみなす
@@ -1419,7 +1875,7 @@ private:
     {
       psdfx_layer_effects fx;
       FxStore store;
-      if (opt_.effects && layerEffects(l, fx, store)) {
+      if (wantEffects(l) && layerEffects(l, fx, store)) {
         // 下地に効果があるときは、下地の画素にクリップされたレイヤを重ねてから
         // 効果を掛ける (オーバーレイなどはクリップされたレイヤの上にも乗る。照合で
         // 確認)。効果の形は下地の形
@@ -1456,7 +1912,10 @@ private:
     for (int ci : clipped) {
       LayerInfo &c = psd_.layerList[(size_t)ci];
       if (!visible(c)) continue;
-      if (c.layerType == LAYER_TYPE_ADJUST) { applyAdjustment(c, group, clipMask); continue; }
+      if (c.layerType == LAYER_TYPE_ADJUST) {
+        if (!skipAdjustmentForDraft(c)) applyAdjustment(c, group, clipMask);
+        continue;
+      }
       if (c.layerType == LAYER_TYPE_FOLDER) {
         // クリップされたグループ: 中身を独立した面に描いてから範囲内に重ねる
         Canvas buf(group.width, group.height);
@@ -1479,7 +1938,7 @@ private:
   // ブレンドは呼び出し側)
   void renderGroupContent(int idx, Canvas &buf) {
     LayerInfo &g = psd_.layerList[(size_t)idx];
-    renderChildren(idx, buf);
+    renderIsolated(idx, buf);
     std::vector<uint8_t> mask = groupMask(g);
     if (!mask.empty())
       for (size_t i = 0; i < mask.size(); i++)
@@ -1500,7 +1959,7 @@ private:
     {
       psdfx_layer_effects fx;
       FxStore store;
-      if (opt_.effects && layerEffects(g, fx, store)) {
+      if (wantEffects(g) && layerEffects(g, fx, store)) {
         Canvas buf(canvas.width, canvas.height);
         renderGroupContent(idx, buf);
         if (flagBlock(g, 'knko', 0)) {
@@ -1517,6 +1976,14 @@ private:
     // 重ねる (中の調整レイヤは下の画像に届かない。照合で確認)
     if (key == 'pass' && g.fill_opacity >= 255) {
       if (opacity >= 1.f && mask.empty() && !flagBlock(g, 'knko', 0)) {
+        if (opt_.cache && passIsolatable(idx)) {
+          // 中身を独立して描いて (使い回して) 通常で重ねる。直接重ねたのと同じ (丸め誤差まで)
+          Canvas buf(canvas.width, canvas.height);
+          renderIsolated(idx, buf);
+          psdfx_surface dst = canvas.surface(), src = buf.surface();
+          psdfx_composite(&dst, &src, 0, 0, PSDFX_KEY('n','o','r','m'), 1.f, nullptr, 0);
+          return;
+        }
         renderChildren(idx, canvas, true);
         return;
       }
@@ -1529,7 +1996,7 @@ private:
     }
     if (flagBlock(g, 'knko', 0)) { renderKnockoutGroup(idx, canvas); return; }
     Canvas buf(canvas.width, canvas.height);
-    renderChildren(idx, buf);
+    renderIsolated(idx, buf);
     psdfx_surface dst = canvas.surface(), src = buf.surface();
     psdfx_composite(&dst, &src, 0, 0, key == 'pass' ? PSDFX_KEY('n','o','r','m') : (uint32_t)key,
                     opacity * g.fill_opacity / 255.f,
@@ -1736,9 +2203,15 @@ bool PSDFile::compositeImage(std::vector<uint8_t> &bgra, const CompositeOptions 
     }
   }
   Compositor c(*this, opt, st);
-  c.renderChildren(-1, canvas);
+  c.renderTop(canvas);
   bgra.swap(canvas.px);
   return true;
+}
+
+int PSDFile::layerAtPoint(int x, int y, const CompositeOptions &opt, int minAlpha) {
+  CompositeStats st;
+  Compositor c(*this, opt, st);
+  return c.hitTest(x, y, std::max(1, minAlpha));
 }
 
 }  // namespace psd
